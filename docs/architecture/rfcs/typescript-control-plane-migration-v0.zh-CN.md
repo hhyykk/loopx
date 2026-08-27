@@ -136,18 +136,22 @@ replay、receipt 与 settlement。这个架构选择已经落地，不再是假�
 | Effect runtime 与 Turn journal（[#3416](https://github.com/huangruiteng/loopx/pull/3416)） | Effect algebra、settlement rule、runtime lifecycle、typed Turn-journal interpretation 与 durable checkpoint effect | Python settlement facade 仍暴露细粒度调用，并重复 DTO/enum shape |
 | Todo、quota 与 scheduler 证明切片（[#3431](https://github.com/huangruiteng/loopx/pull/3431)–[#3434](https://github.com/huangruiteng/loopx/pull/3434)） | Completion fence/state、workspace causality 与 scheduler transition 各有一个 TS rule owner | 切口大多仍是 leaf-shaped；Python 继续组合多个产品 transaction |
 | Scheduler durable state（[#3440](https://github.com/huangruiteng/loopx/pull/3440)） | State normalization、persistence、replay 与一笔粗粒度 transition 由 TS 拥有 | Python compatibility path 仍承担跨 runtime transport 税 |
-| Scheduler heartbeat/state transaction | TypeScript 拥有 ACK 与 host-failure validation、state construction、failure-cache transition、replay/CAS fencing 与 atomic write | Python 只保留 native command transport 与 legacy event projection；external host mutation 仍在 Python |
+| Scheduler heartbeat/state transaction | TypeScript 拥有 receipt freshness、ACK 与 host-failure validation、state construction、failure-cache transition、replay/CAS fencing、atomic write，以及 public JSON/Markdown projection | 生成的 receipt-bound host follow-up 直接进入 native TS CLI；Python 只处理 unbound/manual compatibility call 与 external host mutation |
 | Quota spend commit transaction | TypeScript 拥有最终 spend transition 校验、typed event 构造、effect replay/CAS fencing、crash repair，以及 JSON/Markdown/index write set | Python 仍投影 `should-run` 与 settlement readback facts，并在 CLI/index writer 进程内迁移前持有 legacy cross-writer index lock |
 | Runtime decoder（[#3443](https://github.com/huangruiteng/loopx/pull/3443)） | 稳定 primitive decoding 进入一个很小的共享模块；domain decoder 仍留在本地 | 没有理由建设更大的 schema framework |
 | Transaction 兑现（[#3464](https://github.com/huangruiteng/loopx/pull/3464)、[#3481](https://github.com/huangruiteng/loopx/pull/3481) 与 Todo completion） | Turn settlement、quota delivery routing 与 Todo completion 均只跨一个粗粒度 TS boundary；Todo transaction 拥有 identity、replay fence、validation planning/result reduction、continuation/recovery 与 completion metadata | Python 仍执行显式 external provider，并物化 legacy Markdown/event result；其他 domain 仍需各自的 bounded cutover |
 
-Scheduler facade exit 现已成为一个具体迁移阶段。原生
-`heartbeat_commit_cli.ts` 接收 compact scheduler/host facts，并在同一进程内拥有
-scoped state read、CAS digest、semantic effect identity、validation、replay 与锁内
-写入。managed `scheduler.heartbeat.commit` handler 与 Python semantic bridge 均被删除。
-Python quota 代码只保留直接 subprocess transport 与兼容 event projection；host
-automation adapter 及其 TOML/SQLite 写入仍有意留在 Python。剩余代码的最终删除条件是
-host adapter 与 scheduler CLI/projection 迁移到同一 native transaction boundary。
+Scheduler facade exit 已交付第一段有边界的 Stage 3 路径。带版本的
+`heartbeat_followup_cli.ts` 从生成的 ACK/failure hint 接收有大小上限的 compact host
+facts，校验原始 heartbeat receipt，并在一个 Node 进程内完成 state validation、
+replay/CAS fencing、锁内写入，以及 public JSON/Markdown projection。Unix、Windows
+和 wheel 安装后的 console launcher 只为精确匹配的 receipt-bound command 选择这条
+路径。持续运行的 host path 因此不再启动 Python，也没有 Python 到 Node 的
+request/response。旧 Python ACK rule 与只服务 adapter 的测试已经删除，不再形成第二个
+semantic owner。无决策权的 Python compatibility adapter 暂时服务显式 in-process call
+与手工构造的 unbound call，等这些 caller 改用生成的 receipt-bound hint 后即可删除。
+Host automation adapter 及其 TOML/SQLite 写入仍有意留在 Python，并处在这笔
+transaction 之外。
 
 这些切片已经证明 correctness、packaging、Windows lifecycle、crash recovery、真实
 TS-owned write 和可接受的 warm primitive-call latency。它们也暴露了迁移边界：
@@ -232,12 +236,14 @@ window 仍需 differential proof 时才保留 characterization corpus；引入�
   作为显式 Python provider，位于两次 reduction 之间。取得 mutation lock 后会比较
   source snapshot，确保一份 declaration 的 receipt 不能授权已经变化的 Todo。
   Materialized 与 event-projected 写入消费同一 typed result。
-- Scheduler heartbeat/state：TypeScript 拥有 ACK 与 host-failure validation、带
-  identity 的 progression、failure-cache retention/counting、replay 与 CAS
-  fencing、preview reduction，以及锁内 atomic write。Python 提供 host outcome 与
-  compact scheduler facts，再把 typed state 投影成 legacy event shape。剩余 facade
-  会在 scheduler CLI 与 host adapter 原生调用这笔 transaction 后退出；在此之前，
-  它的 state preflight 仅限于 external-provider boundary。
+- Scheduler heartbeat/state 由 TypeScript 拥有 receipt freshness、ACK 与
+  host-failure validation、带 identity 的 progression、failure-cache
+  retention/counting、replay 与 CAS fencing、preview reduction、锁内 atomic write，
+  以及兼容旧合同的 JSON/Markdown result。生成的 receipt-bound ACK/failure hint 携带
+  一份有版本且有大小上限的 facts packet，随后通过 native CLI 直接进入这笔
+  transaction。持续运行的路径不再经过 Python。无决策权的 compatibility adapter
+  只服务显式 in-process caller 与 unbound manual caller，等这些 caller 改用生成路径
+  后即可退出。Host automation mutation 继续作为 Python 拥有的 external effect。
 - Quota spend commit：TypeScript 重新校验 compact before/after transition，构造
   canonical public-safe spend event，以带锁 index CAS fence effect，并把 JSON、
   Markdown、index 与 transaction receipt 作为一笔可修复操作提交。同一 effect retry
@@ -313,6 +319,10 @@ exactly-once 保证；原 handler 可能仍存活时，caller 不得启动第二
 交付 native TS CLI，并在进程内 import kernel。只保留一个自动选择的 authority
 路径：CLI-only 时进程内直接执行；App/scheduler 已拥有 workspace 时连接 managed
 daemon。所有生产 caller 不再需要 Python bridge 后，删除 bridge 与协议。
+
+Receipt-bound scheduler ACK/failure 是本阶段第一段有边界的 native CLI 切片。它只做
+精确 launcher dispatch，没有引入通用 Node router。`quota should-run`、host automation
+mutation 与更广的 quota policy 继续由原 owner 负责。
 
 ### Stage 4 — 清理分发
 

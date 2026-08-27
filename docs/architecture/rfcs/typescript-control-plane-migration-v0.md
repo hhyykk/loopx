@@ -157,20 +157,24 @@ choice is now implemented rather than hypothetical.
 | Effect runtime and Turn journal ([#3416](https://github.com/huangruiteng/loopx/pull/3416)) | Effect algebra, settlement rules, runtime lifecycle, typed Turn-journal interpretation, and durable checkpoint effects | Python settlement facades still expose fine-grained calls and duplicate DTO/enum shapes |
 | Todo, quota, and scheduler proof slices ([#3431](https://github.com/huangruiteng/loopx/pull/3431)–[#3434](https://github.com/huangruiteng/loopx/pull/3434)) | Completion fence/state, workspace causality, and scheduler transitions each have one TS rule owner | The cuts are mostly leaf-shaped; Python still composes several product transactions |
 | Scheduler durable state ([#3440](https://github.com/huangruiteng/loopx/pull/3440)) | State normalization, persistence, replay, and one coarse transition are TS-owned | The Python compatibility path still pays a cross-runtime transport tax |
-| Scheduler heartbeat/state transaction | TypeScript owns ACK and host-failure validation, state construction, failure-cache transitions, replay/CAS fencing, and atomic writes | Python retains only a direct native-command transport and legacy event projection; external host mutation remains Python |
+| Scheduler heartbeat/state transaction | TypeScript owns receipt freshness, ACK and host-failure validation, state construction, failure-cache transitions, replay/CAS fencing, atomic writes, and the public JSON/Markdown projection | Generated, receipt-bound host follow-up runs through the native TS CLI; Python remains only for unbound/manual compatibility calls and external host mutation |
 | Quota spend commit transaction | TypeScript owns final spend-transition validation, typed event construction, effect replay/CAS fencing, crash repair, and the JSON/Markdown/index write set | Python still projects `should-run` and settlement readback facts, and holds the legacy cross-writer index lock until the CLI/index writers move in-process |
 | Runtime decoders ([#3443](https://github.com/huangruiteng/loopx/pull/3443)) | Stable primitive decoding has one small shared module; domain decoders remain local | No larger schema framework is justified |
 | Transaction payoff ([#3464](https://github.com/huangruiteng/loopx/pull/3464), [#3481](https://github.com/huangruiteng/loopx/pull/3481), and Todo completion) | Turn settlement, quota delivery routing, and Todo completion each cross one coarse TS boundary; the Todo transaction owns identity, replay fencing, validation planning/result reduction, continuation/recovery, and completion metadata | Python still executes explicitly external providers and materializes legacy Markdown/event results; other domains still need their own bounded cutovers |
 
-The scheduler facade exit is now a concrete migration stage. A native
-`heartbeat_commit_cli.ts` accepts compact scheduler/host facts and owns the
-scoped state read, CAS digest, semantic effect identity, validation, replay,
-and locked write in one process. The managed `scheduler.heartbeat.commit`
-handler and the Python semantic bridge are removed. Python quota code remains
-only as a direct subprocess transport plus the compatibility event projection;
-the host automation adapter and its TOML/SQLite writes are intentionally still
-Python. The final deletion trigger for that retained code is moving the host
-adapter and scheduler CLI/projection to the same native transaction boundary.
+The scheduler facade exit now includes its first bounded Stage 3 route. A
+versioned `heartbeat_followup_cli.ts` accepts bounded compact host facts from
+the generated ACK/failure hint, verifies the originating heartbeat receipt,
+and runs state validation, replay/CAS fencing, the locked write, and public
+JSON/Markdown projection in one Node process. The Unix, Windows, and installed
+console launchers select this route only for exact receipt-bound commands, so
+the recurring host path no longer starts Python or pays a Python-to-Node
+request/response. The deleted Python ACK rule and adapter-only tests no longer
+form a second semantic owner. A decision-free Python compatibility adapter
+remains for explicit in-process and manually constructed unbound calls. It can
+be deleted after those callers consume generated receipt-bound hints. The host
+automation adapter and its TOML/SQLite writes intentionally remain Python and
+external to this transaction.
 
 These slices proved correctness, packaging, Windows lifecycle, crash recovery,
 real TS-owned writes, and acceptable warm primitive-call latency. They also
@@ -268,13 +272,16 @@ shipped Stage 2B cutovers are in place:
   between two reductions. A source snapshot is compared after the mutation
   lock so a receipt for one declaration cannot authorize a changed Todo.
   Materialized and event-projected writes consume the same typed result.
-- Scheduler heartbeat/state: TypeScript owns ACK and host-failure validation,
-  identity-aware progression, failure-cache retention/counting, replay and CAS
-  fencing, preview reduction, and the locked atomic write. Python supplies the
-  host outcome and compact scheduler facts, then projects the typed state into
-  the legacy event shape. The remaining facade exits when the scheduler CLI and
-  host adapter call this transaction natively; until then its state preflight is
-  limited to the external-provider boundary.
+- Scheduler heartbeat/state: TypeScript owns receipt freshness, ACK and
+  host-failure validation, identity-aware progression, failure-cache
+  retention/counting, replay and CAS fencing, preview reduction, the locked
+  atomic write, and the legacy-compatible JSON/Markdown result. Generated
+  receipt-bound ACK/failure hints carry a versioned bounded fact packet and
+  enter that transaction directly through the native CLI. Python no longer
+  participates in the recurring path. Its decision-free compatibility adapter
+  remains only for explicit in-process and unbound manual callers and exits
+  when those callers adopt the generated route. Host automation mutation stays
+  an external Python effect.
 - Quota spend commit: TypeScript revalidates the compact before/after transition,
   constructs the canonical public-safe spend event, fences the effect with a
   locked index CAS, and commits JSON, Markdown, index, and transaction receipt
@@ -365,6 +372,11 @@ Ship a native TS CLI that imports the kernel in-process. Keep one automatically
 selected authority path: direct in-process execution for CLI-only use, or the
 managed daemon when the App/scheduler already owns the workspace. Remove the
 Python bridge and its protocol after no production caller needs them.
+
+The receipt-bound scheduler ACK/failure route is the first bounded native-CLI
+slice in this stage. It is an exact launcher dispatch, not a generic Node
+router, and leaves `quota should-run`, host automation mutation, and broader
+quota policy in their existing owners.
 
 ### Stage 4 — Distribution cleanup
 
