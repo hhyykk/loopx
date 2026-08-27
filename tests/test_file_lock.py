@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import pytest
 from loopx.file_lock import (
     LOCK_ACQUIRE_TIMEOUT_ERROR_CODE,
     LockAcquireTimeoutError,
+    exclusive_cross_runtime_file_lock,
     exclusive_file_lock,
     fcntl,
     lock_holder_path,
@@ -137,3 +139,70 @@ def test_single_flight_returns_none_without_timeout_incident(tmp_path: Path) -> 
         assert not lock_incident_path(target).exists()
     finally:
         _stop(process)
+
+
+def test_cross_runtime_lock_publishes_the_typescript_owner_file(tmp_path: Path) -> None:
+    target = tmp_path / ".task-leases"
+    effect_lock = Path(f"{target}.ts-effect.lock")
+
+    with exclusive_cross_runtime_file_lock(target, operation="task-lease-renew"):
+        owner = json.loads(effect_lock.read_text(encoding="utf-8"))
+        assert owner["pid"] == os.getpid()
+        assert isinstance(owner["token"], str)
+        assert target.with_name(f"{target.name}.lock").exists()
+
+    assert not effect_lock.exists()
+
+
+def test_cross_runtime_lock_respects_a_live_typescript_holder(tmp_path: Path) -> None:
+    target = tmp_path / ".task-leases"
+    effect_lock = Path(f"{target}.ts-effect.lock")
+    effect_lock.write_text(
+        json.dumps({"pid": os.getpid(), "token": "typescript-holder"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LockAcquireTimeoutError):
+        with exclusive_cross_runtime_file_lock(
+            target,
+            timeout_seconds=0,
+            operation="task-lease-release",
+        ):
+            pytest.fail("Python writer bypassed the live TypeScript lock")
+
+
+def test_cross_runtime_lock_reclaims_a_dead_typescript_holder(tmp_path: Path) -> None:
+    target = tmp_path / ".task-leases"
+    effect_lock = Path(f"{target}.ts-effect.lock")
+    effect_lock.write_text(
+        json.dumps({"pid": 2_147_483_647, "token": "dead-holder"}),
+        encoding="utf-8",
+    )
+
+    with exclusive_cross_runtime_file_lock(
+        target,
+        timeout_seconds=0.2,
+        operation="task-lease-transfer",
+    ):
+        owner = json.loads(effect_lock.read_text(encoding="utf-8"))
+        assert owner["pid"] == os.getpid()
+
+    assert not effect_lock.exists()
+
+
+def test_cross_runtime_lock_cleans_up_a_failed_owner_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / ".task-leases"
+    effect_lock = Path(f"{target}.ts-effect.lock")
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("simulated owner publication failure")
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="owner publication failure"):
+        with exclusive_cross_runtime_file_lock(target):
+            pytest.fail("lock body ran after owner publication failed")
+
+    assert not effect_lock.exists()
