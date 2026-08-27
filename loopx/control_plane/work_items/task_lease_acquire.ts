@@ -120,9 +120,21 @@ function optionalInteger(value: unknown, label: string): number | null {
 
 function compactString(value: unknown): string {
   if (value === null || value === undefined) return "";
-  if (Array.isArray(value)) return value.join(",");
-  if (typeof value === "object") return Object.prototype.toString.call(value);
-  return value.toString();
+  switch (typeof value) {
+    case "string":
+      return value;
+    case "number":
+    case "bigint":
+    case "symbol":
+      return value.toString();
+    case "boolean":
+      return value ? "true" : "false";
+    case "function":
+      return Function.prototype.toString.call(value);
+    case "object":
+      return Array.isArray(value) ? value.join(",") : Object.prototype.toString.call(value);
+  }
+  return "";
 }
 
 function compact(value: unknown): string {
