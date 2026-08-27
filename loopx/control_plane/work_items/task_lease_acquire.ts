@@ -118,8 +118,15 @@ function optionalInteger(value: unknown, label: string): number | null {
   return value;
 }
 
+function compactString(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.join(",");
+  if (typeof value === "object") return Object.prototype.toString.call(value);
+  return String(value);
+}
+
 function compact(value: unknown): string {
-  return String(value ?? "").trim().split(/\s+/u).filter(Boolean).join(" ");
+  return compactString(value).trim().split(/\s+/u).filter(Boolean).join(" ");
 }
 
 function normalizeAgent(value: unknown): string | null {
@@ -175,11 +182,14 @@ function normalizeIdempotencyKey(value: unknown): string {
 }
 
 function normalizeWriteScopes(value: unknown): string[] {
-  const raw = Array.isArray(value)
-    ? value
-    : typeof value === "string"
-    ? value.split(/[,;|]/u)
-    : [value];
+  let raw: unknown[];
+  if (Array.isArray(value)) {
+    raw = value;
+  } else if (typeof value === "string") {
+    raw = value.split(/[,;|]/u);
+  } else {
+    raw = [value];
+  }
   const scopes: string[] = [];
   const seen = new Set<string>();
   for (const item of raw) {
@@ -230,6 +240,13 @@ function decodeSourceReceipt(value: unknown, index: number): SourceReceipt {
   return { source_id: sourceId, path, state, sha256: sha256 as string | null };
 }
 
+function decodeRegisteredAgentCandidate(value: unknown): string | null {
+  if (Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null) return normalizeAgent(value);
+  const record = value as Record<string, unknown>;
+  return normalizeAgent(record.id ?? record.agent_id ?? record.name);
+}
+
 function decodeRegisteredAgents(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new EffectRuntimeRequestError("authority.registered_agent_candidates must be an array");
@@ -239,13 +256,7 @@ function decodeRegisteredAgents(value: unknown): string[] {
   for (const candidate of value) {
     const entries = Array.isArray(candidate) ? candidate : [candidate];
     for (const entry of entries) {
-      if (Array.isArray(entry)) continue;
-      let rawAgent = entry;
-      if (typeof entry === "object" && entry !== null) {
-        const record = entry as Record<string, unknown>;
-        rawAgent = record.id ?? record.agent_id ?? record.name;
-      }
-      const agent = normalizeAgent(rawAgent);
+      const agent = decodeRegisteredAgentCandidate(entry);
       if (agent && !seen.has(agent)) {
         seen.add(agent);
         agents.push(agent);
@@ -253,6 +264,13 @@ function decodeRegisteredAgents(value: unknown): string[] {
     }
   }
   return agents;
+}
+
+function excludedAgentCandidates(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return value.split(",");
+  if (value === null || value === undefined) return [];
+  return [value];
 }
 
 function decodeTodoFacts(value: unknown): ReadonlyMap<string, TodoFact> {
@@ -263,16 +281,10 @@ function decodeTodoFacts(value: unknown): ReadonlyMap<string, TodoFact> {
   for (let index = 0; index < value.length; index += 1) {
     const record = requireJsonObject(value[index], `authority.todos[${index}]`);
     const todoId = normalizeTodoId(record.todo_id, `authority.todos[${index}].todo_id`);
-    const excluded = Array.isArray(record.excluded_agents)
-      ? record.excluded_agents
-      : typeof record.excluded_agents === "string"
-      ? record.excluded_agents.split(",")
-      : record.excluded_agents === null || record.excluded_agents === undefined
-      ? []
-      : [record.excluded_agents];
+    const excluded = excludedAgentCandidates(record.excluded_agents);
     const excludedAgents = [...new Set(
       excluded.map(normalizeAgent).filter((agent): agent is string => agent !== null),
-    )].sort();
+    )].sort((left, right) => left.localeCompare(right));
     todos.set(todoId, {
       todo_id: todoId,
       status: compact(record.status).toLowerCase(),
@@ -316,7 +328,9 @@ function decodeRequest(value: unknown): AcquireRequest {
   if (!Array.isArray(receiptsValue) || receiptsValue.length === 0) {
     throw new EffectRuntimeRequestError("authority.source_receipts must be a non-empty array");
   }
-  const receipts = receiptsValue.map(decodeSourceReceipt);
+  const receipts = receiptsValue.map((receipt, index) =>
+    decodeSourceReceipt(receipt, index)
+  );
   if (new Set(receipts.map((receipt) => receipt.source_id)).size !== receipts.length) {
     throw new EffectRuntimeRequestError("authority source ids must be unique");
   }
@@ -384,8 +398,8 @@ function executionContext(value: unknown): ExecutionContext {
       turn_instance_id: normalizeIdempotencyKey(request.idempotency_key),
     }).effect_id;
   } catch {
-    // An invalid settlement identity has no effect id, but the CLI can still
-    // report the deterministic lease path for a valid goal/Todo pair.
+    // An invalid settlement identity has no effect id. The CLI can still
+    // report the deterministic lease path for a valid goal/work-item pair.
   }
   return context;
 }
@@ -427,22 +441,24 @@ function leaseInteger(
 ): number | null {
   const raw = lease?.[field];
   if (raw === null || raw === undefined) return null;
-  const number = typeof raw === "number"
-    ? raw
-    : typeof raw === "string" && /^-?\d+$/u.test(raw)
-    ? Number(raw)
-    : Number.NaN;
+  let number = Number.NaN;
+  if (typeof raw === "number") {
+    number = raw;
+  } else if (typeof raw === "string" && /^-?\d+$/u.test(raw)) {
+    number = Number(raw);
+  }
   const positive = field === "lease_epoch";
   const nonNegative = field === "version";
   if (
     typeof raw === "boolean" || !Number.isSafeInteger(number) ||
     (positive && number <= 0) || (nonNegative && number < 0)
   ) {
-    const message = field === "lease_epoch"
-      ? "lease epoch must be a positive integer"
-      : field === "version"
-      ? "lease version must be a non-negative integer"
-      : "lease acquire_ttl_seconds must be an integer";
+    let message = "lease acquire_ttl_seconds must be an integer";
+    if (field === "lease_epoch") {
+      message = "lease epoch must be a positive integer";
+    } else if (field === "version") {
+      message = "lease version must be a non-negative integer";
+    }
     throw new TaskLeaseAcquireError(message, "corrupt_lease", { [field]: raw ?? null });
   }
   return number;
@@ -469,7 +485,7 @@ function parseLeaseTimestamp(value: string): Date | null {
 
 function leaseIsActive(lease: LeaseRecord | null, at: Date): boolean {
   if (
-    lease === null || lease.schema_version !== TASK_LEASE_SCHEMA_VERSION ||
+    lease?.schema_version !== TASK_LEASE_SCHEMA_VERSION ||
     lease.status !== "active"
   ) {
     return false;
@@ -603,7 +619,11 @@ function scopePairOverlaps(left: string, right: string): boolean {
     return fnmatchcase(right, left) ||
       (prefix.endsWith("/") && right.replace(/\/$/u, "") === prefix.replace(/\/$/u, ""));
   }
-  if (rightGlob && !leftGlob) return scopePairOverlaps(right, left);
+  if (rightGlob && !leftGlob) {
+    const prefix = scopeLiteralPrefix(right);
+    return fnmatchcase(left, right) ||
+      (prefix.endsWith("/") && left.replace(/\/$/u, "") === prefix.replace(/\/$/u, ""));
+  }
   if (leftGlob && rightGlob) {
     const leftPrefix = scopeLiteralPrefix(left);
     const rightPrefix = scopeLiteralPrefix(right);
@@ -661,7 +681,7 @@ async function leaseFiles(directory: string): Promise<string[]> {
   try {
     return (await readdir(directory))
       .filter((name) => /^todo_[a-z0-9_-]{3,64}\.json$/u.test(name))
-      .sort()
+      .sort((left, right) => left.localeCompare(right))
       .map((name) => join(directory, name));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -774,8 +794,8 @@ function transitionError(
 }
 
 function equalScopeSets(left: readonly string[], right: readonly string[]): boolean {
-  const a = [...new Set(left)].sort();
-  const b = [...new Set(right)].sort();
+  const a = [...new Set(left)].sort((first, second) => first.localeCompare(second));
+  const b = [...new Set(right)].sort((first, second) => first.localeCompare(second));
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
@@ -831,6 +851,12 @@ const VALIDATION_FAILURE_CODES = new Set([
   "authority_source_changed",
 ]);
 
+function failureKind(code: string): string {
+  if (INVALID_IDENTITY_CODES.has(code)) return "invalid_identity";
+  if (PERMISSION_DENIED_CODES.has(code)) return "permission_denied";
+  return "writeback_rejected";
+}
+
 function failureEnvelope(
   failure: TaskLeaseFailure,
   context: ExecutionContext,
@@ -838,11 +864,7 @@ function failureEnvelope(
   const step = VALIDATION_FAILURE_CODES.has(failure.code)
     ? "validation"
     : "durable_writeback";
-  const kind = INVALID_IDENTITY_CODES.has(failure.code)
-    ? "invalid_identity"
-    : PERMISSION_DENIED_CODES.has(failure.code)
-    ? "permission_denied"
-    : "writeback_rejected";
+  const kind = failureKind(failure.code);
   const receipts = step === "validation" || context.effectId === null
     ? []
     : [{ step: "validation", status: "committed", effect_id: context.effectId }];
@@ -862,15 +884,7 @@ function failureEnvelope(
   };
 }
 
-async function commitAcquire(
-  request: AcquireRequest,
-  dependencies: TaskLeaseAcquireDependencies,
-): Promise<TaskLeaseAcquireEnvelope> {
-  const at = (dependencies.now ?? (() => new Date()))();
-  if (Number.isNaN(at.valueOf())) {
-    throw new EffectRuntimeRequestError("task-lease acquire clock returned an invalid date");
-  }
-  await revalidateAuthoritySources(request.authority.source_receipts);
+function validateAcquireAuthority(request: AcquireRequest): TodoFact {
   if (request.authority.handoff_mode === "soft_claim") {
     throw new TaskLeaseAcquireError(
       "goal handoff mode 'soft_claim' forbids task lease acquire; " +
@@ -907,67 +921,118 @@ async function commitAcquire(
     );
   }
   const todo = request.authority.todos.get(request.todo_id);
-  const ownerRejectionCode = ownerRejection(
+  const rejectionCode = ownerRejection(
     todo,
     request.owner,
     request.authority.registered_agents,
   );
-  if (ownerRejectionCode !== null) {
-    throw ownerFailure(ownerRejectionCode, request, todo);
+  if (rejectionCode !== null) {
+    throw ownerFailure(rejectionCode, request, todo);
   }
+  return todo as TodoFact;
+}
 
-  const leasePath = taskLeasePath(request);
-  const existing = await readLease(leasePath);
-  const version = leaseVersion(existing);
-  const epoch = leaseEpoch(existing);
-  const active = leaseIsActive(existing, at);
-  if (request.expected_version !== null && request.expected_version !== version) {
-    throw transitionError("version_mismatch", request, existing, leasePath);
-  }
-  const existingEffective = active && ownerRejection(
-    todo,
-    normalizeAgent(existing?.owner),
-    request.authority.registered_agents,
-  ) === null;
-  if (existingEffective && existing !== null) {
-    if (
-      normalizeAgent(existing.owner) === request.owner &&
-      existing.idempotency_key === request.idempotency_key
-    ) {
-      const existingTtl = leaseInteger(existing, "acquire_ttl_seconds");
-      const matches = equalScopeSets(
-        normalizeWriteScopes(existing.write_scopes),
-        request.write_scopes,
-      ) && (existingTtl === null || existingTtl === request.ttl_seconds);
-      if (!matches) {
-        throw transitionError(
-          "idempotency_key_reuse",
-          request,
-          existing,
-          leasePath,
-          [],
-          "acquire_parameters",
-        );
-      }
-      return successEnvelope(request, existing, leasePath, settlementIdentity({
-        goal_id: request.goal_id,
-        agent_id: request.owner,
-        todo_id: request.todo_id,
-        turn_instance_id: request.idempotency_key,
-      }).effect_id, true);
-    }
-    throw transitionError("todo_lease_conflict", request, existing, leasePath);
-  }
-  if (existing !== null && existing.idempotency_key === request.idempotency_key) {
+function acquireEffectId(request: AcquireRequest): string {
+  return settlementIdentity({
+    goal_id: request.goal_id,
+    agent_id: request.owner,
+    todo_id: request.todo_id,
+    turn_instance_id: request.idempotency_key,
+  }).effect_id;
+}
+
+function replayExistingAcquire(
+  request: AcquireRequest,
+  existing: LeaseRecord,
+  leasePath: string,
+): TaskLeaseAcquireEnvelope {
+  const existingTtl = leaseInteger(existing, "acquire_ttl_seconds");
+  const matches = equalScopeSets(
+    normalizeWriteScopes(existing.write_scopes),
+    request.write_scopes,
+  ) && (existingTtl === null || existingTtl === request.ttl_seconds);
+  if (!matches) {
     throw transitionError(
       "idempotency_key_reuse",
       request,
       existing,
       leasePath,
       [],
-      active ? "acquire_parameters" : "retired",
+      "acquire_parameters",
     );
   }
+  return successEnvelope(
+    request,
+    existing,
+    leasePath,
+    acquireEffectId(request),
+    true,
+  );
+}
+
+function resolveExistingAcquire(
+  request: AcquireRequest,
+  todo: TodoFact,
+  existing: LeaseRecord | null,
+  leasePath: string,
+  version: number,
+  active: boolean,
+): TaskLeaseAcquireEnvelope | null {
+  if (request.expected_version !== null && request.expected_version !== version) {
+    throw transitionError("version_mismatch", request, existing, leasePath);
+  }
+  const existingEffective = existing !== null && active && ownerRejection(
+    todo,
+    normalizeAgent(existing.owner),
+    request.authority.registered_agents,
+  ) === null;
+  if (!existingEffective || existing === null) {
+    if (existing !== null && existing.idempotency_key === request.idempotency_key) {
+      throw transitionError(
+        "idempotency_key_reuse",
+        request,
+        existing,
+        leasePath,
+        [],
+        active ? "acquire_parameters" : "retired",
+      );
+    }
+    return null;
+  }
+  if (
+    normalizeAgent(existing.owner) !== request.owner ||
+    existing.idempotency_key !== request.idempotency_key
+  ) {
+    throw transitionError("todo_lease_conflict", request, existing, leasePath);
+  }
+  return replayExistingAcquire(request, existing, leasePath);
+}
+
+async function commitAcquire(
+  request: AcquireRequest,
+  dependencies: TaskLeaseAcquireDependencies,
+): Promise<TaskLeaseAcquireEnvelope> {
+  const at = (dependencies.now ?? (() => new Date()))();
+  if (Number.isNaN(at.valueOf())) {
+    throw new EffectRuntimeRequestError("task-lease acquire clock returned an invalid date");
+  }
+  await revalidateAuthoritySources(request.authority.source_receipts);
+  const todo = validateAcquireAuthority(request);
+
+  const leasePath = taskLeasePath(request);
+  const existing = await readLease(leasePath);
+  const version = leaseVersion(existing);
+  const epoch = leaseEpoch(existing);
+  const active = leaseIsActive(existing, at);
+  const replay = resolveExistingAcquire(
+    request,
+    todo,
+    existing,
+    leasePath,
+    version,
+    active,
+  );
+  if (replay !== null) return replay;
   const conflicts = await activeConflicts(request, at);
   if (conflicts.length > 0) {
     throw transitionError("write_scope_conflict", request, existing, leasePath, conflicts);
@@ -994,13 +1059,7 @@ async function commitAcquire(
   await dependencies.beforeWrite?.(lease);
   await revalidateAuthoritySources(request.authority.source_receipts);
   await atomicWriteJson(leasePath, lease);
-  const effectId = settlementIdentity({
-    goal_id: request.goal_id,
-    agent_id: request.owner,
-    todo_id: request.todo_id,
-    turn_instance_id: request.idempotency_key,
-  }).effect_id;
-  return successEnvelope(request, lease, leasePath, effectId, false);
+  return successEnvelope(request, lease, leasePath, acquireEffectId(request), false);
 }
 
 export async function executeTaskLeaseAcquire(

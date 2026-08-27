@@ -64,6 +64,20 @@ def _stop(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=3)
 
 
+def _acquire_and_release_cross_runtime_lock(
+    target: Path,
+    *,
+    timeout_seconds: float | None = None,
+    operation: str | None = None,
+) -> None:
+    with exclusive_cross_runtime_file_lock(
+        target,
+        timeout_seconds=timeout_seconds,
+        operation=operation,
+    ):
+        pass
+
+
 def test_exclusive_lock_persists_public_safe_holder_metadata(tmp_path: Path) -> None:
     target = tmp_path / "state.json"
 
@@ -163,12 +177,11 @@ def test_cross_runtime_lock_respects_a_live_typescript_holder(tmp_path: Path) ->
     )
 
     with pytest.raises(LockAcquireTimeoutError):
-        with exclusive_cross_runtime_file_lock(
+        _acquire_and_release_cross_runtime_lock(
             target,
             timeout_seconds=0,
             operation="task-lease-release",
-        ):
-            pytest.fail("Python writer bypassed the live TypeScript lock")
+        )
 
 
 def test_cross_runtime_lock_reclaims_a_dead_typescript_holder(tmp_path: Path) -> None:
@@ -202,7 +215,6 @@ def test_cross_runtime_lock_cleans_up_a_failed_owner_publish(
 
     monkeypatch.setattr(os, "fsync", fail_fsync)
     with pytest.raises(OSError, match="owner publication failure"):
-        with exclusive_cross_runtime_file_lock(target):
-            pytest.fail("lock body ran after owner publication failed")
+        _acquire_and_release_cross_runtime_lock(target)
 
     assert not effect_lock.exists()

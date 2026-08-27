@@ -12,7 +12,6 @@ from ..todos.contract import normalize_todo_id
 from ..todos.handoff_mode import HANDOFF_MODE_LEGACY
 from .local_lease_record import TASK_LEASE_SCHEMA_VERSION, TaskLeaseError
 
-
 TASK_LEASE_ACQUIRE_NATIVE_SCHEMA_VERSION = "loopx_task_lease_acquire_native_v0"
 TASK_LEASE_AUTHORITY_SNAPSHOT_ATTEMPTS = 3
 
@@ -125,15 +124,80 @@ def _compact_task_lease_todo_fact(todo: dict[str, Any]) -> dict[str, Any] | None
     }
 
 
+def _compact_task_lease_todos(projection: dict[str, Any]) -> list[dict[str, Any]]:
+    todos: list[dict[str, Any]] = []
+    for raw_todo in projection.get("todos") or []:
+        if not isinstance(raw_todo, dict):
+            continue
+        compact_todo = _compact_task_lease_todo_fact(raw_todo)
+        if compact_todo is not None:
+            todos.append(compact_todo)
+    return todos
+
+
+def _task_lease_authority_projection(
+    *,
+    registry_path: Path,
+    goal_id: str,
+    todo_id: str,
+    goal: dict[str, Any] | None,
+    state_file: Path | None,
+) -> tuple[Any, list[Any], list[dict[str, Any]], dict[str, Any] | None]:
+    from ...todos import list_goal_todos
+    from ..goals.active_state_metadata import parse_state_frontmatter
+
+    if goal is None:
+        return HANDOFF_MODE_LEGACY, [], [], None
+
+    handoff_mode: Any = HANDOFF_MODE_LEGACY
+    if state_file is not None and state_file.exists():
+        handoff_mode = parse_state_frontmatter(
+            state_file.read_text(encoding="utf-8")
+        ).get("handoff_mode")
+    try:
+        projection = list_goal_todos(
+            registry_path=registry_path,
+            goal_id=goal_id,
+        )
+    except (OSError, ValueError) as exc:
+        projection_error = {
+            "code": "todo_projection_unavailable",
+            "message": "cannot resolve todo projection for task lease",
+            "payload": {
+                "goal_id": goal_id,
+                "todo_id": todo_id,
+                "error": str(exc),
+            },
+        }
+        return (
+            handoff_mode,
+            _raw_registered_agent_candidates(goal),
+            [],
+            projection_error,
+        )
+    return (
+        handoff_mode,
+        _raw_registered_agent_candidates(goal),
+        _compact_task_lease_todos(projection),
+        None,
+    )
+
+
+def _authority_source_identity(
+    sources: list[tuple[str, Path]],
+) -> list[tuple[str, str]]:
+    return [
+        (source_id, str(path.expanduser().resolve(strict=False)))
+        for source_id, path in sources
+    ]
+
+
 def _task_lease_authority_snapshot_attempt(
     *,
     registry_path: Path,
     goal_id: str,
     todo_id: str,
 ) -> dict[str, Any] | None:
-    from ...todos import list_goal_todos
-    from ..goals.active_state_metadata import parse_state_frontmatter
-
     registry_receipt_before = _authority_source_receipt("registry", registry_path)
     registry = load_registry(registry_path)
     goal, state_file, sources = _task_lease_authority_source_paths(
@@ -147,65 +211,26 @@ def _task_lease_authority_snapshot_attempt(
     if receipts_before[0] != registry_receipt_before:
         return None
 
-    handoff_mode: Any = HANDOFF_MODE_LEGACY
-    registered_candidates: list[Any] = []
-    todos: list[dict[str, Any]] = []
-    projection_error: dict[str, Any] | None = None
-    if goal is not None:
-        registered_candidates = _raw_registered_agent_candidates(goal)
-        if state_file is not None and state_file.exists():
-            handoff_mode = parse_state_frontmatter(
-                state_file.read_text(encoding="utf-8")
-            ).get("handoff_mode")
-        try:
-            projection = list_goal_todos(
-                registry_path=registry_path,
-                goal_id=goal_id,
-            )
-        except (OSError, ValueError) as exc:
-            projection_error = {
-                "code": "todo_projection_unavailable",
-                "message": "cannot resolve todo projection for task lease",
-                "payload": {
-                    "goal_id": goal_id,
-                    "todo_id": todo_id,
-                    "error": str(exc),
-                },
-            }
-        else:
-            for raw_todo in projection.get("todos") or []:
-                if not isinstance(raw_todo, dict):
-                    continue
-                compact_todo = _compact_task_lease_todo_fact(raw_todo)
-                if compact_todo is not None:
-                    todos.append(compact_todo)
-
-    registry_after = load_registry(registry_path)
-    _goal_after, _state_file_after, sources_after = (
-        _task_lease_authority_source_paths(
+    handoff_mode, registered_candidates, todos, projection_error = (
+        _task_lease_authority_projection(
             registry_path=registry_path,
-            registry=registry_after,
             goal_id=goal_id,
+            todo_id=todo_id,
+            goal=goal,
+            state_file=state_file,
         )
     )
-    source_ids_after = [source_id for source_id, _path in sources_after]
-    source_ids_before = [source_id for source_id, _path in sources]
-    source_paths_after = [
-        str(path.expanduser().resolve(strict=False))
-        for _source_id, path in sources_after
-    ]
-    source_paths_before = [
-        str(path.expanduser().resolve(strict=False))
-        for _source_id, path in sources
-    ]
-    if (
-        source_ids_after != source_ids_before
-        or source_paths_after != source_paths_before
-    ):
+
+    registry_after = load_registry(registry_path)
+    _goal_after, _state_file_after, sources_after = _task_lease_authority_source_paths(
+        registry_path=registry_path,
+        registry=registry_after,
+        goal_id=goal_id,
+    )
+    if _authority_source_identity(sources_after) != _authority_source_identity(sources):
         return None
     receipts_after = [
-        _authority_source_receipt(source_id, path)
-        for source_id, path in sources_after
+        _authority_source_receipt(source_id, path) for source_id, path in sources_after
     ]
     if receipts_before != receipts_after:
         return None
