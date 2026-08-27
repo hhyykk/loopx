@@ -122,7 +122,7 @@ function compactString(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (Array.isArray(value)) return value.join(",");
   if (typeof value === "object") return Object.prototype.toString.call(value);
-  return String(value);
+  return value.toString();
 }
 
 function compact(value: unknown): string {
