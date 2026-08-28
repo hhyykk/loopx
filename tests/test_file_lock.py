@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
+import loopx.file_lock as file_lock
 from loopx.file_lock import (
     LOCK_ACQUIRE_TIMEOUT_ERROR_CODE,
     LockAcquireTimeoutError,
@@ -182,6 +184,20 @@ def test_cross_runtime_lock_respects_a_live_typescript_holder(tmp_path: Path) ->
             timeout_seconds=0,
             operation="task-lease-release",
         )
+
+
+def test_cross_runtime_windows_pid_probe_is_non_signaling(monkeypatch) -> None:
+    calls: list[int] = []
+
+    def probe(pid: int) -> bool:
+        calls.append(pid)
+        return True
+
+    monkeypatch.setattr(file_lock, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(file_lock, "_windows_process_is_alive", probe)
+
+    assert file_lock._effect_mutation_process_is_alive(1234) is True
+    assert calls == [1234]
 
 
 def test_cross_runtime_lock_reclaims_a_dead_typescript_holder(tmp_path: Path) -> None:

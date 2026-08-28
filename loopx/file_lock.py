@@ -494,9 +494,15 @@ def _effect_mutation_lock_path(path: Path) -> Path:
     return Path(f"{path}{EFFECT_MUTATION_LOCK_SUFFIX}")
 
 
-def _effect_mutation_process_is_alive(pid: object) -> bool:
+def process_is_alive(pid: object) -> bool:
+    """Probe a process without sending signals or console control events."""
+
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return False
+    if os.name == "nt":
+        # Windows signal 0 is CTRL_C_EVENT, not the side-effect-free POSIX
+        # existence probe provided by kill(pid, 0).
+        return _windows_process_is_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -506,6 +512,39 @@ def _effect_mutation_process_is_alive(pid: object) -> bool:
     except OSError as exc:
         return exc.errno == errno.EPERM
     return True
+
+
+def _windows_process_is_alive(pid: int) -> bool:
+    """Probe a Windows process without sending a console control event."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    wait_timeout = 0x00000102
+    error_access_denied = 5
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    wait_for_single_object = kernel32.WaitForSingleObject
+    wait_for_single_object.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait_for_single_object.restype = wintypes.DWORD
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    handle = open_process(synchronize, False, pid)
+    if not handle:
+        return bool(getattr(ctypes, "get_last_error")() == error_access_denied)
+    try:
+        return bool(wait_for_single_object(handle, 0) == wait_timeout)
+    finally:
+        close_handle(handle)
+
+
+def _effect_mutation_process_is_alive(pid: object) -> bool:
+    return process_is_alive(pid)
 
 
 def _read_effect_mutation_owner(path: Path) -> dict[str, object] | None:

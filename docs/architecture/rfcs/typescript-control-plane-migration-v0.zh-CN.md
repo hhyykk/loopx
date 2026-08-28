@@ -283,7 +283,7 @@ lock 也随之退出。Vision checkpointing 属于不同的 refresh/writeback �
 | 删除的旧语义代码 | 973 行产品代码，包括 Python provider/acquire 组合与 conflict 路径、Python↔TS settlement bridge/reducer 及 handler，以及 legacy CLI settlement projection。 |
 | 新增的 bridge 代码 | 约 641 行 gross、有界的 compatibility 产品代码，包括 compact Python authority projection 加一次 managed-runtime request、compatibility import、Python/TypeScript 共享锁协议，以及 typed NoKV/coordination decision adapter。顶层 CLI 进入 Node 后删除本地 projection 与 import；其余 lease writer 与 fence 迁移后删除 dual lock；coordination executor 进入 native runtime 后删除该 adapter。 |
 | 跨 runtime 调用 | 公开 acquire 与 replay 路径从两次 request/response reduction 降为一次 native transaction request/response。 |
-| 产品代码净增减 | 产品代码 +2,088/−1,076 行，净增 1,012 行。Test 与 fixture 单独计为 +878/−1,075，build configuration 为 +4。 |
+| 产品代码净增减 | 产品代码 +2,130/−1,122 行，净增 1,008 行。Test 与 fixture 单独计为 +898/−1,081，build configuration 为 +4。 |
 | 迁移 scaffolding | 删除 task-lease settlement characterization、fault-matrix、incident-replay 及其 fixture 切片。以 native invariant、crash/retry、direct-CLI、adapter 与 cross-runtime lock 测试取代；不再保留 migration-only worker。 |
 | Facade 退出 | 本次删除 semantic facade、atomic provider、settlement operation 与 legacy CLI projection。仅保留 source/transport compatibility 与 cross-runtime serialization，删除条件如上。 |
 | 正确性与性能 | 公开 CLI 在 5 个 acquire/replay/failure 场景与旧实现精确匹配；20 个 focused native test、207 个 Node test、4,615 个 Python test（12 个 skip）、crash/retry 与 packaged-wheel smoke 通过。在匹配的 16 样本 full-CLI 测试中，happy-path p95 从 1,593.7 ms 变为 1,167.8 ms，replay p95 从 513.3 ms 变为 445.4 ms；中位数分别为 364.6→425.6 ms 与 343.3→351.9 ms。 |
