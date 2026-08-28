@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from loopx.control_plane import effect_runtime
@@ -156,10 +158,12 @@ def test_python_prepare_facade_rejects_malformed_runtime_results(
 
 
 def test_python_prepare_facade_preserves_typed_budget_rejection(monkeypatch) -> None:
+    suggestion = 'compact "quoted" \\ value'
+
     def reject(_method: str, _params: dict[str, object]) -> object:
         raise effect_runtime.EffectRuntimeRejected(
             "vision_budget_exceeded: vision_summary uses 421 chars; limit is 420; "
-            'suggested compact value: "xxxxxxxxx..."',
+            f"suggested compact value: {json.dumps(suggestion)}",
             diagnostic_code="vision_budget_exceeded",
         )
 
@@ -176,7 +180,7 @@ def test_python_prepare_facade_preserves_typed_budget_rejection(monkeypatch) -> 
     assert error.value.field == "vision_summary"
     assert error.value.used == 421
     assert error.value.limit == 420
-    assert error.value.suggestion == "xxxxxxxxx..."
+    assert error.value.suggestion == suggestion
 
 
 def test_runtime_budget_rejection_keeps_actionable_suggestion() -> None:

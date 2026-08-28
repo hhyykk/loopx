@@ -17,9 +17,7 @@ _VISION_BUDGET_MESSAGE = re.compile(
     r"^vision_budget_exceeded: (?P<field>.+) uses (?P<used>\d+) chars; "
     r"limit is (?P<limit>\d+)"
 )
-_VISION_BUDGET_SUGGESTION = re.compile(
-    r"; suggested compact value: (?P<suggestion>\"(?:\\.|[^\"])*\")$"
-)
+_VISION_BUDGET_SUGGESTION_MARKER = "; suggested compact value: "
 
 
 class GoalVisionBudgetError(ValueError):
@@ -47,20 +45,24 @@ class GoalVisionBudgetError(ValueError):
 
 def _raise_rejection(exc: EffectRuntimeRejected) -> NoReturn:
     if exc.diagnostic_code == GOAL_VISION_BUDGET_ERROR:
-        matched = _VISION_BUDGET_MESSAGE.match(str(exc))
+        message = str(exc)
+        matched = _VISION_BUDGET_MESSAGE.match(message)
         if matched:
-            suggestion_match = _VISION_BUDGET_SUGGESTION.search(str(exc))
-            suggestion = (
-                json.loads(suggestion_match.group("suggestion"))
-                if suggestion_match
-                else None
-            )
+            suggestion = None
+            suggestion_prefix = matched.group(0) + _VISION_BUDGET_SUGGESTION_MARKER
+            if message.startswith(suggestion_prefix):
+                try:
+                    candidate = json.loads(message[len(suggestion_prefix) :])
+                except json.JSONDecodeError:
+                    candidate = None
+                if isinstance(candidate, str):
+                    suggestion = candidate
             raise GoalVisionBudgetError(
                 field=matched.group("field"),
                 used=int(matched.group("used")),
                 limit=int(matched.group("limit")),
                 suggestion=suggestion,
-                message=str(exc),
+                message=message,
             ) from None
     raise ValueError(str(exc)) from None
 
