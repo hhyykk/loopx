@@ -334,6 +334,19 @@ Todo monitor persistence、status projection 与剩余 run-index writer 都进�
 TypeScript 进程后退出；在此之前只承载 compact facts、具名 Todo provider、legacy
 after-projection 与共享 Python index lock。
 
+本次 cutover 以最终 merge-base 计算的 migration economics receipt 如下：
+
+| 字段 | 证据 |
+| --- | --- |
+| Canonical owner | 变更前由 Python `monitor_poll.py`、`monitor_poll_policy.py` 与 `monitor_target.py` 拥有。变更后，版本化 TypeScript `quota.monitor_poll.commit` transaction 拥有 admission、target/event/result 构造、replay/CAS、provider intent 与 durable artifact；Python 只保留 compact fact projection、具名 Todo provider、transport 与 legacy after-projection。 |
+| 删除的旧语义代码 | 删除 826 行 Python 产品代码，包括 `monitor_poll.py` 中被替换的 601 行、161 行 policy module 与 64 行 target module。 |
+| 新增的 bridge 代码 | 有界 bridge 新增 476 行 Python diff LOC，其中 438 行位于 `_mapping`、`_monitor_candidate`、`_due_monitor_candidates`、`_vision_wait_state`、`_registry_due_monitor`、`_decision_packet`、`_observation_packet`、`_index_digest`、`_native_result`、`_request`、`build_quota_monitor_poll_event`、`find_quota_monitor_poll_turn`、`_status_with_monitor_poll`、`_reload_status_after_monitor_writeback`、`_monitor_poll_failure`、`_capability_declaration_retry` 与 `record_quota_monitor_poll_for_decision`，另有 38 行 import/schema wiring。34 行 `_provider_writeback` 是真实保留 provider 的 adapter，不计入 bridge。 |
+| 跨 runtime 调用 | 变更前整条路径由 Python 拥有，因此为零。变更后，无 Todo 写入、exact replay 或 recovery 使用一次 request/response；真实 Todo provider 运行时使用一次 preflight 与一次 final reduction。 |
+| 产品代码净增减 | 产品代码新增 2,694 行、删除 831 行，净增 1,863 行；test/example 另计净增 623 行，docs 不计入。该临时增长交付一笔完整 transaction，不能连续复制；当 quota decision、Todo persistence、status projection 与剩余 index writer 原生化后，下一项删除是 476 行 bridge。 |
+| 迁移 scaffolding | 删除 218 行 implementation-specific policy smoke 与 18 行 target-helper assertion。没有提交临时 parity harness；保留 typed boundary、public CLI、replay/CAS、malformed input、provider 与 repair 测试，因为它们表达已交付或持久化 contract。 |
+| Facade 退出 | Python facade 只剩 compact source facts、Todo provider、一个共享 cross-writer lock、transport 与 legacy result projection。当 `should-run`、Todo monitor persistence、status projection 与全部 run-index writer 在原生 TypeScript 进程执行时删除。 |
+| 正确性与性能 | Identity/admission、effect isolation、provider fence、malformed receipt、concurrent CAS、crash repair、packaging 与 launcher coverage 均通过。Managed runtime 的 cold start p50/p95 为 312.50/523.48 ms，warm event 为 1.27/1.78 ms，durable commit 为 2.25/5.67 ms，idle/burst memory 均为 126.5 MiB。64 对交错 full-CLI 样本中，Todo write 的 baseline/candidate p50/p95 为 725.67/918.24 与 754.25/1,097.63 ms；replay 为 661.28/751.15 与 671.45/761.76 ms。Replay 与 write median 在门槛内，write p95 明确保留为 owner-review hold。 |
+
 ### Stage 3 — CLI 与 App 汇合
 
 交付 native TS CLI，并在进程内 import kernel。只保留一个自动选择的 authority
