@@ -268,7 +268,8 @@ test("commit owns the repairable run artifacts and exact-effect replay", async (
     "quota-monitor-poll",
     `${createHash("sha256").update(String(params.effect_id)).digest("hex").slice(0, 24)}.json`,
   );
-  assert.equal(JSON.parse(await readFile(receiptPath, "utf8")).status, "committed");
+  const preparedReceipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  assert.equal(preparedReceipt.status, "prepared");
   await assert.rejects(() => readFile(`${receiptPath}.committed`), { code: "ENOENT" });
 
   const replayed = await evaluateQuotaMonitorPollCommit({
@@ -281,14 +282,23 @@ test("commit owns the repairable run artifacts and exact-effect replay", async (
   });
   assert.equal(replayed.status, "replayed");
   assert.equal(replayed.payload.appended, false);
+  assert.equal(JSON.parse(await readFile(receiptPath, "utf8")).status, "prepared");
 
-  const committedReceipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  await Promise.all([unlink(jsonPath), unlink(markdownPath), unlink(indexPath)]);
+  const repairedFromPrepared = await evaluateQuotaMonitorPollCommit(params);
+  assert.equal(repairedFromPrepared.status, "repaired");
+  assert.equal(repairedFromPrepared.payload.transaction_repaired, true);
+  assert.equal(
+    repairedFromPrepared.reason,
+    "quota monitor-poll commit repaired its durable transaction artifacts",
+  );
+  assert.equal((await readFile(indexPath, "utf8")).trim().split("\n").length, 1);
+  assert.equal(JSON.parse(await readFile(receiptPath, "utf8")).status, "prepared");
+  await assert.rejects(() => readFile(`${receiptPath}.committed`), { code: "ENOENT" });
+
+  const committedReceipt = { ...preparedReceipt, status: "committed" };
   await Promise.all([
-    writeFile(
-      receiptPath,
-      `${JSON.stringify({ ...committedReceipt, status: "prepared" }, null, 2)}\n`,
-      "utf8",
-    ),
+    writeFile(receiptPath, `${JSON.stringify(preparedReceipt, null, 2)}\n`, "utf8"),
     writeFile(`${receiptPath}.committed`, JSON.stringify(committedReceipt), "utf8"),
   ]);
   await Promise.all([unlink(markdownPath), unlink(indexPath)]);
@@ -296,8 +306,16 @@ test("commit owns the repairable run artifacts and exact-effect replay", async (
   assert.equal(repaired.status, "repaired");
   assert.equal(repaired.payload.transaction_repaired, true);
   assert.equal((await readFile(indexPath, "utf8")).trim().split("\n").length, 1);
-  assert.equal(JSON.parse(await readFile(receiptPath, "utf8")).status, "committed");
+  assert.equal(JSON.parse(await readFile(receiptPath, "utf8")).status, "prepared");
   await assert.rejects(() => readFile(`${receiptPath}.committed`), { code: "ENOENT" });
+
+  await writeFile(receiptPath, `${JSON.stringify(committedReceipt)}\n`, "utf8");
+  await Promise.all([unlink(jsonPath), unlink(markdownPath), unlink(indexPath)]);
+  const repairedFromCommitted = await evaluateQuotaMonitorPollCommit(params);
+  assert.equal(repairedFromCommitted.status, "repaired");
+  assert.equal(repairedFromCommitted.payload.transaction_repaired, true);
+  assert.equal((await readFile(indexPath, "utf8")).trim().split("\n").length, 1);
+  assert.equal(JSON.parse(await readFile(receiptPath, "utf8")).status, "committed");
 
   const conflict = await evaluateQuotaMonitorPollCommit({ ...params, source: "controller" });
   assert.equal(conflict.status, "conflict");

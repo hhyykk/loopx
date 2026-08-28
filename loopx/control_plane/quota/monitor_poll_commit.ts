@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, readFile, rename, rm } from "node:fs/promises";
+import { access, readFile, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import type { JsonObject } from "../effect_program.ts";
@@ -1415,7 +1415,7 @@ function payloadFor(
     reason: options.replayed
       ? "replayed existing monitor poll event for the same effect identity"
       : options.repaired
-      ? "quota monitor-poll commit repaired its prepared durable transaction"
+      ? "quota monitor-poll commit repaired its durable transaction artifacts"
       : `${request.execute ? "appended" : "dry-run preview"} monitor poll event: ` +
         `${request.goal_id} effective_action=${request.decision.effective_action}`,
   };
@@ -1708,11 +1708,8 @@ async function replayDurableReceipt(
   receipt: DurableMonitorReceipt,
 ): Promise<QuotaMonitorPollCommitResult> {
   const repaired = await ensureArtifacts(receipt);
-  if (receipt.status !== "committed" || repaired) {
-    await atomicWriteJson(receiptPath, { ...receipt, status: "committed" });
-    if (receipt.status !== "committed") {
-      await rm(committedReceiptStagePath(receiptPath), { force: true });
-    }
+  if (receipt.status === "prepared") {
+    await rm(committedReceiptStagePath(receiptPath), { force: true });
   }
   const replayPayload: JsonObject = {
     ...receipt.payload,
@@ -1721,7 +1718,7 @@ async function replayDurableReceipt(
     todo_writeback: null,
     transaction_repaired: repaired,
     reason: repaired
-      ? "quota monitor-poll commit repaired its prepared durable transaction"
+      ? "quota monitor-poll commit repaired its durable transaction artifacts"
       : "replayed existing monitor poll event for the same effect identity",
   };
   return result(
@@ -2089,17 +2086,15 @@ export async function evaluateQuotaMonitorPollCommit(
       markdown: monitorMarkdown(record),
       payload,
     } satisfies DurableMonitorReceipt;
-    const committedStagePath = committedReceiptStagePath(receiptPath);
-    const [, , contentRepaired] = await Promise.all([
+    const [, contentRepaired] = await Promise.all([
       atomicWriteJson(receiptPath, prepared),
-      atomicWriteJson(committedStagePath, { ...prepared, status: "committed" }),
       ensureContentArtifacts(prepared),
     ]);
-    // The write-ahead receipt and independent artifacts are durable before the
-    // index commit point. A crash on either side of the append is repaired from
-    // the prepared receipt without weakening its pre-append CAS fence.
+    // The conservative prepared receipt is the durable write-ahead recovery
+    // authority; the public index remains the commit proof. Keeping the WAL in
+    // that state avoids a second full-receipt fsync without ever publishing a
+    // committed receipt before the index append succeeds.
     await ensureIndexArtifact(prepared, contentRepaired);
-    await rename(committedStagePath, receiptPath);
     return result(
       effectiveRequest,
       fingerprint,
