@@ -47,6 +47,40 @@ raise SystemExit(exit_code)
 	return run_isolated_script(script)
 
 
+def run_cli_batch(module: str, argv_cases: list[list[str]]) -> list[dict[str, object]]:
+	script = f"""
+import contextlib
+import io
+import json
+import sys
+
+from {module} import main
+
+sys.argv[0] = "loopx"
+results = []
+for argv in {argv_cases!r}:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        try:
+            exit_code = main(argv)
+        except SystemExit as exc:
+            exit_code = exc.code
+    results.append(
+        {{
+            "returncode": 0 if exit_code is None else exit_code,
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+        }}
+    )
+print(json.dumps(results))
+"""
+	completed = run_isolated_script(script)
+
+	assert completed.returncode == 0, completed.stderr
+	return json.loads(completed.stdout)
+
+
 def write_command_fixture(tmp_path: Path) -> tuple[Path, Path]:
 	project = tmp_path / "project"
 	runtime_root = tmp_path / "runtime"
@@ -221,9 +255,8 @@ assert "loopx.capabilities.content_ops.cli" not in sys.modules
 	assert completed.returncode == 0, completed.stderr
 
 
-@pytest.mark.parametrize(
-	"argv",
-	[
+def test_selected_parser_matches_full_help_and_diagnostics() -> None:
+	argv_cases = [
 		["check", "--help"],
 		["status", "--help"],
 		["diagnose", "--help"],
@@ -234,15 +267,11 @@ assert "loopx.capabilities.content_ops.cli" not in sys.modules
 		["todo", "list"],
 		["quota", "unknown-command"],
 		["--format", "unknown", "status"],
-	],
-)
-def test_selected_parser_matches_full_help_and_diagnostics(argv: list[str]) -> None:
-	selected = run_cli_main("loopx.entrypoint", argv)
-	full = run_cli_main("loopx.cli", argv)
+	]
+	selected = run_cli_batch("loopx.entrypoint", argv_cases)
+	full = run_cli_batch("loopx.cli", argv_cases)
 
-	assert selected.returncode == full.returncode
-	assert selected.stdout == full.stdout
-	assert selected.stderr == full.stderr
+	assert selected == full
 
 
 def test_selected_todo_execution_matches_full_cli(tmp_path: Path) -> None:
