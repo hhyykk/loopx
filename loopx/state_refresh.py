@@ -55,10 +55,9 @@ from .history import (
 )
 from .control_plane.runtime.local_state_write_correctness import build_local_state_write_correctness_dry_run_packet
 from .paths import resolve_runtime_root
-from .control_plane.goals.goal_vision import normalize_goal_vision_update
 from .control_plane.goals.vision_checkpoint import (
     build_vision_checkpoint,
-    normalize_vision_unchanged_reason,
+    prepare_vision_refresh,
 )
 from .control_plane.goals.goal_frontier import latest_agent_vision_from_runs
 from .registry import registry_goals, resolve_state_file
@@ -1065,9 +1064,6 @@ def refresh_state_run(
             raise ValueError("--agent-lane requires --progress-scope agent_lane")
     if (agent_vision_packet is not None or vision_unchanged_reason) and not normalized_agent_id:
         raise ValueError("vision writeback requires --agent-id")
-    normalized_vision_unchanged_reason = normalize_vision_unchanged_reason(
-        vision_unchanged_reason
-    )
     agent_vision: dict[str, Any] | None = None
     existing_agent_vision: dict[str, Any] | None = None
     autonomous_replan_frontier_identity: str | None = None
@@ -1090,7 +1086,7 @@ def refresh_state_run(
             agent_id=normalized_agent_id,
         )
     if agent_vision_packet is not None:
-        agent_vision = normalize_goal_vision_update(
+        agent_vision = prepare_vision_refresh(
             agent_vision_packet,
             goal_id=safe_goal_id,
             agent_id=normalized_agent_id or None,
@@ -1158,7 +1154,7 @@ def refresh_state_run(
         agent_id=normalized_agent_id or None,
         agent_vision=agent_vision,
         existing_agent_vision=existing_agent_vision,
-        vision_unchanged_reason=normalized_vision_unchanged_reason,
+        vision_unchanged_reason=vision_unchanged_reason,
         delivery_outcome=normalized_delivery_outcome,
         active_state_next_action_update=active_state_next_action_update,
         delivery_boundary=delivery_boundary,
