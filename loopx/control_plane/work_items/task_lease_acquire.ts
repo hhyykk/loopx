@@ -73,6 +73,49 @@ interface LeaseRecord extends JsonObject {
   expires_at?: unknown;
 }
 
+interface AcquireDecisionLease {
+  present: boolean;
+  active: boolean;
+  effective: boolean;
+  status: string | null;
+  owner: string | null;
+  idempotency_key: string | null;
+  version: number;
+  lease_epoch: number;
+  write_scopes: readonly string[];
+  acquire_ttl_seconds: number | null;
+}
+
+interface AcquireDecisionOtherLease {
+  todo_id: string;
+  active: boolean;
+  effective: boolean;
+  write_scopes: readonly string[];
+}
+
+interface AcquireDecisionInput {
+  handoff_mode: string;
+  registered_agents: readonly string[];
+  todo: TodoFact | null;
+  lease: AcquireDecisionLease | null;
+  other_leases: readonly AcquireDecisionOtherLease[];
+  command: {
+    owner: string;
+    idempotency_key: string;
+    ttl_seconds: number;
+    write_scopes: readonly string[];
+    expected_version: number | null;
+  };
+}
+
+interface AcquireDecision extends JsonObject {
+  outcome: "apply" | "no_change" | "conflict" | "rejected";
+  code: string;
+  idempotent: boolean;
+  next_lease: JsonObject | null;
+  conflict_indexes: number[];
+}
+
 interface TaskLeaseFailure {
   code: string;
   message: string;
@@ -653,6 +696,221 @@ function writeScopesOverlap(left: readonly string[], right: readonly string[]): 
   return left.some((a) => right.some((b) => scopePairOverlaps(a, b)));
 }
 
+function decisionStringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new EffectRuntimeRequestError(`${label} must be an array of strings`);
+  }
+  return [...value] as string[];
+}
+
+export function evaluateTaskLeaseWriteScopesOverlap(value: unknown): JsonObject {
+  const input = requireJsonObject(value, "task lease write-scope overlap");
+  return {
+    overlap: writeScopesOverlap(
+      decisionStringArray(input.left, "left"),
+      decisionStringArray(input.right, "right"),
+    ),
+  };
+}
+
+function decisionBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new EffectRuntimeRequestError(`${label} must be a boolean`);
+  }
+  return value;
+}
+
+function decisionInteger(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new EffectRuntimeRequestError(`${label} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function decisionNullableString(value: unknown, label: string): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") {
+    throw new EffectRuntimeRequestError(`${label} must be a string or null`);
+  }
+  return value;
+}
+
+function decodeDecisionTodo(value: unknown): TodoFact | null {
+  if (value === null || value === undefined) return null;
+  const todo = requireJsonObject(value, "task lease acquire decision todo");
+  return {
+    todo_id: stringValue(todo.todo_id, "todo.todo_id"),
+    status: stringValue(todo.status, "todo.status"),
+    claimed_by: decisionNullableString(todo.claimed_by, "todo.claimed_by"),
+    excluded_agents: decisionStringArray(todo.excluded_agents, "todo.excluded_agents"),
+  };
+}
+
+function decodeDecisionLease(value: unknown): AcquireDecisionLease | null {
+  if (value === null || value === undefined) return null;
+  const lease = requireJsonObject(value, "task lease acquire decision lease");
+  return {
+    present: decisionBoolean(lease.present, "lease.present"),
+    active: decisionBoolean(lease.active, "lease.active"),
+    effective: decisionBoolean(lease.effective, "lease.effective"),
+    status: decisionNullableString(lease.status, "lease.status"),
+    owner: decisionNullableString(lease.owner, "lease.owner"),
+    idempotency_key: decisionNullableString(
+      lease.idempotency_key,
+      "lease.idempotency_key",
+    ),
+    version: decisionInteger(lease.version, "lease.version"),
+    lease_epoch: decisionInteger(lease.lease_epoch, "lease.lease_epoch"),
+    write_scopes: decisionStringArray(lease.write_scopes, "lease.write_scopes"),
+    acquire_ttl_seconds: optionalInteger(
+      lease.acquire_ttl_seconds,
+      "lease.acquire_ttl_seconds",
+    ),
+  };
+}
+
+function decodeAcquireDecisionInput(value: unknown): AcquireDecisionInput {
+  const input = requireJsonObject(value, "task lease acquire decision");
+  const command = requireJsonObject(input.command, "task lease acquire decision command");
+  const rawOtherLeases = input.other_leases;
+  if (!Array.isArray(rawOtherLeases)) {
+    throw new EffectRuntimeRequestError("other_leases must be an array");
+  }
+  const otherLeases = rawOtherLeases.map((raw, index) => {
+    const lease = requireJsonObject(raw, `other_leases[${index}]`);
+    return {
+      todo_id: stringValue(lease.todo_id, `other_leases[${index}].todo_id`),
+      active: decisionBoolean(lease.active, `other_leases[${index}].active`),
+      effective: decisionBoolean(lease.effective, `other_leases[${index}].effective`),
+      write_scopes: decisionStringArray(
+        lease.write_scopes,
+        `other_leases[${index}].write_scopes`,
+      ),
+    };
+  });
+  return {
+    handoff_mode: stringValue(input.handoff_mode, "handoff_mode"),
+    registered_agents: decisionStringArray(
+      input.registered_agents,
+      "registered_agents",
+    ),
+    todo: decodeDecisionTodo(input.todo),
+    lease: decodeDecisionLease(input.lease),
+    other_leases: otherLeases,
+    command: {
+      owner: stringValue(command.owner, "command.owner"),
+      idempotency_key: stringValue(
+        command.idempotency_key,
+        "command.idempotency_key",
+      ),
+      ttl_seconds: decisionInteger(command.ttl_seconds, "command.ttl_seconds"),
+      write_scopes: decisionStringArray(
+        command.write_scopes,
+        "command.write_scopes",
+      ),
+      expected_version: optionalInteger(
+        command.expected_version,
+        "command.expected_version",
+      ),
+    },
+  };
+}
+
+function acquireDecisionResult(
+  outcome: AcquireDecision["outcome"],
+  code: string,
+  options: {
+    idempotent?: boolean;
+    nextLease?: JsonObject | null;
+    conflictIndexes?: number[];
+  } = {},
+): AcquireDecision {
+  return {
+    outcome,
+    code,
+    idempotent: options.idempotent ?? false,
+    next_lease: options.nextLease ?? null,
+    conflict_indexes: options.conflictIndexes ?? [],
+  };
+}
+
+/**
+ * Canonical pure decision for both local file acquire and shared coordination.
+ * Locking, source revalidation, persistence, provider CAS, and receipts stay in
+ * their respective execution layers.
+ */
+export function evaluateTaskLeaseAcquireDecision(value: unknown): AcquireDecision {
+  const input = decodeAcquireDecisionInput(value);
+  const { command, lease } = input;
+  if (lease !== null && lease.active && (!lease.present || lease.status === "released")) {
+    return acquireDecisionResult("rejected", "invalid_lease_snapshot");
+  }
+  if (input.handoff_mode === "soft_claim") {
+    return acquireDecisionResult("rejected", "handoff_mode_forbids_lease");
+  }
+  const rejection = ownerRejection(
+    input.todo ?? undefined,
+    command.owner || null,
+    input.registered_agents,
+  );
+  if (rejection !== null) {
+    return acquireDecisionResult("rejected", rejection);
+  }
+  const actualVersion = lease !== null && lease.present ? lease.version : 0;
+  if (
+    command.expected_version !== null && command.expected_version !== actualVersion
+  ) {
+    return acquireDecisionResult("conflict", "version_mismatch");
+  }
+  if (lease !== null && lease.present && lease.active && lease.effective) {
+    if (
+      lease.owner === command.owner &&
+      lease.idempotency_key === command.idempotency_key
+    ) {
+      const scopesMatch = equalScopeSets(lease.write_scopes, command.write_scopes);
+      const ttlMatches = lease.acquire_ttl_seconds === null ||
+        lease.acquire_ttl_seconds === command.ttl_seconds;
+      if (!scopesMatch || !ttlMatches) {
+        return acquireDecisionResult("rejected", "idempotency_key_reuse");
+      }
+      return acquireDecisionResult("no_change", "lease_acquire_replay", {
+        idempotent: true,
+      });
+    }
+    return acquireDecisionResult("conflict", "todo_lease_conflict");
+  }
+  if (
+    lease !== null && lease.present &&
+    lease.idempotency_key === command.idempotency_key
+  ) {
+    return acquireDecisionResult("rejected", "idempotency_key_reuse");
+  }
+  const conflictIndexes = input.other_leases.flatMap((other, index) =>
+    other.active && other.effective &&
+      writeScopesOverlap(command.write_scopes, other.write_scopes)
+      ? [index]
+      : []
+  );
+  if (conflictIndexes.length > 0) {
+    return acquireDecisionResult("conflict", "write_scope_conflict", {
+      conflictIndexes,
+    });
+  }
+  return acquireDecisionResult("apply", "lease_acquire", {
+    nextLease: {
+      present: true,
+      active: true,
+      status: "active",
+      owner: command.owner,
+      idempotency_key: command.idempotency_key,
+      version: actualVersion + 1,
+      lease_epoch: (lease?.lease_epoch ?? 0) + 1,
+      write_scopes: [...command.write_scopes],
+      acquire_ttl_seconds: command.ttl_seconds,
+    },
+  });
+}
+
 async function currentSourceReceipt(receipt: SourceReceipt): Promise<SourceReceipt> {
   try {
     const bytes = await readFile(receipt.path);
@@ -716,36 +974,33 @@ function conflictPayload(
   };
 }
 
-async function activeConflicts(
+async function otherLeaseFacts(
   request: AcquireRequest,
   at: Date,
-): Promise<JsonObject[]> {
-  const conflicts: JsonObject[] = [];
+): Promise<Array<{ decision: AcquireDecisionOtherLease; payload: JsonObject }>> {
+  const facts: Array<{ decision: AcquireDecisionOtherLease; payload: JsonObject }> = [];
   for (const path of await leaseFiles(taskLeaseDirectory(request))) {
     const lease = await readLease(path);
     if (!leaseIsActive(lease, at) || lease === null) continue;
     const leaseTodoId = normalizeTodoId(lease.todo_id, "lease.todo_id");
     if (leaseTodoId === request.todo_id) continue;
     const leaseOwner = normalizeAgent(lease.owner);
-    if (
-      ownerRejection(
+    const effective = ownerRejection(
         request.authority.todos.get(leaseTodoId),
         leaseOwner,
         request.authority.registered_agents,
-      ) !== null
-    ) {
-      continue;
-    }
-    if (
-      writeScopesOverlap(
-        request.write_scopes,
-        normalizeWriteScopes(lease.write_scopes),
-      )
-    ) {
-      conflicts.push(conflictPayload(lease, path));
-    }
+      ) === null;
+    facts.push({
+      decision: {
+        todo_id: leaseTodoId,
+        active: true,
+        effective,
+        write_scopes: normalizeWriteScopes(lease.write_scopes),
+      },
+      payload: conflictPayload(lease, path),
+    });
   }
-  return conflicts;
+  return facts;
 }
 
 function transitionError(
@@ -756,6 +1011,19 @@ function transitionError(
   conflicts: readonly JsonObject[] = [],
   idempotencyReuseKind: "retired" | "acquire_parameters" = "acquire_parameters",
 ): TaskLeaseAcquireError {
+  if (code === "handoff_mode_forbids_lease") {
+    return new TaskLeaseAcquireError(
+      "goal handoff mode 'soft_claim' forbids task lease acquire; " +
+        "release and inspect remain available for legacy leftovers",
+      code,
+      {
+        goal_id: request.goal_id,
+        todo_id: request.todo_id,
+        action: "acquire",
+        handoff_mode: request.authority.handoff_mode,
+      },
+    );
+  }
   if (code === "version_mismatch") {
     const actual = leaseVersion(lease);
     return new TaskLeaseAcquireError(
@@ -896,35 +1164,7 @@ function failureEnvelope(
   };
 }
 
-function validateAcquireAuthority(request: AcquireRequest): TodoFact {
-  if (request.authority.handoff_mode === "soft_claim") {
-    throw new TaskLeaseAcquireError(
-      "goal handoff mode 'soft_claim' forbids task lease acquire; " +
-        "release and inspect remain available for legacy leftovers",
-      "handoff_mode_forbids_lease",
-      {
-        goal_id: request.goal_id,
-        todo_id: request.todo_id,
-        action: "acquire",
-        handoff_mode: request.authority.handoff_mode,
-      },
-    );
-  }
-  if (!request.authority.registered_agents.includes(request.owner)) {
-    const registered = request.authority.registered_agents;
-    const message = registered.length === 0
-      ? `task lease owner='${request.owner}' cannot be used because goal ` +
-        `'${request.goal_id}' has no coordination.registered_agents list. ` +
-        "Register this peer identity first: loopx configure-goal --goal-id " +
-        `${request.goal_id} --registered-agent ${request.owner} --execute`
-      : `task lease owner='${request.owner}' is not registered for goal ` +
-        `'${request.goal_id}'; registered_agents=${registered.join(", ")}`;
-    throw new TaskLeaseAcquireError(message, "owner_not_registered", {
-      goal_id: request.goal_id,
-      todo_id: request.todo_id,
-      owner: request.owner,
-    });
-  }
+function validateAcquireAuthority(request: AcquireRequest): TodoFact | null {
   if (request.authority.todo_projection_error !== null) {
     throw new TaskLeaseAcquireError(
       request.authority.todo_projection_error.message,
@@ -932,16 +1172,7 @@ function validateAcquireAuthority(request: AcquireRequest): TodoFact {
       request.authority.todo_projection_error.payload,
     );
   }
-  const todo = request.authority.todos.get(request.todo_id);
-  const rejectionCode = ownerRejection(
-    todo,
-    request.owner,
-    request.authority.registered_agents,
-  );
-  if (rejectionCode !== null) {
-    throw ownerFailure(rejectionCode, request, todo);
-  }
-  return todo as TodoFact;
+  return request.authority.todos.get(request.todo_id) ?? null;
 }
 
 function acquireEffectId(request: AcquireRequest): string {
@@ -951,73 +1182,6 @@ function acquireEffectId(request: AcquireRequest): string {
     todo_id: request.todo_id,
     turn_instance_id: request.idempotency_key,
   }).effect_id;
-}
-
-function replayExistingAcquire(
-  request: AcquireRequest,
-  existing: LeaseRecord,
-  leasePath: string,
-): TaskLeaseAcquireEnvelope {
-  const existingTtl = leaseInteger(existing, "acquire_ttl_seconds");
-  const matches = equalScopeSets(
-    normalizeWriteScopes(existing.write_scopes),
-    request.write_scopes,
-  ) && (existingTtl === null || existingTtl === request.ttl_seconds);
-  if (!matches) {
-    throw transitionError(
-      "idempotency_key_reuse",
-      request,
-      existing,
-      leasePath,
-      [],
-      "acquire_parameters",
-    );
-  }
-  return successEnvelope(
-    request,
-    existing,
-    leasePath,
-    acquireEffectId(request),
-    true,
-  );
-}
-
-function resolveExistingAcquire(
-  request: AcquireRequest,
-  todo: TodoFact,
-  existing: LeaseRecord | null,
-  leasePath: string,
-  version: number,
-  active: boolean,
-): TaskLeaseAcquireEnvelope | null {
-  if (request.expected_version !== null && request.expected_version !== version) {
-    throw transitionError("version_mismatch", request, existing, leasePath);
-  }
-  const existingEffective = existing !== null && active && ownerRejection(
-    todo,
-    normalizeAgent(existing.owner),
-    request.authority.registered_agents,
-  ) === null;
-  if (!existingEffective || existing === null) {
-    if (existing !== null && existing.idempotency_key === request.idempotency_key) {
-      throw transitionError(
-        "idempotency_key_reuse",
-        request,
-        existing,
-        leasePath,
-        [],
-        active ? "acquire_parameters" : "retired",
-      );
-    }
-    return null;
-  }
-  if (
-    normalizeAgent(existing.owner) !== request.owner ||
-    existing.idempotency_key !== request.idempotency_key
-  ) {
-    throw transitionError("todo_lease_conflict", request, existing, leasePath);
-  }
-  return replayExistingAcquire(request, existing, leasePath);
 }
 
 async function commitAcquire(
@@ -1036,18 +1200,81 @@ async function commitAcquire(
   const version = leaseVersion(existing);
   const epoch = leaseEpoch(existing);
   const active = leaseIsActive(existing, at);
-  const replay = resolveExistingAcquire(
-    request,
+  const existingEffective = existing !== null && active && ownerRejection(
+    todo ?? undefined,
+    normalizeAgent(existing.owner),
+    request.authority.registered_agents,
+  ) === null;
+  const otherLeases = await otherLeaseFacts(request, at);
+  const decision = evaluateTaskLeaseAcquireDecision({
+    handoff_mode: request.authority.handoff_mode,
+    registered_agents: [...request.authority.registered_agents],
     todo,
-    existing,
-    leasePath,
-    version,
-    active,
-  );
-  if (replay !== null) return replay;
-  const conflicts = await activeConflicts(request, at);
-  if (conflicts.length > 0) {
-    throw transitionError("write_scope_conflict", request, existing, leasePath, conflicts);
+    lease: existing === null
+      ? null
+      : {
+        present: true,
+        active,
+        effective: existingEffective,
+        status: typeof existing.status === "string" ? existing.status : null,
+        owner: normalizeAgent(existing.owner),
+        idempotency_key: typeof existing.idempotency_key === "string"
+          ? existing.idempotency_key
+          : null,
+        version,
+        lease_epoch: epoch,
+        write_scopes: normalizeWriteScopes(existing.write_scopes),
+        acquire_ttl_seconds: leaseInteger(existing, "acquire_ttl_seconds"),
+      },
+    other_leases: otherLeases.map((item) => item.decision),
+    command: {
+      owner: request.owner,
+      idempotency_key: request.idempotency_key,
+      ttl_seconds: request.ttl_seconds,
+      write_scopes: [...request.write_scopes],
+      expected_version: request.expected_version,
+    },
+  });
+  if (decision.outcome === "no_change") {
+    if (existing === null) {
+      throw new EffectRuntimeRequestError(
+        "task-lease acquire decision returned replay without an existing lease",
+      );
+    }
+    return successEnvelope(
+      request,
+      existing,
+      leasePath,
+      acquireEffectId(request),
+      true,
+    );
+  }
+  if (decision.outcome !== "apply") {
+    if (PERMISSION_DENIED_CODES.has(decision.code)) {
+      throw ownerFailure(decision.code, request, todo ?? undefined);
+    }
+    const conflicts = decision.conflict_indexes.map((index) => {
+      const fact = otherLeases[index];
+      if (fact === undefined) {
+        throw new EffectRuntimeRequestError(
+          "task-lease acquire decision returned an invalid conflict index",
+        );
+      }
+      return fact.payload;
+    });
+    throw transitionError(
+      decision.code,
+      request,
+      existing,
+      leasePath,
+      conflicts,
+      active ? "acquire_parameters" : "retired",
+    );
+  }
+  if (decision.next_lease === null) {
+    throw new EffectRuntimeRequestError(
+      "task-lease acquire decision returned apply without next_lease",
+    );
   }
 
   const acquiredAt = utcIsoformat(at);
@@ -1059,8 +1286,11 @@ async function commitAcquire(
     idempotency_key: request.idempotency_key,
     write_scopes: [...request.write_scopes],
     acquire_ttl_seconds: request.ttl_seconds,
-    version: version + 1,
-    lease_epoch: epoch + 1,
+    version: decisionInteger(decision.next_lease.version, "next_lease.version"),
+    lease_epoch: decisionInteger(
+      decision.next_lease.lease_epoch,
+      "next_lease.lease_epoch",
+    ),
     acquired_at: acquiredAt,
     updated_at: acquiredAt,
     expires_at: utcIsoformat(

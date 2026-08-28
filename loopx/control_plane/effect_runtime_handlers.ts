@@ -86,7 +86,11 @@ import {
   qualifyActionSelection,
 } from "./work_items/action_portfolio.ts";
 import { projectQuotaPlanningHorizon } from "./work_items/planning_horizon.ts";
-import { executeTaskLeaseAcquire } from "./work_items/task_lease_acquire.ts";
+import {
+  evaluateTaskLeaseAcquireDecision,
+  evaluateTaskLeaseWriteScopesOverlap,
+  executeTaskLeaseAcquire,
+} from "./work_items/task_lease_acquire.ts";
 import {
   projectTodoPlanningInventory,
   projectTodoPlanningInventoryDetail,
@@ -310,7 +314,9 @@ export function createEffectRuntimeHandlers(
     ],
     ["quota.spend.commit", evaluateQuotaSpendCommit],
     ["quota.settlement.read", readQuotaSettlement],
+    ["task_lease.acquire.decide", evaluateTaskLeaseAcquireDecision],
     ["task_lease.acquire.native", executeTaskLeaseAcquire],
+    ["task_lease.write_scopes.overlap", evaluateTaskLeaseWriteScopesOverlap],
     [
       "effect.program_from_ordered_steps",
       (params) => effectProgramFromOrderedSteps(

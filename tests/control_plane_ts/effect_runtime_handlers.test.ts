@@ -59,3 +59,42 @@ test("runtime exposes the native task-lease acquire transaction", async () => {
     /authority must be an object/,
   );
 });
+
+test("runtime exposes the canonical task-lease acquire decision", async () => {
+  const result = await dispatchEffectRuntimeMethod(
+    handlers,
+    "task_lease.acquire.decide",
+    {
+      handoff_mode: "hard_lease",
+      registered_agents: ["agent-a"],
+      todo: {
+        todo_id: "todo-a",
+        status: "open",
+        claimed_by: null,
+        excluded_agents: [],
+      },
+      lease: null,
+      other_leases: [],
+      command: {
+        owner: "agent-a",
+        idempotency_key: "lease-a",
+        ttl_seconds: 600,
+        write_scopes: [],
+        expected_version: null,
+      },
+    },
+  ) as Record<string, unknown>;
+
+  assert.equal(result.outcome, "apply");
+  assert.equal(result.code, "lease_acquire");
+});
+
+test("runtime exposes the canonical task-lease write-scope rule", async () => {
+  const result = await dispatchEffectRuntimeMethod(
+    handlers,
+    "task_lease.write_scopes.overlap",
+    { left: ["docs/**"], right: ["docs/reference/rfc.md"] },
+  ) as Record<string, unknown>;
+
+  assert.equal(result.overlap, true);
+});

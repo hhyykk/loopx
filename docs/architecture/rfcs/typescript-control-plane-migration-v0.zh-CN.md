@@ -255,6 +255,8 @@ window 仍需 differential proof 时才保留 characterization corpus；引入�
   重验一次 source。尚未迁移的 Python renew、transfer、release 与 fence writer 会先
   取得同一个 exclusive-create lock，再取得 legacy kernel lock，因此 cutover 期间只有
   一个跨 runtime 串行化点。
+  NoKV/shared-goal coordination executor 通过 typed Python adapter 到达同一份纯 acquire
+  decision，因此 provider seam 后不会残留第二份 Python acquire rule engine。
 
 Quota-spend cutover 删除了 Python spend-event builder 与三文件 writer。它的 bounded
 facade 会在 quota CLI 和剩余 run-index writer 进程内执行 transaction 后退出；在此
@@ -279,9 +281,9 @@ lock 也随之退出。Vision checkpointing 属于不同的 refresh/writeback �
 | --- | --- |
 | Canonical owner | 迁移前由 Python 拥有 atomic acquire provider，TypeScript 在外层做 settlement reduction。迁移后由 `task_lease_acquire.ts` 拥有完整带锁 transaction 与 canonical result。 |
 | 删除的旧语义代码 | 973 行产品代码，包括 Python provider/acquire 组合与 conflict 路径、Python↔TS settlement bridge/reducer 及 handler，以及 legacy CLI settlement projection。 |
-| 新增的 bridge 代码 | 522 行有界的 compatibility 产品代码，包括 compact Python authority projection 加一次 managed-runtime request、compatibility import，以及 Python/TypeScript 共享锁协议。顶层 CLI 进入 Node 后删除 projection 与 import；其余 lease writer 与 fence 迁移后删除 dual lock。 |
+| 新增的 bridge 代码 | 约 641 行 gross、有界的 compatibility 产品代码，包括 compact Python authority projection 加一次 managed-runtime request、compatibility import、Python/TypeScript 共享锁协议，以及 typed NoKV/coordination decision adapter。顶层 CLI 进入 Node 后删除本地 projection 与 import；其余 lease writer 与 fence 迁移后删除 dual lock；coordination executor 进入 native runtime 后删除该 adapter。 |
 | 跨 runtime 调用 | 公开 acquire 与 replay 路径从两次 request/response reduction 降为一次 native transaction request/response。 |
-| 产品代码净增减 | 产品代码 +1,718/−977 行，净增 741 行。Test 与 fixture 单独计为 +806/−1,080，build configuration 为 +4。 |
+| 产品代码净增减 | 产品代码 +2,088/−1,076 行，净增 1,012 行。Test 与 fixture 单独计为 +878/−1,075，build configuration 为 +4。 |
 | 迁移 scaffolding | 删除 task-lease settlement characterization、fault-matrix、incident-replay 及其 fixture 切片。以 native invariant、crash/retry、direct-CLI、adapter 与 cross-runtime lock 测试取代；不再保留 migration-only worker。 |
 | Facade 退出 | 本次删除 semantic facade、atomic provider、settlement operation 与 legacy CLI projection。仅保留 source/transport compatibility 与 cross-runtime serialization，删除条件如上。 |
 | 正确性与性能 | 公开 CLI 在 5 个 acquire/replay/failure 场景与旧实现精确匹配；20 个 focused native test、207 个 Node test、4,615 个 Python test（12 个 skip）、crash/retry 与 packaged-wheel smoke 通过。在匹配的 16 样本 full-CLI 测试中，happy-path p95 从 1,593.7 ms 变为 1,167.8 ms，replay p95 从 513.3 ms 变为 445.4 ms；中位数分别为 364.6→425.6 ms 与 343.3→351.9 ms。 |

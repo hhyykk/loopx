@@ -296,6 +296,9 @@ shipped Stage 2B cutovers are in place:
   and immediately before the write. Retained Python renew, transfer, release,
   and fence writers acquire the same exclusive-create lock before their legacy
   kernel lock, so the cutover has one cross-runtime serialization point.
+  The NoKV/shared-goal coordination executor reaches the same pure acquire
+  decision through a typed Python adapter, so the cutover does not leave a
+  second Python acquire rule engine behind the provider seam.
 
 The quota-spend cutover removes the Python spend-event builder and three-file
 writer. Its bounded facade exits when the quota CLI and remaining run-index
@@ -324,9 +327,9 @@ delivery-selection lifecycle phase.
 | --- | --- |
 | Canonical owner | Before: Python owned the atomic acquire provider and TypeScript reduced settlement around it. After: `task_lease_acquire.ts` owns the complete locked transaction and canonical result. |
 | Legacy semantic code deleted | 973 product LOC: the Python provider/acquire composition and conflict path, the Python↔TS settlement bridge/reducer and handler, and legacy CLI settlement projection. |
-| Bridge code added | 522 product LOC are bounded compatibility code: compact Python authority projection plus one managed-runtime request, the compatibility import, and the shared Python/TypeScript lock protocol. The projection and import exit with the top-level Node CLI; the dual lock exits with the remaining lease writers and fences. |
+| Bridge code added | About 641 gross product LOC are bounded compatibility code: compact Python authority projection plus one managed-runtime request, the compatibility import, the shared Python/TypeScript lock protocol, and the typed NoKV/coordination decision adapter. The local projection/import exit with the top-level Node CLI; the dual lock exits with the remaining lease writers and fences; the coordination adapter exits when that executor moves to the native runtime. |
 | Cross-runtime calls | Public acquire and replay paths move from two request/response reductions to one native transaction request/response. |
-| Product-code net change | Product code is +1,718/−977 LOC, net +741. Tests and fixtures are reported separately at +806/−1,080; build configuration is +4. |
+| Product-code net change | Product code is +2,088/−1,076 LOC, net +1,012. Tests and fixtures are reported separately at +878/−1,075; build configuration is +4. |
 | Migration scaffolding | The task-lease settlement characterization, fault-matrix, incident-replay, and fixture slices were deleted. Native invariant, crash/retry, direct-CLI, adapter, and cross-runtime lock tests replace them; no migration-only worker remains. |
 | Facade exit | The semantic facade, atomic provider, settlement operation, and legacy CLI projection exit in this cutover. Only source/transport compatibility and cross-runtime serialization remain, with the deletion triggers above. |
 | Correctness and performance | The public CLI matched the prior implementation in five acquire/replay/failure scenarios; 20 focused native tests, the 207-test Node suite, 4,615 Python tests (12 skipped), crash/retry and packaged-wheel smokes pass. In a matched 16-sample full-CLI run, happy-path p95 moved from 1,593.7 ms to 1,167.8 ms and replay p95 from 513.3 ms to 445.4 ms; medians were 364.6→425.6 ms and 343.3→351.9 ms respectively. |
