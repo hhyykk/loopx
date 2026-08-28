@@ -308,7 +308,9 @@ export async function acquireFileMutationLock(
             }),
             "utf8",
           );
-          await handle.sync();
+          // The lock coordinates live processes only. Persisting it across a
+          // system crash adds latency and can only leave stale coordination
+          // state; close still publishes the owner bytes before work begins.
         } finally {
           await handle.close();
         }

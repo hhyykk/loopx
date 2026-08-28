@@ -254,6 +254,17 @@ test("commit owns the repairable run artifacts and exact-effect replay", async (
   );
   assert.match(await readFile(markdownPath, "utf8"), /LoopX Quota Monitor Poll/);
   assert.equal((await readFile(indexPath, "utf8")).trim().split("\n").length, 1);
+  const receiptPath = join(
+    runtimeRoot,
+    "goals",
+    goalId,
+    "runs",
+    ".transactions",
+    "quota-monitor-poll",
+    `${createHash("sha256").update(String(params.effect_id)).digest("hex").slice(0, 24)}.json`,
+  );
+  assert.equal(JSON.parse(await readFile(receiptPath, "utf8")).status, "committed");
+  await assert.rejects(() => readFile(`${receiptPath}.committed`), { code: "ENOENT" });
 
   const replayed = await evaluateQuotaMonitorPollCommit({
     ...params,
@@ -266,11 +277,22 @@ test("commit owns the repairable run artifacts and exact-effect replay", async (
   assert.equal(replayed.status, "replayed");
   assert.equal(replayed.payload.appended, false);
 
+  const committedReceipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  await Promise.all([
+    writeFile(
+      receiptPath,
+      `${JSON.stringify({ ...committedReceipt, status: "prepared" }, null, 2)}\n`,
+      "utf8",
+    ),
+    writeFile(`${receiptPath}.committed`, JSON.stringify(committedReceipt), "utf8"),
+  ]);
   await Promise.all([unlink(markdownPath), unlink(indexPath)]);
   const repaired = await evaluateQuotaMonitorPollCommit(params);
   assert.equal(repaired.status, "repaired");
   assert.equal(repaired.payload.transaction_repaired, true);
   assert.equal((await readFile(indexPath, "utf8")).trim().split("\n").length, 1);
+  assert.equal(JSON.parse(await readFile(receiptPath, "utf8")).status, "committed");
+  await assert.rejects(() => readFile(`${receiptPath}.committed`), { code: "ENOENT" });
 
   const conflict = await evaluateQuotaMonitorPollCommit({ ...params, source: "controller" });
   assert.equal(conflict.status, "conflict");
@@ -574,6 +596,22 @@ test("retry repairs a truncated owned index tail and rejects artifact drift", as
   });
   const written = await evaluateQuotaMonitorPollCommit(params);
   const indexPath = String(written.payload.index_path);
+  await Promise.all([
+    unlink(String(written.payload.json_path)),
+    unlink(String(written.payload.markdown_path)),
+  ]);
+
+  const repairedArtifacts = await evaluateQuotaMonitorPollCommit(params);
+  assert.equal(repairedArtifacts.status, "repaired");
+  assert.equal(
+    JSON.parse(await readFile(String(written.payload.json_path), "utf8")).classification,
+    "quota_monitor_poll",
+  );
+  assert.match(
+    await readFile(String(written.payload.markdown_path), "utf8"),
+    /LoopX Quota Monitor Poll/,
+  );
+
   const index = await readFile(indexPath);
   await writeFile(indexPath, index.subarray(0, index.length - 7));
 

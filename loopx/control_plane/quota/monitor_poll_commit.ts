@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import type { JsonObject } from "../effect_program.ts";
@@ -1240,6 +1240,10 @@ function transactionPath(runsDir: string, effectId: string): string {
   );
 }
 
+function committedReceiptStagePath(receiptPath: string): string {
+  return `${receiptPath}.committed`;
+}
+
 export async function quotaMonitorPollIndexDigest(
   indexPath: string,
 ): Promise<string | null> {
@@ -1562,18 +1566,39 @@ async function ensureJsonArtifact(path: string, expected: JsonObject): Promise<b
   return false;
 }
 
-async function ensureArtifacts(receipt: DurableMonitorReceipt): Promise<boolean> {
-  let repaired = await ensureJsonArtifact(receipt.json_path, receipt.record);
-  const markdown = await readOptionalText(receipt.markdown_path);
+async function ensureMarkdownArtifact(
+  path: string,
+  expected: string,
+): Promise<boolean> {
+  const markdown = await readOptionalText(path);
   if (markdown === null) {
-    await atomicWriteText(receipt.markdown_path, receipt.markdown);
-    repaired = true;
-  } else if (markdown !== receipt.markdown) {
+    await atomicWriteText(path, expected);
+    return true;
+  }
+  if (markdown !== expected) {
     throw new EffectRuntimeRequestError(
       "quota monitor-poll Markdown artifact conflicts with its transaction receipt",
       "artifact_conflict",
     );
   }
+  return false;
+}
+
+async function ensureContentArtifacts(
+  receipt: DurableMonitorReceipt,
+): Promise<boolean> {
+  const [jsonRepaired, markdownRepaired] = await Promise.all([
+    ensureJsonArtifact(receipt.json_path, receipt.record),
+    ensureMarkdownArtifact(receipt.markdown_path, receipt.markdown),
+  ]);
+  return jsonRepaired || markdownRepaired;
+}
+
+async function ensureIndexArtifact(
+  receipt: DurableMonitorReceipt,
+  contentRepaired: boolean,
+): Promise<boolean> {
+  let repaired = contentRepaired;
   const bytes = await readOptionalBytes(receipt.index_path);
   let content = bytes?.toString("utf8") ?? null;
   let records: JsonObject[];
@@ -1631,6 +1656,13 @@ async function ensureArtifacts(receipt: DurableMonitorReceipt): Promise<boolean>
   return repaired;
 }
 
+async function ensureArtifacts(receipt: DurableMonitorReceipt): Promise<boolean> {
+  return await ensureIndexArtifact(
+    receipt,
+    await ensureContentArtifacts(receipt),
+  );
+}
+
 function result(
   request: MonitorRequest,
   fingerprint: string,
@@ -1671,6 +1703,9 @@ async function replayDurableReceipt(
   const repaired = await ensureArtifacts(receipt);
   if (receipt.status !== "committed" || repaired) {
     await atomicWriteJson(receiptPath, { ...receipt, status: "committed" });
+    if (receipt.status !== "committed") {
+      await rm(committedReceiptStagePath(receiptPath), { force: true });
+    }
   }
   const replayPayload: JsonObject = {
     ...receipt.payload,
@@ -2047,9 +2082,17 @@ export async function evaluateQuotaMonitorPollCommit(
       markdown: monitorMarkdown(record),
       payload,
     } satisfies DurableMonitorReceipt;
-    await atomicWriteJson(receiptPath, prepared);
-    await ensureArtifacts(prepared);
-    await atomicWriteJson(receiptPath, { ...prepared, status: "committed" });
+    const committedStagePath = committedReceiptStagePath(receiptPath);
+    const [, , contentRepaired] = await Promise.all([
+      atomicWriteJson(receiptPath, prepared),
+      atomicWriteJson(committedStagePath, { ...prepared, status: "committed" }),
+      ensureContentArtifacts(prepared),
+    ]);
+    // The write-ahead receipt and independent artifacts are durable before the
+    // index commit point. A crash on either side of the append is repaired from
+    // the prepared receipt without weakening its pre-append CAS fence.
+    await ensureIndexArtifact(prepared, contentRepaired);
+    await rename(committedStagePath, receiptPath);
     return result(
       effectiveRequest,
       fingerprint,
