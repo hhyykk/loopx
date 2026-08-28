@@ -38,6 +38,12 @@ QUOTA_MONITOR_POLL_COMMIT_RESULT_SCHEMA = (
 )
 
 
+class _NativeMonitorPollRejected(ValueError):
+    def __init__(self, message: str, *, diagnostic_code: str) -> None:
+        super().__init__(message)
+        self.diagnostic_code = diagnostic_code
+
+
 def _now_local() -> str:
     return now_local_iso()
 
@@ -236,7 +242,10 @@ def _native_result(request: Mapping[str, Any]) -> dict[str, Any]:
     try:
         result = effect_runtime_result("quota.monitor_poll.commit", request)
     except EffectRuntimeRejected as exc:
-        raise ValueError(str(exc)) from None
+        raise _NativeMonitorPollRejected(
+            str(exc),
+            diagnostic_code=exc.diagnostic_code,
+        ) from None
     if (
         not isinstance(result, Mapping)
         or result.get("schema_version")
@@ -654,7 +663,11 @@ def record_quota_monitor_poll_for_decision(
     )
     generated_at = _now_local()
 
-    def failure(reason: str) -> dict[str, Any]:
+    def failure(
+        reason: str,
+        *,
+        include_capability_retry: bool = False,
+    ) -> dict[str, Any]:
         payload = _monitor_poll_failure(
             goal_id=goal_id,
             execute=execute,
@@ -668,7 +681,7 @@ def record_quota_monitor_poll_for_decision(
             before=before,
             turn_instance_id=normalized_turn_id,
         )
-        if "monitor-poll requires" in reason:
+        if include_capability_retry:
             retry = _capability_declaration_retry(before)
             if retry:
                 payload["capability_retry"] = retry
@@ -732,7 +745,13 @@ def record_quota_monitor_poll_for_decision(
         else:
             native, after_status = transact()
     except ValueError as exc:
-        return failure(str(exc))
+        return failure(
+            str(exc),
+            include_capability_retry=(
+                isinstance(exc, _NativeMonitorPollRejected)
+                and exc.diagnostic_code == "monitor_poll_admission_rejected"
+            ),
+        )
 
     if native.get("status") == "conflict":
         payload = failure(

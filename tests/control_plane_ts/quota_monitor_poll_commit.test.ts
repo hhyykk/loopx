@@ -9,6 +9,7 @@ import {
   evaluateQuotaMonitorPollCommit,
   QUOTA_MONITOR_POLL_COMMIT_REQUEST_SCHEMA,
 } from "../../loopx/control_plane/quota/monitor_poll_commit.ts";
+import { EffectRuntimeRequestError } from "../../loopx/control_plane/effect_runtime_errors.ts";
 
 const goalId = "monitor-native-goal";
 
@@ -194,7 +195,11 @@ test("admission revalidates due, external, and exact blocked-wait modes", async 
         heartbeat_recommendation: {},
       }),
     })),
-    /requires monitor_quiet_skip, due monitor todo, external monitor observation/,
+    (error: unknown) => {
+      assert.ok(error instanceof EffectRuntimeRequestError);
+      assert.equal(error.code, "monitor_poll_admission_rejected");
+      return true;
+    },
   );
 });
 

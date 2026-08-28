@@ -540,6 +540,7 @@ function admission(request: MonitorRequest): Admission {
   ) {
     throw new EffectRuntimeRequestError(
       "monitor-poll requires monitor_quiet_skip, due monitor todo, external monitor observation, or exact blocked successor wait",
+      "monitor_poll_admission_rejected",
     );
   }
   if (
@@ -549,6 +550,7 @@ function admission(request: MonitorRequest): Admission {
   ) {
     throw new EffectRuntimeRequestError(
       "quota monitor-poll requires monitor_quiet_until_material_transition or exact blocked successor wait mode",
+      "monitor_poll_admission_rejected",
     );
   }
   return { blocked, due, external };
