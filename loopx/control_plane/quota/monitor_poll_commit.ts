@@ -1209,7 +1209,12 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 function runStem(generatedAt: string): string {
-  const stem = generatedAt.replace(/[^0-9A-Za-z-]+/g, "-").replace(/^-+/, "").replace(/-+$/, "");
+  const normalized = generatedAt.replace(/[^0-9A-Za-z-]+/g, "-").replace(/^-+/, "");
+  let trailingHyphenStart = normalized.length;
+  while (trailingHyphenStart > 0 && normalized[trailingHyphenStart - 1] === "-") {
+    trailingHyphenStart -= 1;
+  }
+  const stem = normalized.slice(0, trailingHyphenStart);
   if (!stem) {
     throw new EffectRuntimeRequestError("generated_at cannot form a run artifact name");
   }
