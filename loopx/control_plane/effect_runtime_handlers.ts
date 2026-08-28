@@ -46,6 +46,7 @@ import { evaluateDeliveryWorkspaceCausality } from "./quota/settlement_workspace
 import { evaluateQuotaSpendCommit } from "./quota/spend_commit.ts";
 import { readQuotaSettlement } from "./quota/settlement_readback.ts";
 import { evaluateTurnEnvelope } from "./quota/turn_envelope.ts";
+import { evaluateQuotaMonitorPollCommit } from "./quota/monitor_poll_commit.ts";
 import { evaluateDeliveryWorkspace } from "./agents/delivery_workspace.ts";
 import {
   interpretTurnJournal,
@@ -353,6 +354,7 @@ export function createEffectRuntimeHandlers(
     ["task_lease.lifecycle.decide", evaluateTaskLeaseLifecycleDecision],
     ["task_lease.lifecycle.native", executeTaskLeaseLifecycle],
     ["task_lease.write_scopes.overlap", evaluateTaskLeaseWriteScopesOverlap],
+    ["quota.monitor_poll.commit", evaluateQuotaMonitorPollCommit],
     [
       "effect.program_from_ordered_steps",
       (params) => effectProgramFromOrderedSteps(

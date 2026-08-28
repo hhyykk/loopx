@@ -237,6 +237,96 @@ def test_todo_cli_projects_external_wait_repair_contract(tmp_path: Path) -> None
     )
 
 
+def test_monitor_provider_effect_replay_does_not_advance_counters(
+    tmp_path: Path,
+) -> None:
+    registry, state_file = _write_fixture(tmp_path)
+    kwargs = {
+        "registry_path": registry,
+        "goal_id": GOAL_ID,
+        "execute": True,
+        "generated_at": "2026-08-25T01:00:00Z",
+        "todo_id": MONITOR_ID,
+        "result_hash": "review-v2",
+        "material_change": False,
+        "next_due_at": "2026-08-25T02:00:00Z",
+        "agent_id": AGENT_ID,
+        "monitor_effect_id": "quota-monitor-poll:provider-reentry",
+    }
+
+    first = write_monitor_poll_todo_state(**kwargs)
+    replayed = write_monitor_poll_todo_state(**kwargs)
+
+    assert first is not None
+    assert replayed is not None
+    assert first["monitor_effect_id"] == "quota-monitor-poll:provider-reentry"
+    assert replayed["provider_replayed"] is True
+    assert replayed["consecutive_no_change"] == first["consecutive_no_change"]
+    monitor = _todos(state_file)[MONITOR_ID]
+    assert monitor["monitor_effect_id"] == "quota-monitor-poll:provider-reentry"
+    assert int(monitor["consecutive_no_change"]) == first["consecutive_no_change"]
+
+    with pytest.raises(ValueError, match="monitor effect identity is already bound"):
+        write_monitor_poll_todo_state(
+            **{
+                **kwargs,
+                "result_hash": "review-v3-conflict",
+            }
+        )
+
+    newer = write_monitor_poll_todo_state(
+        **{
+            **kwargs,
+            "generated_at": "2026-08-25T02:00:00Z",
+            "result_hash": "review-v3-newer",
+            "next_due_at": "2026-08-25T03:00:00Z",
+            "monitor_effect_id": "quota-monitor-poll:newer-effect",
+        }
+    )
+    assert newer is not None
+    with pytest.raises(ValueError, match="older than the persisted monitor effect"):
+        write_monitor_poll_todo_state(**kwargs)
+    monitor = _todos(state_file)[MONITOR_ID]
+    assert monitor["result_hash"] == "review-v3-newer"
+    assert monitor["monitor_effect_id"] == "quota-monitor-poll:newer-effect"
+
+
+def test_monitor_provider_effect_replay_reuses_material_successor(
+    tmp_path: Path,
+) -> None:
+    registry, state_file = _write_fixture(tmp_path)
+    successor_text = "Advance the material monitor transition."
+    kwargs = {
+        "registry_path": registry,
+        "goal_id": GOAL_ID,
+        "execute": True,
+        "generated_at": "2026-08-25T01:00:00Z",
+        "todo_id": MONITOR_ID,
+        "result_hash": "review-v3-approved",
+        "material_change": True,
+        "next_agent_todo": successor_text,
+        "next_action_kind": "advance_material_transition",
+        "next_required_capabilities": ["filesystem_write"],
+        "next_continuation_policy": "same_agent_non_delivery",
+        "next_claimed_by": AGENT_ID,
+        "agent_id": AGENT_ID,
+        "monitor_effect_id": "quota-monitor-poll:material-provider-reentry",
+    }
+
+    first = write_monitor_poll_todo_state(**kwargs)
+    replayed = write_monitor_poll_todo_state(**kwargs)
+
+    assert first is not None
+    assert replayed is not None
+    assert replayed["provider_replayed"] is True
+    assert replayed["material_change_generation"] == first[
+        "material_change_generation"
+    ]
+    assert replayed["successor_receipts"] == first["successor_receipts"]
+    assert len(first["successor_receipts"]) == 1
+    assert state_file.read_text(encoding="utf-8").count(successor_text) == 1
+
+
 def test_overlapping_material_polls_recompute_generation_after_wait_baseline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

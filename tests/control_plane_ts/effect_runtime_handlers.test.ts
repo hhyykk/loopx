@@ -138,3 +138,10 @@ test("runtime exposes the canonical task-lease write-scope rule", async () => {
 
   assert.equal(result.overlap, true);
 });
+
+test("runtime boundary registers the quota monitor-poll transaction", async () => {
+  await assert.rejects(
+    dispatchEffectRuntimeMethod(handlers, "quota.monitor_poll.commit", {}),
+    /Quota monitor-poll commit request schema mismatch/,
+  );
+});
