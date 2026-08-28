@@ -563,7 +563,7 @@ function collapsedSummary(value: unknown, limit = 160): string {
 
 function jsonString(value: string): string {
   return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (character) =>
-    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
+    `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`
   );
 }
 
@@ -575,7 +575,7 @@ function pythonJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(pythonJson).join(", ")}]`;
   const object = jsonObject(value);
   if (!object) throw new EffectRuntimeRequestError("monitor target contains a non-JSON value");
-  return `{${Object.keys(object).sort().map((key) =>
+  return `{${Object.keys(object).sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right))).map((key) =>
     `${jsonString(key)}: ${pythonJson(object[key])}`
   ).join(", ")}}`;
 }
@@ -1209,7 +1209,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 function runStem(generatedAt: string): string {
-  const stem = generatedAt.replace(/[^0-9A-Za-z-]+/g, "-").replace(/^-+|-+$/g, "");
+  const stem = generatedAt.replace(/[^0-9A-Za-z-]+/g, "-").replace(/^-+/, "").replace(/-+$/, "");
   if (!stem) {
     throw new EffectRuntimeRequestError("generated_at cannot form a run artifact name");
   }
