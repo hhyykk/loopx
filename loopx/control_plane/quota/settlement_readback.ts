@@ -28,6 +28,7 @@ import {
   receiptBoundMonitorPhase,
   receiptBoundReplayPhase,
 } from "./settlement_phase.ts";
+import { isTurnScopedSettlementOutcome } from "../work_items/delivery_outcome.ts";
 
 export const QUOTA_SETTLEMENT_READBACK_REQUEST_SCHEMA =
   "loopx_quota_settlement_readback_request_v0";
@@ -39,10 +40,6 @@ const TURN_INSTANCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const TODO_ID_PATTERN = /^todo_[a-z0-9_-]{3,64}$/;
 const AGENT_ID_PATTERN = /^[a-z][a-z0-9_.:@-]{0,79}$/;
 const REPLAN_OBLIGATION_ID_PATTERN = /^replan-[a-f0-9]{16}$/;
-const ACCOUNTABLE_DELIVERY_OUTCOMES = new Set([
-  "outcome_progress",
-  "primary_goal_outcome",
-]);
 
 interface ReadbackRequest {
   runtime_root: string;
@@ -228,7 +225,11 @@ function findWriteback(
     String(run.turn_instance_id ?? "") === identity.turn_instance_id &&
     runMatchesBinding(run, identity) &&
     normalizeAgentId(run.agent_id) === identity.agent_id &&
-    ACCOUNTABLE_DELIVERY_OUTCOMES.has(String(run.delivery_outcome ?? ""))
+    isTurnScopedSettlementOutcome(
+      run.delivery_outcome,
+      run.progress_observation,
+      identity.todo_id,
+    )
   ) ?? null;
 }
 
@@ -329,19 +330,26 @@ function inferPersistedIdentity(
     const runAgentId = normalizeAgentId(run.agent_id);
     if (runAgentId && runAgentId !== agentId) continue;
     const classification = String(run.classification ?? "").trim();
-    const deliveryOutcome = String(run.delivery_outcome ?? "").trim();
     if (
       classification === "quota_slot_voided" ||
       classification === "quota_scheduler_ack" ||
       (classification === "quota_monitor_poll" && run.material_change !== true) ||
       (classification === "state_refreshed" &&
-        !ACCOUNTABLE_DELIVERY_OUTCOMES.has(deliveryOutcome))
+        !isTurnScopedSettlementOutcome(
+          run.delivery_outcome,
+          run.progress_observation,
+          normalizeTodoId(run.todo_id),
+        ))
     ) {
       continue;
     }
     if (
       classification !== "quota_slot_spent" &&
-      !ACCOUNTABLE_DELIVERY_OUTCOMES.has(deliveryOutcome)
+      !isTurnScopedSettlementOutcome(
+        run.delivery_outcome,
+        run.progress_observation,
+        normalizeTodoId(run.todo_id),
+      )
     ) {
       return null;
     }
