@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -154,6 +154,22 @@ function request(runtimeRoot: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function appendSpendRun(runtimeRoot: string, extra: Record<string, unknown>) {
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+    `${JSON.stringify({
+      classification: "quota_slot_spent",
+      goal_id: goalId,
+      agent_id: agentId,
+      todo_id: todoId,
+      turn_instance_id: turnId,
+      settlement_identity: identity,
+      effect_ref: `${identity.effect_id}#quota_spend`,
+      ...extra,
+    })}\n`,
+  );
+}
+
 test("reads the complete receipt chain and workspace causality once", async () => {
   const runtimeRoot = await fixture({
     writeback: true,
@@ -195,6 +211,203 @@ test("keeps partial settlement fail-closed without losing durable facts", async 
   assert.equal(result.monitor_phase, "settlement_pending");
   assert.equal(result.replay_phase, "open");
   assert.equal((result.writeback_run as any).delivery_outcome, "outcome_progress");
+});
+
+test("rejects non-ENOENT settlement readback I/O failures", async (t) => {
+  const runtimeRoot = await fixture();
+  const indexPath = join(runtimeRoot, "goals", goalId, "runs", "index.jsonl");
+  await rm(indexPath);
+  await mkdir(indexPath);
+
+  await assert.rejects(
+    readQuotaSettlement(request(runtimeRoot)),
+    (error: unknown) =>
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "EISDIR",
+  );
+});
+
+test("recovers legacy quota commit rows by exact effect ref", async () => {
+  const runtimeRoot = await fixture();
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+    `${JSON.stringify({
+      classification: "quota_slot_spent",
+      goal_id: goalId,
+      agent_id: agentId,
+      effect_ref: `${identity.effect_id}#quota_spend`,
+    })}\n`,
+  );
+
+  const result = await readQuotaSettlement(request(runtimeRoot));
+
+  assert.equal((result.spend_run as any).effect_ref, `${identity.effect_id}#quota_spend`);
+  assert.equal((result.spend as any).result.failure.kind, "receipt_missing");
+});
+
+test("rejects a writeback run persisted under another goal", async (t) => {
+  const runtimeRoot = await fixture();
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+    `${JSON.stringify({
+      classification: "state_refreshed",
+      delivery_outcome: "outcome_progress",
+      goal_id: "other-goal",
+      agent_id: agentId,
+      todo_id: todoId,
+      turn_instance_id: turnId,
+      settlement_identity: identity,
+    })}\n`,
+  );
+
+  const result = await readQuotaSettlement(request(runtimeRoot));
+
+  assert.equal(result.writeback_run, null);
+  assert.equal((result.writeback as any).result.failure.kind, "writeback_missing");
+});
+
+test("does not pair a writeback run from another settlement effect", async () => {
+  const runtimeRoot = await fixture();
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+    `${JSON.stringify({
+      classification: "state_refreshed",
+      delivery_outcome: "outcome_progress",
+      goal_id: goalId,
+      agent_id: agentId,
+      todo_id: todoId,
+      turn_instance_id: turnId,
+      settlement_identity: { ...identity, effect_id: "other-effect" },
+    })}\n`,
+  );
+
+  const result = await readQuotaSettlement(request(runtimeRoot));
+
+  assert.equal(result.writeback_run, null);
+  assert.equal((result.writeback as any).result.failure.kind, "writeback_missing");
+});
+
+test("does not pair a spend run from another settlement effect", async () => {
+  const runtimeRoot = await fixture();
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+    `${JSON.stringify({
+      classification: "quota_slot_spent",
+      goal_id: goalId,
+      agent_id: agentId,
+      todo_id: todoId,
+      turn_instance_id: turnId,
+      effect_ref: "other-effect#quota_spend",
+    })}\n`,
+  );
+
+  const result = await readQuotaSettlement(request(runtimeRoot));
+
+  assert.equal(result.spend_run, null);
+  assert.equal((result.spend as any).result.failure.kind, "receipt_missing");
+});
+
+test("does not pair a spend run when effect identities conflict either way", async () => {
+  for (const row of [
+    {
+      quota_spend_commit: { effect_id: identity.effect_id },
+      effect_ref: "different-effect#quota_spend",
+    },
+    {
+      quota_spend_commit: { effect_id: "different-effect" },
+      effect_ref: `${identity.effect_id}#quota_spend`,
+    },
+  ]) {
+    const runtimeRoot = await fixture();
+    await appendFile(
+      join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+      `${JSON.stringify({
+        classification: "quota_slot_spent",
+        goal_id: goalId,
+        agent_id: agentId,
+        todo_id: todoId,
+        turn_instance_id: turnId,
+        ...row,
+      })}\n`,
+    );
+
+    const result = await readQuotaSettlement(request(runtimeRoot));
+
+    assert.equal(result.spend_run, null);
+    assert.equal((result.spend as any).result.failure.kind, "receipt_missing");
+  }
+});
+
+test("pairs a native spend row only when both persisted effect identities agree", async () => {
+  const runtimeRoot = await fixture({ spend: true });
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+    `${JSON.stringify({
+      classification: "quota_slot_spent",
+      goal_id: goalId,
+      agent_id: agentId,
+      todo_id: todoId,
+      turn_instance_id: turnId,
+      settlement_identity: identity,
+      quota_spend_commit: { effect_id: `${identity.effect_id}#quota_spend` },
+      effect_ref: `${identity.effect_id}#quota_spend`,
+    })}\n`,
+  );
+
+  const result = await readQuotaSettlement(request(runtimeRoot));
+
+  assert.equal((result.spend as any).payload.ok, true);
+  assert.equal(
+    (result.spend_run as any).quota_spend_commit.effect_id,
+    `${identity.effect_id}#quota_spend`,
+  );
+});
+
+test("does not pair a spend row with malformed native effect metadata", async () => {
+  const quotaSpendCommit = null;
+  const runtimeRoot = await fixture();
+  await appendSpendRun(runtimeRoot, { quota_spend_commit: quotaSpendCommit });
+
+  const result = await readQuotaSettlement(request(runtimeRoot));
+
+  assert.equal((result.spend as any).payload.ok, false);
+  assert.equal((result.spend as any).result.failure.kind, "receipt_missing");
+});
+
+test("does not pair a spend row with non-object native effect metadata", async () => {
+  const quotaSpendCommit: unknown[] = [];
+  const runtimeRoot = await fixture();
+  await appendSpendRun(runtimeRoot, { quota_spend_commit: quotaSpendCommit });
+
+  const result = await readQuotaSettlement(request(runtimeRoot));
+
+  assert.equal((result.spend as any).payload.ok, false);
+  assert.equal((result.spend as any).result.failure.kind, "receipt_missing");
+});
+
+test("does not pair a spend row with malformed persisted settlement identity", async () => {
+  for (const settlementIdentity of [null, [], "not-an-identity", {}]) {
+    const runtimeRoot = await fixture();
+    await appendFile(
+      join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+      `${JSON.stringify({
+        classification: "quota_slot_spent",
+        goal_id: goalId,
+        agent_id: agentId,
+        todo_id: todoId,
+        turn_instance_id: turnId,
+        settlement_identity: settlementIdentity,
+        effect_ref: `${identity.effect_id}#quota_spend`,
+      })}\n`,
+    );
+
+    const result = await readQuotaSettlement(request(runtimeRoot));
+
+    assert.equal(result.spend_run, null);
+    assert.equal((result.spend as any).result.failure.kind, "receipt_missing");
+  }
 });
 
 test("accepts only an attributable typed blocker as an outcome-gap writeback", async () => {
@@ -429,5 +642,44 @@ test("rejects malformed request authority at the runtime boundary", async () => 
   await assert.rejects(
     readQuotaSettlement(request(runtimeRoot, { allow_unbound_binding: "yes" })),
     /allow_unbound_binding must be a boolean/,
+  );
+});
+
+test("fails closed on malformed settlement JSONL", async () => {
+  const runtimeRoot = await fixture();
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+    '{"classification":"quota_slot_spent"\n',
+  );
+
+  await assert.rejects(
+    readQuotaSettlement(request(runtimeRoot)),
+    /settlement readback line 2 is malformed/,
+  );
+});
+
+test("fails closed on valid JSON with an invalid settlement record shape", async () => {
+  const runtimeRoot = await fixture();
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "runs", "index.jsonl"),
+    "[]\n",
+  );
+
+  await assert.rejects(
+    readQuotaSettlement(request(runtimeRoot)),
+    /settlement readback line 2 is malformed/,
+  );
+});
+
+test("fails closed on a settlement event schema mismatch", async () => {
+  const runtimeRoot = await fixture();
+  await appendFile(
+    join(runtimeRoot, "goals", goalId, "rollout-event-log.jsonl"),
+    `${JSON.stringify({ schema_version: "future_rollout_event_v1" })}\n`,
+  );
+
+  await assert.rejects(
+    readQuotaSettlement(request(runtimeRoot)),
+    /settlement readback line 2 is malformed/,
   );
 });

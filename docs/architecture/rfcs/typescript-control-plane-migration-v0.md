@@ -221,9 +221,9 @@ specification.
 
 The TypeScript Effect algebra, settlement semantics, Turn-journal
 interpretation, durable checkpoint effect, runtime lifecycle, packaging,
-upgrade fingerprint, and boundary decoder foundation are on `main`. This stage
-is not complete from a cleanup perspective: its Python fine-grained settlement
-surface remains a primary target for the payoff phase.
+upgrade fingerprint, and boundary decoder foundation are on `main`. The Stage 1
+settlement-facade cleanup is complete: Python fine-grained settlement readers
+are removed, while coarse readback/projection remains bounded Stage 2B work.
 
 ### Stage 2A — Bounded rule-owner proofs (shipped; do not repeat as a pattern)
 

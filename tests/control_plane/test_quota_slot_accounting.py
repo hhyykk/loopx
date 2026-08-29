@@ -992,6 +992,75 @@ def test_implicit_heartbeat_spend_replays_exactly_once_after_frontier_moves(
     assert replay["turn_instance_id"] == turn_instance_id
 
 
+@pytest.mark.parametrize(
+    "agent_id",
+    [pytest.param(None, id="missing-agent"), pytest.param(AGENT_B, id="other-agent")],
+)
+def test_effect_ref_replay_requires_same_agent_identity(
+    tmp_path: Path,
+    agent_id: str | None,
+) -> None:
+    runtime = tmp_path / "runtime"
+    effect_ref = "provider-effect-replay-1"
+    _write_run_index(
+        runtime,
+        [
+            {
+                **_run(
+                    "2026-01-01T00:01:00+00:00",
+                    classification="quota_slot_spent",
+                    agent_id=AGENT_A,
+                ),
+                "effect_ref": effect_ref,
+            }
+        ],
+    )
+
+    replay = spend_quota_slot(
+        {"runtime_root": str(runtime)},
+        goal_id=GOAL_ID,
+        execute=True,
+        agent_id=agent_id,
+        effect_ref=effect_ref,
+    )
+
+    assert replay["ok"] is False, replay
+    assert replay["appended"] is False
+    assert replay.get("idempotent_replay") is not True
+    assert replay["reason"] == "effect_ref replay requires the same valid agent identity"
+
+
+def test_effect_ref_replay_accepts_same_agent_identity(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    effect_ref = "provider-effect-replay-2"
+    _write_run_index(
+        runtime,
+        [
+            {
+                **_run(
+                    "2026-01-01T00:01:00+00:00",
+                    classification="quota_slot_spent",
+                    agent_id=AGENT_A,
+                ),
+                "effect_ref": effect_ref,
+            }
+        ],
+    )
+
+    replay = spend_quota_slot(
+        {"runtime_root": str(runtime)},
+        goal_id=GOAL_ID,
+        execute=True,
+        agent_id=AGENT_A,
+        effect_ref=effect_ref,
+    )
+
+    assert replay["ok"] is True, replay
+    assert replay["appended"] is False
+    assert replay["idempotent_replay"] is True
+    assert replay["agent_id"] == AGENT_A
+
+
 def test_turn_scoped_spend_keeps_original_todo_across_successor_reselection(
     tmp_path: Path,
 ) -> None:

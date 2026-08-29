@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +27,6 @@ from .effect_program import (
     settlement_result_payload,
     settlement_step_command,
 )
-
 
 QUOTA_SETTLEMENT_READBACK_REQUEST_SCHEMA = (
     "loopx_quota_settlement_readback_request_v0"
@@ -71,9 +69,6 @@ __all__ = [
     "SettlementStepKind",
     "build_codex_app_settlement_plan",
     "build_turn_scoped_cli_settlement_plan",
-    "find_quota_spend_run_by_effect_ref",
-    "find_settlement_step_event",
-    "find_settlement_writeback",
     "read_heartbeat_settlement",
     "settlement_binding_args",
     "settlement_result_payload",
@@ -191,80 +186,3 @@ def read_heartbeat_settlement(
             else None
         ),
     )
-
-
-def _run_index_records(runtime_root: Path, goal_id: str) -> list[dict[str, Any]]:
-    index_path = runtime_root / "goals" / goal_id / "runs" / "index.jsonl"
-    if not index_path.exists():
-        return []
-    records: list[dict[str, Any]] = []
-    try:
-        lines = index_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict):
-            records.append(record)
-    return records
-
-
-def find_settlement_writeback(
-    runtime_root: Path,
-    identity: SettlementIdentity,
-) -> dict[str, Any] | None:
-    readback = _readback_for_identity(runtime_root, identity)
-    return readback.writeback_run
-
-
-def _readback_for_identity(
-    runtime_root: Path,
-    identity: SettlementIdentity,
-) -> QuotaSettlementReadback:
-    readback = read_heartbeat_settlement(
-        runtime_root,
-        goal_id=identity.goal_id,
-        agent_id=identity.agent_id,
-        todo_id=identity.todo_id,
-        turn_instance_id=identity.turn_instance_id,
-        replan_obligation_id=identity.replan_obligation_id,
-    )
-    if readback is None:
-        raise RuntimeError("exact settlement readback unexpectedly returned not-found")
-    return readback
-
-
-def find_settlement_step_event(
-    runtime_root: Path,
-    identity: SettlementIdentity,
-    *,
-    event_kind: str,
-) -> dict[str, Any] | None:
-    readback = _readback_for_identity(runtime_root, identity)
-    return {
-        "refresh_state": readback.writeback_event,
-        "quota_spend": readback.spend_event,
-        "todo_complete": readback.completion_event,
-    }.get(event_kind)
-
-
-def find_quota_spend_run_by_effect_ref(
-    runtime_root: Path,
-    *,
-    goal_id: str,
-    effect_ref: str,
-) -> dict[str, Any] | None:
-    """Return the durable quota run for one provider-owned effect attempt."""
-
-    normalized_effect_ref = str(effect_ref or "").strip()
-    if not normalized_effect_ref:
-        return None
-    for run in reversed(_run_index_records(runtime_root, goal_id)):
-        if str(run.get("classification") or "") != "quota_slot_spent":
-            continue
-        if str(run.get("effect_ref") or "") == normalized_effect_ref:
-            return run
-    return None
