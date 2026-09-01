@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import zlib
+
+import pytest
 
 from loopx.control_plane.scheduler.scheduler_hint import (
     build_codex_app_scheduler_ack_hint,
@@ -127,6 +130,49 @@ def test_failure_hint_carries_the_same_versioned_native_boundary() -> None:
     payload = _decode(cli_args)
     assert payload["host_facts"] == facts
     assert payload["use_current_hint"] is False
+
+
+def test_native_facts_are_not_dropped_when_cli_args_exceed_legacy_budget() -> None:
+    capabilities = [
+        f"capability-{index}-" + (chr(97 + index) * 140) for index in range(12)
+    ]
+
+    hint = build_codex_app_scheduler_ack_hint(
+        goal_id="goal-native-followup",
+        agent_id="agent-native-followup",
+        applied_rrule="FREQ=MINUTELY;INTERVAL=15",
+        reset_token="reset-native-followup",
+        identity_signature="identity-native-followup",
+        available_capabilities=capabilities,
+        host_match_observed=True,
+        scheduler_host_facts=_host_facts("ack"),
+        scheduler_before=_before(),
+    )
+
+    cli_args = hint["cli_args"]
+    assert sum(map(len, cli_args)) > 2_048
+    assert sum(map(len, cli_args)) <= 8_192
+    assert FACTS_FLAG in cli_args
+    assert _decode(cli_args)["host_facts"] == _host_facts("ack")
+
+
+def test_oversized_native_facts_fail_instead_of_falling_back_to_python() -> None:
+    facts = _host_facts("ack")
+    facts["source"] = "".join(
+        hashlib.sha256(str(index).encode()).hexdigest() for index in range(100)
+    )
+
+    with pytest.raises(ValueError, match="exceed the native CLI transport bound"):
+        build_codex_app_scheduler_ack_hint(
+            goal_id="goal-native-followup",
+            agent_id="agent-native-followup",
+            applied_rrule="FREQ=MINUTELY;INTERVAL=15",
+            reset_token="reset-native-followup",
+            identity_signature="identity-native-followup",
+            host_match_observed=True,
+            scheduler_host_facts=facts,
+            scheduler_before=_before(),
+        )
 
 
 def test_legacy_hint_builder_without_host_facts_keeps_the_compatibility_route() -> None:

@@ -59,7 +59,7 @@ SCHEDULER_HOST_FACTS_CHUNK_FLAG = "--scheduler-host-facts-chunk"
 SCHEDULER_HOST_FACTS_CHUNK_CHARS = 384
 SCHEDULER_HOST_FACTS_MAX_ENCODED_CHARS = 1_536
 SCHEDULER_EXECUTABLE_CLI_ARGS_MAX_ITEMS = 64
-SCHEDULER_EXECUTABLE_CLI_ARGS_MAX_TOTAL_CHARS = 2_048
+SCHEDULER_EXECUTABLE_CLI_ARGS_MAX_TOTAL_CHARS = 8_192
 SCHEDULER_ACK_STALE_HINT_TOLERANCE_MINUTES = 2
 FALLBACK_AUTOMATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SCHEDULER_BASE_IDENTITY_KEYS = (
@@ -272,7 +272,7 @@ def _scheduler_host_followup_transport_args(
     encoded = base64.urlsafe_b64encode(zlib.compress(raw, level=9)).decode("ascii")
     encoded = encoded.rstrip("=")
     if len(encoded) > SCHEDULER_HOST_FACTS_MAX_ENCODED_CHARS:
-        return []
+        raise ValueError("scheduler host facts exceed the native CLI transport bound")
     result: list[str] = []
     for index in range(0, len(encoded), SCHEDULER_HOST_FACTS_CHUNK_CHARS):
         result.extend(
@@ -296,11 +296,7 @@ def _bounded_scheduler_followup_cli_args(
         and sum(map(len, cli_args)) <= SCHEDULER_EXECUTABLE_CLI_ARGS_MAX_TOTAL_CHARS
     ):
         return cli_args
-    compatibility_args = list(cli_args)
-    for _index in range(0, len(native_args), 2):
-        marker_index = compatibility_args.index(SCHEDULER_HOST_FACTS_CHUNK_FLAG)
-        del compatibility_args[marker_index : marker_index + 2]
-    return compatibility_args
+    raise ValueError("native scheduler follow-up CLI arguments exceed the transport bound")
 
 
 def build_codex_app_scheduler_ack_hint(
