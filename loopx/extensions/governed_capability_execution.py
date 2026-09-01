@@ -356,6 +356,30 @@ def _settle_journal_transition_proposals(
     )
 
 
+def _has_unsettled_start_transition(journal: Mapping[str, Any]) -> bool:
+    """Return whether replaying start can still write a monitor transition."""
+
+    provider_result = _mapping(
+        journal.get("provider_result"), "external capability result"
+    )
+    raw_proposals = provider_result.get("transition_proposals")
+    if not isinstance(raw_proposals, list):
+        raise ValueError("external capability transition_proposals must be an array")
+    receipt_ids = {
+        str(receipt["proposal_id"])
+        for receipt in validate_governed_transition_receipts(
+            journal.get("transition_receipts", [])
+        )
+    }
+    return any(
+        str(proposal.get("kind") or "") == "continuous_monitor_upsert"
+        and str(proposal.get("proposal_id") or "") not in receipt_ids
+        for proposal in (
+            _mapping(item, "governed transition proposal") for item in raw_proposals
+        )
+    )
+
+
 def start_governed_external_capability(
     *,
     state_file: str | Path,
@@ -465,6 +489,19 @@ def start_governed_external_capability(
             ):
                 raise ValueError("governed capability invocation replay does not match")
             if current_result is not None:
+                if _has_unsettled_start_transition(current):
+                    _require_admission(
+                        admission,
+                        expected_identity=identity,
+                        require_should_run=True,
+                    )
+                    _reduce_governed_capability_journal(
+                        current,
+                        invocation_id=invocation_id,
+                        phase="inspect",
+                        dry_run=False,
+                        admission=admission,
+                    )
                 _settle_journal_transition_proposals(
                     journal=current,
                     path=path,

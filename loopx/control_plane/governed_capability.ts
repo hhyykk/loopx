@@ -752,10 +752,20 @@ function reduceGovernedCapabilityLifecycle(input: {
     };
   }
 
-  requireCondition(
-    input.packet.admission === null,
-    "governed capability lifecycle admission is only valid before provider execution",
-  );
+  if (input.packet.admission !== null) {
+    requireCondition(
+      phase === "inspect",
+      "governed capability lifecycle admission is only valid while inspecting material authority",
+    );
+    validateGovernedCapabilityAdmission({
+      admission: input.packet.admission,
+      todo_id: requiredString(
+        identity.todo_id,
+        "governed capability settlement identity todo_id",
+      ),
+      todo_contract: operationProfile.todo_contract,
+    });
+  }
 
   const validated = validateProviderResult({
     value: rawResult,

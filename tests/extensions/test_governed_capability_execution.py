@@ -550,6 +550,72 @@ def test_material_start_recovers_an_existing_journal_without_new_run_authority(
     ).splitlines() == ["start"]
 
 
+@pytest.mark.parametrize(
+    "admission_update, error",
+    [
+        ({"should_run": False}, "requires should_run=true"),
+        ({"selected_todo": None}, "selected_todo must be an object"),
+        (
+            {
+                "selected_todo": {
+                    "todo_id": "todo_fixturematerial1",
+                    "role": "agent",
+                    "status": "open",
+                    "action_kind": "different_material_action",
+                    "target_key": "fixture-material:delivery-1",
+                }
+            },
+            "not authorized by selected_todo action_kind",
+        ),
+    ],
+)
+def test_material_start_requires_current_authority_before_recovering_transitions(
+    tmp_path: Path,
+    admission_update: dict[str, object],
+    error: str,
+) -> None:
+    arguments = _start_arguments(tmp_path)
+    started = start_governed_external_capability(**arguments, execute=True)
+    journal_path = tmp_path / "runs" / f"{started['invocation_id']}.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    journal["transition_receipts"] = []
+    journal_path.write_text(json.dumps(journal), encoding="utf-8")
+    arguments["admission"] = {
+        **arguments["admission"],
+        **admission_update,
+    }
+    before = journal_path.read_bytes()
+
+    with pytest.raises((ValueError, EffectRuntimeRejected), match=error):
+        start_governed_external_capability(**arguments, execute=True)
+
+    assert journal_path.read_bytes() == before
+    assert (tmp_path / "provider-calls.txt").read_text(
+        encoding="utf-8"
+    ).splitlines() == ["start"]
+
+
+def test_material_start_recovers_unsettled_transitions_with_current_authority(
+    tmp_path: Path,
+) -> None:
+    arguments = _start_arguments(tmp_path)
+    started = start_governed_external_capability(**arguments, execute=True)
+    journal_path = tmp_path / "runs" / f"{started['invocation_id']}.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    journal["transition_receipts"] = []
+    journal_path.write_text(json.dumps(journal), encoding="utf-8")
+
+    replay = start_governed_external_capability(**arguments, execute=True)
+
+    assert len(replay["transition_receipts"]) == 1
+    assert replay["transition_receipts"][0]["proposal_id"] == (
+        "fixture_monitor_upsert_1"
+    )
+    assert (tmp_path / "provider-calls.txt").read_text(
+        encoding="utf-8"
+    ).splitlines() == ["start"]
+
+
 def test_material_turn_rejects_a_second_distinct_invocation(tmp_path: Path) -> None:
     arguments = _start_arguments(tmp_path)
     first = start_governed_external_capability(**arguments, execute=True)

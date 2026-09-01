@@ -108,6 +108,10 @@ function lifecycleJournal(
     operation_profile: {
       effect_class: authority.effect_class,
       result_schema: authority.result_schema,
+      todo_contract: {
+        action_kinds: ["publish_requirement"],
+        target_key_prefixes: ["requirement:"],
+      },
       transition_contract: transitionContract,
     },
     transaction_plan: {
@@ -188,6 +192,43 @@ test("material admission binds the exact Todo action to the operation", () => {
       },
     }),
     /not authorized by selected_todo target_key/,
+  );
+});
+
+test("material journal inspection revalidates authority before recovery writes", () => {
+  const journal = lifecycleJournal("ready_to_settle", result("succeeded"));
+  const admission = {
+    selected_todo: {
+      todo_id: settlementIdentity.todo_id,
+      role: "agent",
+      status: "open",
+      action_kind: "publish_requirement",
+      target_key: "requirement:REQ-1",
+    },
+  };
+  const reduce = (selectedAdmission: unknown) =>
+    validateGovernedCapabilityResult({
+      ...authority,
+      transition_contract: transitionContract,
+      value: {
+        schema_version: "loopx_governed_capability_lifecycle_packet_v0",
+        phase: "inspect",
+        dry_run: false,
+        canonical_request_digest: providerRequestDigest,
+        admission: selectedAdmission,
+        journal,
+      },
+    });
+
+  assert.equal(reduce(admission).provider_result.status, "succeeded");
+  assert.throws(
+    () => reduce({
+      selected_todo: {
+        ...admission.selected_todo,
+        action_kind: "deploy_release",
+      },
+    }),
+    /not authorized by selected_todo action_kind/,
   );
 });
 
