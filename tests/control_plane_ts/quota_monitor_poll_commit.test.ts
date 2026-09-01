@@ -553,6 +553,22 @@ test("Todo commit fences the full material successor receipt", async (t) => {
     /agent next_todo text must match provider plan/,
   );
 
+  await assert.rejects(
+    () => evaluateQuotaMonitorPollCommit({
+      ...params,
+      phase: "commit",
+      provider_receipt: {
+        ...providerReceipt,
+        next_todos: [{
+          ...successor,
+          todo: "Advance the approved release.",
+          target_key: "public-release:42:other",
+        }],
+      },
+    }),
+    /agent next_todo target_key must match provider plan/,
+  );
+
   const written = await evaluateQuotaMonitorPollCommit({
     ...params,
     phase: "commit",
@@ -563,6 +579,78 @@ test("Todo commit fences the full material successor receipt", async (t) => {
     (written.payload.todo_writeback as Record<string, unknown>).successor_receipts,
     [successor],
   );
+});
+
+test("Todo commit rejects injected defaults in the material successor route", async (t) => {
+  const runtimeRoot = await tempRuntime(t);
+  const params = request({
+    phase: "preflight",
+    runtime_root: runtimeRoot,
+    execute: true,
+    effect_id: "quota-monitor-poll:successor-default-binding",
+    observation: observation({
+      todo_id: "todo_public_monitor",
+      result_hash: "approved-default",
+      material_change: true,
+      next_agent_todo: "Advance the approved release.",
+      next_action_kind: "advance_release",
+    }),
+  });
+  await evaluateQuotaMonitorPollCommit(params);
+  const derivedTarget = `monitor-successor:todo_public_monitor:${createHash("sha256")
+    .update("approved-default", "utf8").digest("hex").slice(0, 16)}`;
+  const successor = {
+    todo_id: "todo_successor002",
+    role: "agent",
+    task_class: "advancement_task",
+    action_kind: "advance_release",
+    continuation_policy: "independent_handoff",
+    unblocks_todo_id: "todo_public_monitor",
+    target_key: derivedTarget,
+  };
+  const providerReceipt = {
+    schema_version: "monitor_poll_todo_writeback_v0",
+    monitor_effect_id: "quota-monitor-poll:successor-default-binding",
+    dry_run: false,
+    goal_id: goalId,
+    todo_id: "todo_public_monitor",
+    target_key: null,
+    result_hash: "approved-default",
+    material_change: true,
+    material_change_generation: 1,
+    consecutive_no_change: 0,
+    last_checked_at: "2026-08-27T12:00:00+08:00",
+    next_due_at: null,
+    cadence: null,
+    todo_update: {},
+    next_todos: [{ ...successor, todo: "Advance the approved release." }],
+    successor_receipts: [successor],
+  };
+
+  for (const mutation of [
+    { task_repository: "git:github.com/attacker/repo" },
+    { required_capabilities: ["network_write"] },
+    { continuation_policy: "same_agent_non_delivery" },
+    { claimed_by: "unplanned-agent" },
+    { target_key: "injected-target" },
+  ]) {
+    await assert.rejects(
+      () => evaluateQuotaMonitorPollCommit({
+        ...params,
+        phase: "commit",
+        provider_receipt: {
+          ...providerReceipt,
+          successor_receipts: [{ ...successor, ...mutation }],
+          next_todos: [{
+            ...successor,
+            ...mutation,
+            todo: "Advance the approved release.",
+          }],
+        },
+      }),
+      /must match provider plan/,
+    );
+  }
 });
 
 test("native commit serializes same-effect replay and distinct-effect CAS", async (t) => {

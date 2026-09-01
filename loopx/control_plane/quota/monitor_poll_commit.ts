@@ -914,6 +914,48 @@ function requireProviderTodoText(
   requireProviderMatch(actual, compactExpected, label);
 }
 
+function derivedMonitorSuccessorTargetKey(todoId: string, resultHash: string): string {
+  return `monitor-successor:${todoId}:${sha256Hex(resultHash).slice(0, 16)}`;
+}
+
+function requireCanonicalSuccessorRoute(
+  value: JsonObject,
+  expected: {
+    task_repository: string | null;
+    required_capabilities: readonly string[];
+    continuation_policy: string;
+    target_key: string;
+    claimed_by: string | null;
+  },
+  label: string,
+): void {
+  requireProviderMatch(
+    optionalString(value.task_repository, `${label} task_repository`)?.trim() ?? null,
+    expected.task_repository,
+    `${label} task_repository`,
+  );
+  requireProviderCapabilityMatch(
+    value.required_capabilities ?? [],
+    expected.required_capabilities,
+    `${label} required_capabilities`,
+  );
+  requireProviderMatch(
+    optionalString(value.continuation_policy, `${label} continuation_policy`)?.trim() ?? null,
+    expected.continuation_policy,
+    `${label} continuation_policy`,
+  );
+  requireProviderMatch(
+    optionalString(value.target_key, `${label} target_key`)?.trim() ?? null,
+    expected.target_key,
+    `${label} target_key`,
+  );
+  requireProviderMatch(
+    optionalString(value.claimed_by, `${label} claimed_by`)?.trim() ?? null,
+    expected.claimed_by,
+    `${label} claimed_by`,
+  );
+}
+
 function validateSuccessorReceipts(
   receipts: readonly JsonObject[],
   nextTodos: readonly JsonObject[],
@@ -979,41 +1021,15 @@ function validateSuccessorReceipts(
       requiredProviderTodoId(nextTodo.todo_id, "agent next_todo todo_id"),
       "agent successor todo_id",
     );
-    if (plan.next_task_repository) {
-      requireProviderMatch(
-        receipt.task_repository,
-        plan.next_task_repository,
-        "agent successor task_repository",
-      );
-    }
-    if (plan.next_required_capabilities.length) {
-      requireProviderCapabilityMatch(
-        receipt.required_capabilities,
-        plan.next_required_capabilities,
-        "agent successor required_capabilities",
-      );
-    }
-    if (plan.next_continuation_policy) {
-      requireProviderMatch(
-        receipt.continuation_policy,
-        plan.next_continuation_policy,
-        "agent successor continuation_policy",
-      );
-    }
-    if (plan.next_target_key) {
-      requireProviderMatch(
-        receipt.target_key,
-        plan.next_target_key,
-        "agent successor target_key",
-      );
-    }
-    if (plan.next_claimed_by) {
-      requireProviderMatch(
-        receipt.claimed_by,
-        plan.next_claimed_by,
-        "agent successor claimed_by",
-      );
-    }
+    const canonicalRoute = {
+      task_repository: plan.next_task_repository,
+      required_capabilities: plan.next_required_capabilities,
+      continuation_policy: plan.next_continuation_policy ?? "independent_handoff",
+      target_key: plan.next_target_key ?? derivedMonitorSuccessorTargetKey(todoId, plan.result_hash),
+      claimed_by: plan.next_claimed_by,
+    };
+    requireCanonicalSuccessorRoute(receipt, canonicalRoute, "agent successor");
+    requireCanonicalSuccessorRoute(nextTodo, canonicalRoute, "agent next_todo");
   }
   if (plan.material_change && plan.next_user_todo) {
     const receipt = receipts[offset];
