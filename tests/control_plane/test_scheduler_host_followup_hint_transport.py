@@ -7,6 +7,7 @@ import zlib
 
 import pytest
 
+from loopx.control_plane.scheduler import scheduler_hint
 from loopx.control_plane.scheduler.scheduler_hint import (
     build_codex_app_scheduler_ack_hint,
     build_codex_app_scheduler_failure_hint,
@@ -173,6 +174,29 @@ def test_oversized_native_facts_fail_instead_of_falling_back_to_python() -> None
             scheduler_host_facts=facts,
             scheduler_before=_before(),
         )
+
+
+def test_native_facts_bind_dash_prefixed_chunks_as_option_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded = ("A" * 384 + "-tail").encode("ascii")
+    monkeypatch.setattr(
+        scheduler_hint.base64,
+        "urlsafe_b64encode",
+        lambda _value: encoded,
+    )
+
+    args = scheduler_hint._scheduler_host_followup_transport_args(
+        _host_facts("ack"),
+        before=_before(),
+        use_current_hint=True,
+    )
+
+    assert args == [
+        FACTS_FLAG,
+        "A" * 384,
+        f"{FACTS_FLAG}=-tail",
+    ]
 
 
 def test_legacy_hint_builder_without_host_facts_keeps_the_compatibility_route() -> None:
