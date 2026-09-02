@@ -138,6 +138,7 @@ replay、receipt 与 settlement。这个架构选择已经落地，不再是假�
 | Scheduler durable state（[#3440](https://github.com/huangruiteng/loopx/pull/3440)） | State normalization、persistence、replay 与一笔粗粒度 transition 由 TS 拥有 | Python compatibility path 仍承担跨 runtime transport 税 |
 | Scheduler heartbeat/state transaction | TypeScript 拥有 receipt freshness、ACK 与 host-failure validation、state construction、failure-cache transition、replay/CAS fencing、atomic write，以及 public JSON/Markdown projection | 生成的 receipt-bound host follow-up 直接进入 native TS CLI；Python 只处理 unbound/manual compatibility call 与 external host mutation |
 | Quota spend commit transaction | TypeScript 拥有最终 spend transition 校验、typed event 构造、effect replay/CAS fencing、crash repair，以及 JSON/Markdown/index write set | Python 仍投影 `should-run` 与 settlement readback facts，并在 CLI/index writer 进程内迁移前持有 legacy cross-writer index lock |
+| Quota void commit transaction | TypeScript 拥有 spend-target resolution、before/after reduction、canonical correction 构造、effect replay/index CAS、prepared-receipt repair，以及 JSON/Markdown/index write set | Python 保留 `should-run` facts、clock/effect identity、legacy cross-writer index lock、一次 transport 与 compatibility entrypoint |
 | Quota monitor-poll commit transaction | TypeScript 拥有 monitor admission 复核、target/event/result 构造、effect replay/index CAS、provider intent，以及可修复的 JSON/Markdown/index persistence | Python 投影 compact `should-run` facts，在最多两次 reduction 之间调用真实 Todo provider，刷新 legacy status，并持有 cross-writer index lock |
 | Runtime decoder（[#3443](https://github.com/huangruiteng/loopx/pull/3443)） | 稳定 primitive decoding 进入一个很小的共享模块；domain decoder 仍留在本地 | 没有理由建设更大的 schema framework |
 | Transaction 兑现（[#3464](https://github.com/huangruiteng/loopx/pull/3464)、[#3481](https://github.com/huangruiteng/loopx/pull/3481) 与 Todo completion） | Turn settlement、quota delivery routing 与 Todo completion 均只跨一个粗粒度 TS boundary；Todo transaction 拥有 identity、replay fence、validation planning/result reduction、continuation/recovery 与 completion metadata | Python 仍执行显式 external provider，并物化 legacy Markdown/event result；其他 domain 仍需各自的 bounded cutover |
@@ -211,7 +212,7 @@ leaf pattern 会增加总复杂度。
 
 按删除杠杆与 runtime traffic 选切口，而不是按翻译难度选。已经交付的 Turn
 settlement、quota delivery routing、Todo completion、scheduler heartbeat、quota
-spend commit 与 task-lease acquire cutover 建立了这一模式。后续候选必须明确剩余
+spend commit、quota void commit 与 task-lease acquire cutover 建立了这一模式。后续候选必须明确剩余
 transaction 及其删除杠杆；剩余 quota settlement readback 只有在能退出或显著收窄
 facade，而不是再增加 leaf handler 时才适合迁移。
 
@@ -253,6 +254,16 @@ window 仍需 differential proof 时才保留 characterization corpus；引入�
   截断 JSONL 尾行，其他损坏仍然 fail closed。
   Python 只保留 `should-run`/settlement fact projection、一次 coarse transport call 与
   legacy kernel index lock；它不再构造或写入 spend event。
+- Quota void commit：TypeScript 在 mutation lock 内定位被引用的 spend，归约
+  before/after accounting decision，构造 canonical correction，并通过闭合的
+  spend/void accounting-artifact kernel 提交 JSON、Markdown、index row 与 prepared
+  receipt。同一 effect 的 retry 会 replay 或修复同一 transaction；新的 CLI invocation
+  仍是新的 effect，因此保留对同一 spend target 再追加 correction 的既有行为。
+  Malformed index row 现在由静默跳过改为 fail closed。Void artifact 文件名加入
+  effect digest，JSONL row 改用 compact JSON；public payload 语义保持稳定。共享 kernel
+  同时加固既有 spend recovery 的持久化 receipt/path identity。Python 只保留
+  `should-run` facts、UUID/clock、一次 coarse transport call 与 legacy cross-writer
+  index lock。
 - 本地 task-lease lifecycle：native TypeScript transaction 现在拥有 acquire、renew、
   transfer、release、terminal verification、holder verification 与 fence close。它们拥有
   boundary decode、handoff 与 owner/Todo eligibility、同 Todo 与重叠 write scope
@@ -280,10 +291,12 @@ window 仍需 differential proof 时才保留 characterization corpus；引入�
   compare-and-swap、idempotency 与 lease-file durability check。无效 identity 会在
   provider 前停止；provider 后发生 crash/retry 时则重入同 key 的幂等路径。
 
-Quota-spend cutover 删除了 Python spend-event builder 与三文件 writer。它的 bounded
-facade 会在 quota CLI 和剩余 run-index writer 进程内执行 transaction 后退出；在此
-之前，它只提供 compact projection facts，并与未迁 writer 共享 legacy Python index
-lock。Todo cutover 删除了 Python state-evaluation dataclass、local identity projection、
+Quota-accounting cutover 删除了 Python spend/void event builder 与三文件 writer。
+当 quota decision 与顶层 CLI 在进程内执行 TypeScript、全部 run-index writer 改用
+native lock，并且 legacy Python void API compatibility window 结束时，它们的 bounded
+facade 即可退出。在此之前，Python 只提供 compact projection facts、clock/effect
+identity、result validation 与共享 legacy index lock。Todo cutover 删除了 Python
+state-evaluation dataclass、local identity projection、
 replay helper，以及这些 implementation leaf 的 public runtime handler。剩余 Python
 Todo facade 只拥有 transport、external command execution、source compare-and-swap、
 legacy response projection 与实际 Markdown/event write；当 writer 与 CLI 进入 native
@@ -303,6 +316,19 @@ Lifecycle receipt 可以在 transport response 丢失或 owner caller 退出后�
 managed Node server PID；stale reclaim 会先取得 token claim，并用抗路径替换的文件身份
 核验后再退役 lock。这不构成“同一 Node 进程内 handler 超时后仍并行执行时”的
 exactly-once 保证；原 handler 可能仍存活时，caller 不得启动第二笔独立 operation。
+
+#### Quota void commit 迁移经济账
+
+| 字段 | 回执 |
+| --- | --- |
+| Canonical owner | 迁移前由 Python `slot_accounting.py` 拥有 spend-target lookup、correction reduction、event/result 构造、artifact 分配及 JSON/Markdown/index persistence。迁移后由版本化 TypeScript `quota.void.commit` 拥有这些语义，并通过闭合的 spend/void accounting kernel 拥有 effect fence、index CAS、receipt、replay 与 repair。 |
+| 删除的旧语义代码 | 删除 212 行 Python 产品代码，包括原 void lookup、transition、event/projection、path allocation 与 JSON/Markdown/index writer 路径。 |
+| 新增的 bridge 代码 | 新增 263 行 Python diff LOC，其中 243 行是有界的 `void_commit.py` transport/compatibility facade，另有 `loopx/quota.py` 与 legacy `slot_accounting.py` surface 中 20 行 import、re-export、normalization 与 route wiring。 |
+| 跨 runtime 调用 | 公开 execute 与 dry-run 路径从零次 crossing 变为一次 coarse request/response。Exact-effect replay 或 repair 也使用一次。不同 CLI invocation 仍是不同 effect；legacy preview 加 record 两步 compatibility surface 的每个 entrypoint 各调用一次。 |
+| 产品代码净增减 | 产品代码新增 2,210 行、删除 898 行，净增 1,312 行。Test/example 另计新增 1,416 行、删除 3 行，净增 1,413 行；build configuration 为 +3，docs 不计入。生产共享 kernel 已同时服务 spend 与 void，并替换 `spend_commit.ts` 中 671 行逻辑，不是预留的 speculative framework。 |
+| 迁移 scaffolding | 没有新增 migration-only worker、parity corpus 或临时 schema framework。保留 native boundary/invariant/replay/CAS/repair 测试作为已交付和持久化 contract；Python bridge 测试随 compatibility facade 一起退出。 |
+| Facade 退出 | 当 quota decision 与顶层 CLI 在进程内执行 TypeScript、全部 run-index writer 使用 native lock，并且 legacy `build_*void*`/`record_*void*` Python API compatibility window 结束时，删除 Python void facade。 |
+| 正确性与性能 | Typed-decoder 负例、legacy target compatibility、effect isolation、index CAS、malformed receipt/path、exact index-row identity、受支持的 duplicate-index repair、concurrent mutation、truncated-tail repair、公开 CLI 行为，以及干净 wheel/sdist semantic probe 均通过。16 次 cold start 的 p50/p95 为 230.88/260.92 ms；128 次 warm typed ping 为 1.07/1.29 ms，warm void preview 为 1.93/2.34 ms。64 次 durable facade transaction 中，commit 为 30.64/37.49 ms，exact-effect replay 为 8.05/9.86 ms。Daemon RSS 在 idle 时为 108.38 MiB，256 次请求后为 109.80 MiB。64 对交错 full-CLI 样本中，baseline/candidate p50/p95 为 736.51/828.68 与 779.52/856.49 ms，p95 增量为 27.81 ms（3.36%）。这个绝对增量来自新增的一次 managed-runtime fingerprint/request 与 prepared-receipt durability；百分比低于 5% 物质回退门槛，Stage 3 会删除这次 crossing。 |
 
 #### Task-lease acquire 迁移经济账
 

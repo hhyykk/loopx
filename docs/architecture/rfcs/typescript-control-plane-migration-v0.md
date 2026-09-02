@@ -159,6 +159,7 @@ choice is now implemented rather than hypothetical.
 | Scheduler durable state ([#3440](https://github.com/huangruiteng/loopx/pull/3440)) | State normalization, persistence, replay, and one coarse transition are TS-owned | The Python compatibility path still pays a cross-runtime transport tax |
 | Scheduler heartbeat/state transaction | TypeScript owns receipt freshness, ACK and host-failure validation, state construction, failure-cache transitions, replay/CAS fencing, atomic writes, and the public JSON/Markdown projection | Generated, receipt-bound host follow-up runs through the native TS CLI; Python remains only for unbound/manual compatibility calls and external host mutation |
 | Quota spend commit transaction | TypeScript owns final spend-transition validation, typed event construction, effect replay/CAS fencing, crash repair, and the JSON/Markdown/index write set | Python still projects `should-run` and settlement readback facts, and holds the legacy cross-writer index lock until the CLI/index writers move in-process |
+| Quota void commit transaction | TypeScript owns spend-target resolution, before/after reduction, canonical correction construction, effect replay/index CAS, prepared-receipt repair, and the JSON/Markdown/index write set | Python retains `should-run` facts, clock/effect identity, the legacy cross-writer index lock, one transport call, and compatibility entry points |
 | Quota monitor-poll commit transaction | TypeScript owns monitor admission revalidation, target/event/result construction, effect replay/index CAS, provider intent, and repairable JSON/Markdown/index persistence | Python projects compact `should-run` facts, invokes the real Todo provider between at most two reductions, reloads legacy status, and holds the cross-writer index lock |
 | Runtime decoders ([#3443](https://github.com/huangruiteng/loopx/pull/3443)) | Stable primitive decoding has one small shared module; domain decoders remain local | No larger schema framework is justified |
 | Transaction payoff ([#3464](https://github.com/huangruiteng/loopx/pull/3464), [#3481](https://github.com/huangruiteng/loopx/pull/3481), and Todo completion) | Turn settlement, quota delivery routing, and Todo completion each cross one coarse TS boundary; the Todo transaction owns identity, replay fencing, validation planning/result reduction, continuation/recovery, and completion metadata | Python still executes explicitly external providers and materializes legacy Markdown/event results; other domains still need their own bounded cutovers |
@@ -242,7 +243,7 @@ domains would now increase total complexity.
 
 Select by deletion leverage and runtime traffic, not by ease of translation.
 The shipped Turn settlement, quota delivery-routing, Todo-completion,
-scheduler-heartbeat, quota-spend commit, and task-lease acquire cutovers
+scheduler-heartbeat, quota-spend commit, quota-void commit, and task-lease acquire cutovers
 establish the pattern.
 Subsequent candidates must name a remaining transaction and its deletion
 leverage; remaining quota settlement readback is eligible only when it can
@@ -294,6 +295,18 @@ shipped Stage 2B cutovers are in place:
   Python retains `should-run`/settlement fact projection plus one coarse
   transport call and the legacy kernel index lock; it no longer constructs or
   writes the spend event.
+- Quota void commit: TypeScript finds the referenced spend under the mutation
+  lock, reduces the before/after accounting decision, constructs the canonical
+  correction, and commits its JSON, Markdown, index row, and prepared receipt
+  through the closed spend/void accounting-artifact kernel. Same-effect retry
+  replays or repairs one transaction; a fresh CLI invocation remains a fresh
+  effect and therefore preserves the existing ability to append another
+  correction for the same spend target. Malformed index rows now fail closed
+  instead of being skipped. Void artifact names include an effect digest and
+  JSONL rows use compact JSON; public payload semantics remain stable. The
+  shared kernel also validates persisted receipt/path identity for spend
+  recovery. Python retains `should-run` facts, UUID/clock ownership, one coarse
+  transport call, and the legacy cross-writer index lock.
 - Local task-lease lifecycle: native TypeScript transactions now own acquire,
   renew, transfer, release, terminal verification, holder verification, and
   fence close. They own boundary decode, handoff and owner/Todo eligibility,
@@ -328,11 +341,13 @@ shipped Stage 2B cutovers are in place:
   durability checks. Invalid identities stop before the provider, while a
   crash/retry after the provider re-enters its same-key idempotent path.
 
-The quota-spend cutover removes the Python spend-event builder and three-file
-writer. Its bounded facade exits when the quota CLI and remaining run-index
-writers execute the transaction in-process; until then it supplies compact
-projection facts and shares the legacy Python index lock with unmigrated
-writers. The Todo cutover removes the Python state-evaluation dataclass, local identity
+The quota-accounting cutovers remove the Python spend and void event builders
+and their three-file writers. Their bounded facades exit when quota decision
+and the top-level CLI execute in-process TypeScript, all run-index writers use
+the native lock, and the legacy Python void API compatibility window closes.
+Until then Python supplies compact projection facts, clock/effect identity,
+result validation, and the shared legacy index lock. The Todo cutover removes
+the Python state-evaluation dataclass, local identity
 projection, replay helper, and public runtime handlers for those implementation
 leaves. The remaining Python Todo facade owns transport, external command
 execution, source compare-and-swap, legacy response projection, and the actual
@@ -358,6 +373,19 @@ reclaim uses token claims plus replacement-resistant file identity before
 retiring a lock. This is not an exactly-once guarantee for a timed-out handler
 that is still executing concurrently inside the same Node process; callers must
 not start a second independent operation while that handler may still be live.
+
+#### Quota void commit migration economics
+
+| Field | Receipt |
+| --- | --- |
+| Canonical owner | Before: Python `slot_accounting.py` owned spend-target lookup, correction reduction, event/result construction, artifact allocation, and JSON/Markdown/index persistence. After: versioned TypeScript `quota.void.commit` owns those semantics plus effect fencing, index CAS, receipts, replay, and repair through the closed spend/void accounting kernel. |
+| Legacy semantic code deleted | 212 Python product LOC covering the prior void lookup, transition, event/projection, path-allocation, and JSON/Markdown/index writer path. |
+| Bridge code added | 263 Python diff LOC: the 243-line bounded `void_commit.py` transport/compatibility facade plus 20 import, re-export, normalization, and route-wiring lines in `loopx/quota.py` and the legacy `slot_accounting.py` surface. |
+| Cross-runtime calls | The public execute and dry-run paths move from zero crossings to one coarse request/response. Exact-effect replay or repair also uses one request/response. Distinct CLI invocations remain distinct effects; the legacy two-step preview-plus-record compatibility surface uses one call per entry point. |
+| Product-code net change | Product code is +2,210/−898 LOC, net +1,312. Tests/examples are +1,416/−3, net +1,413; build configuration is +3 and docs are excluded. The production shared kernel is already used by spend and void, replacing 671 lines in `spend_commit.ts` rather than creating a speculative framework. |
+| Migration scaffolding | No migration-only worker, parity corpus, or temporary schema framework is added. Native boundary/invariant/replay/CAS/repair tests remain as shipped and persisted contracts; Python bridge tests exit with the compatibility facade. |
+| Facade exit | Delete the Python void facade when quota decision and the top-level CLI run in-process TypeScript, all run-index writers use the native lock, and the legacy `build_*void*`/`record_*void*` Python API compatibility window closes. |
+| Correctness and performance | Typed-decoder negatives, legacy target compatibility, effect isolation, index CAS, malformed receipts and paths, exact index-row identity, supported duplicate-index repair, concurrent mutation, truncated-tail repair, public CLI behavior, and clean wheel/sdist semantic probes pass. Across 16 cold starts, p50/p95 is 230.88/260.92 ms; 128 warm typed pings are 1.07/1.29 ms and warm void previews are 1.93/2.34 ms. Across 64 durable facade transactions, commit is 30.64/37.49 ms and exact-effect replay is 8.05/9.86 ms. Daemon RSS is 108.38 MiB idle and 109.80 MiB after 256 requests. In 64 interleaved full-CLI pairs, baseline/candidate p50/p95 is 736.51/828.68 versus 779.52/856.49 ms: p95 +27.81 ms (+3.36%). The absolute delta is the measured cost of one new managed-runtime fingerprint/request plus prepared-receipt durability; the percentage stays below the 5% material-regression gate, and Stage 3 removes that crossing. |
 
 #### Task-lease acquire migration economics
 
