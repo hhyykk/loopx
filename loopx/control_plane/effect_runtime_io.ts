@@ -286,14 +286,18 @@ export interface FileMutationLock {
 export async function acquireFileMutationLock(
   targetPath: string,
   ownerPid = process.pid,
+  timeoutMs = MUTATION_LOCK_TIMEOUT_MS,
 ): Promise<FileMutationLock> {
   if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
     throw new TypeError("mutation lock owner PID must be a positive safe integer");
   }
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new TypeError("mutation lock timeout must be a non-negative number");
+  }
   await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
   const lockPath = `${targetPath}.ts-effect.lock`;
   const token = randomUUID();
-  const deadline = Date.now() + MUTATION_LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
       const handle = await open(lockPath, "wx", 0o600);
@@ -325,7 +329,12 @@ export async function acquireFileMutationLock(
       if (Date.now() >= deadline) {
         throw new EffectRuntimeLockTimeoutError();
       }
-      await new Promise((resolve) => setTimeout(resolve, MUTATION_LOCK_POLL_MS));
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.min(MUTATION_LOCK_POLL_MS, Math.max(0, deadline - Date.now())),
+        )
+      );
     }
   }
 }
@@ -380,8 +389,9 @@ export async function releaseFileMutationLock(
 export async function withFileMutationLock<T>(
   targetPath: string,
   operation: () => Promise<T>,
+  timeoutMs = MUTATION_LOCK_TIMEOUT_MS,
 ): Promise<T> {
-  const lock = await acquireFileMutationLock(targetPath);
+  const lock = await acquireFileMutationLock(targetPath, process.pid, timeoutMs);
   try {
     return await operation();
   } finally {
