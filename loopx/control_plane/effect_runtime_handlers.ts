@@ -44,6 +44,7 @@ import {
 } from "./governed_capability.ts";
 import { evaluateDeliveryWorkspaceCausality } from "./quota/settlement_workspace_causality.ts";
 import { evaluateQuotaSpendCommit } from "./quota/spend_commit.ts";
+import { evaluateQuotaVoidCommit } from "./quota/void_commit.ts";
 import { readQuotaSettlement } from "./quota/settlement_readback.ts";
 import { evaluateTurnEnvelope } from "./quota/turn_envelope.ts";
 import { evaluateQuotaMonitorPollCommit } from "./quota/monitor_poll_commit.ts";
@@ -347,6 +348,7 @@ export function createEffectRuntimeHandlers(
       evaluateDeliveryWorkspaceCausality,
     ],
     ["quota.spend.commit", evaluateQuotaSpendCommit],
+    ["quota.void.commit", evaluateQuotaVoidCommit],
     ["quota.settlement.read", readQuotaSettlement],
     ["quota.turn_envelope.evaluate", evaluateTurnEnvelope],
     ["task_lease.acquire.decide", evaluateTaskLeaseAcquireDecision],
