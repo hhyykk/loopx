@@ -7,6 +7,42 @@ from typing import Any
 
 from ...control_plane.todos.active_state_todo_parser import parse_active_state_todos
 from ...registry import find_registry_goal, read_json, resolve_state_file
+from .incremental import select_incremental_project_progress
+
+
+def _stage_timestamp(value: str) -> datetime | None:
+    """Parse an offset-aware ISO-8601 timestamp or reject the value.
+
+    Sibling validations (``_validated_snapshot_timestamp``,
+    ``_actual_work_window``, ``incremental._timestamp``) all reject naive
+    timestamps, so stage filtering must not compare offset-naive and
+    offset-aware datetimes either.
+    """
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
+def _outcome_completed_at(
+    item: Mapping[str, Any], *, stage_time: datetime
+) -> str | None:
+    """Return the durable completion timestamp an outcome fact may carry.
+
+    A done todo without a trustworthy completion timestamp (handwritten
+    agent-lane entries may omit them) must not become an outcome fact: the
+    frozen fact would fail timestamp validation on every consumption retry.
+    """
+
+    raw = str(item.get("completed_at") or item.get("updated_at") or "").strip()
+    parsed = _stage_timestamp(raw)
+    if parsed is None or parsed > stage_time:
+        return None
+    return raw
 
 
 _META_ACTION_KINDS = frozenset(
@@ -19,7 +55,12 @@ _META_ACTION_KINDS = frozenset(
 
 
 def build_project_progress_snapshot(
-    *, registry_path: Path, goal_id: str, agent_id: str, completed_at: str
+    *,
+    registry_path: Path,
+    goal_id: str,
+    agent_id: str,
+    completed_at: str,
+    publication_cursor: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Build a bounded public-safe progress snapshot at a stage boundary."""
 
@@ -38,6 +79,7 @@ def build_project_progress_snapshot(
         goal_id=goal_id,
         agent_id=agent_id,
         completed_at=completed_at,
+        publication_cursor=publication_cursor,
     )
 
 
@@ -49,6 +91,7 @@ def build_project_progress_snapshot_from_state(
     goal_id: str,
     agent_id: str,
     completed_at: str,
+    publication_cursor: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Build a progress snapshot from one already-read authoritative state."""
 
@@ -60,16 +103,18 @@ def build_project_progress_snapshot_from_state(
     )
     agent_summary = parsed.get("agent_todos")
     items = agent_summary.get("items") if isinstance(agent_summary, Mapping) else []
-    stage_time = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+    stage_time = _stage_timestamp(completed_at)
+    if stage_time is None:
+        raise ValueError("periodic-report stage completion timestamp is invalid")
 
     def not_after_stage(item: Mapping[str, Any]) -> bool:
         raw = str(item.get("updated_at") or item.get("completed_at") or "").strip()
         if not raw:
             return True
-        try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")) <= stage_time
-        except ValueError:
+        parsed = _stage_timestamp(raw)
+        if parsed is None:
             return False
+        return parsed <= stage_time
 
     done = [
         dict(item)
@@ -82,7 +127,10 @@ def build_project_progress_snapshot_from_state(
     ]
     done.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
     progress_items: list[dict[str, Any]] = []
-    for index, item in enumerate(done[:6]):
+    for index, item in enumerate(done):
+        outcome_completed_at = _outcome_completed_at(item, stage_time=stage_time)
+        if outcome_completed_at is None:
+            continue
         summary = " ".join(
             str(
                 item.get("evidence") or item.get("note") or item.get("text") or ""
@@ -97,9 +145,7 @@ def build_project_progress_snapshot_from_state(
                 "content_kind": "outcome",
                 "value_rank": 10 + index,
                 "source_ref": f"todo:{item.get('todo_id')}",
-                "completed_at": str(
-                    item.get("completed_at") or item.get("updated_at") or ""
-                ),
+                "completed_at": outcome_completed_at,
             }
         )
     open_items = [
@@ -130,13 +176,29 @@ def build_project_progress_snapshot_from_state(
         )
     if not progress_items:
         return None
-    return {
+    snapshot: dict[str, Any] = {
         "schema_version": "periodic_report_project_progress_projection_v0",
         "goal_id": goal_id,
         "observed_at": completed_at,
         "language": "zh-CN",
         "items": progress_items,
     }
+    if publication_cursor is not None:
+        incremental = select_incremental_project_progress(
+            snapshot,
+            cursor=publication_cursor,
+        )
+        if incremental is None:
+            return None
+        snapshot = incremental
+    outcome_items = [
+        item for item in snapshot["items"] if item.get("content_kind") == "outcome"
+    ][:6]
+    next_items = [
+        item for item in snapshot["items"] if item.get("content_kind") == "next_action"
+    ][:1]
+    snapshot["items"] = outcome_items + next_items
+    return snapshot
 
 
 __all__ = [

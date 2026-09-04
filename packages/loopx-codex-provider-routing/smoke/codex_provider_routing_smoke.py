@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -22,8 +23,31 @@ compile_catalog = contract.compile_catalog
 normalize_selector_request = contract.normalize_selector_request
 project_runtime_status = contract.project_runtime_status
 qualify_heartbeat_transport = contract.qualify_heartbeat_transport
+qualify_host_control_recovery = contract.qualify_host_control_recovery
 qualify_snapshot = contract.qualify_snapshot
 reconcile_integration_candidate = contract.reconcile_integration_candidate
+
+
+def _assert_layered_retry_templates() -> None:
+    app = (PACKAGE_ROOT / "templates" / "codex-app-config.toml").read_text()
+    local_cpa = app.split("[model_providers.local-cpa]", maxsplit=1)[1]
+    request_retries = re.search(r"(?m)^request_max_retries\s*=\s*(\d+)\s*$", local_cpa)
+    stream_retries = re.search(r"(?m)^stream_max_retries\s*=\s*(\d+)\s*$", local_cpa)
+    assert request_retries is not None and int(request_retries.group(1)) == 30
+    assert stream_retries is not None and int(stream_retries.group(1)) == 30
+
+    cpa = (PACKAGE_ROOT / "templates" / "cpa-config.public.yaml").read_text()
+    interval = re.search(r"(?m)^max-retry-interval:\s*(\d+)\s*$", cpa)
+    assert interval is not None and int(interval.group(1)) >= 60
+    compat = re.search(
+        r"(?ms)^openai-compatibility:\s*\n(?P<body>(?:^[ \t].*(?:\n|$))*)",
+        cpa,
+    )
+    assert compat is not None
+    provider_retry = re.search(
+        r"(?m)^\s{4}request-retry:\s*(\d+)\s*$", compat.group("body")
+    )
+    assert provider_retry is not None and int(provider_retry.group(1)) == 1
 
 
 def _source() -> dict[str, Any]:
@@ -192,6 +216,7 @@ def expect_error(action: Callable[[], Any], message: str) -> None:
 
 
 def main() -> int:
+    _assert_layered_retry_templates()
     heartbeat = qualify_heartbeat_transport(
         {
             "turn_trigger": "automation_heartbeat",
@@ -230,6 +255,94 @@ def main() -> int:
         "heartbeat user input accepted a non-user role",
     )
 
+    recovered_instruction = qualify_host_control_recovery(
+        {
+            "tool_name": "send_message_to_thread",
+            "call_id_present": False,
+            "matching_call_count": 0,
+            "semantic_output_present": True,
+            "observed_action": "project_as_user",
+            "projection": {
+                "type": "message",
+                "role": "user",
+                "tool_identity_removed": True,
+                "semantic_output_preserved": True,
+                "next_action_observed": True,
+                "next_action_matches_instruction": True,
+            },
+        }
+    )
+    assert recovered_instruction["qualified"] is True
+    assert recovered_instruction["expected_action"] == "project_as_user"
+    assert (
+        recovered_instruction["required_contract"][
+            "qualification_requires_instruction_follow_through"
+        ]
+        is True
+    )
+
+    silently_dropped_instruction = qualify_host_control_recovery(
+        {
+            "tool_name": "automation_update",
+            "call_id_present": False,
+            "matching_call_count": 0,
+            "semantic_output_present": True,
+            "observed_action": "project_as_user",
+            "projection": {
+                "type": "message",
+                "role": "user",
+                "tool_identity_removed": True,
+                "semantic_output_preserved": False,
+                "next_action_observed": True,
+                "next_action_matches_instruction": False,
+            },
+        },
+    )
+    assert silently_dropped_instruction["qualified"] is False
+    assert {
+        item["id"]
+        for item in silently_dropped_instruction["checks"]
+        if not item["passed"]
+    } == {"semantic_output_preserved", "instruction_follow_through"}
+
+    for rejected_observation in (
+        {
+            "tool_name": "unknown_host_tool",
+            "call_id_present": False,
+            "matching_call_count": 0,
+            "semantic_output_present": True,
+            "observed_action": "fail_closed",
+            "error_status": 409,
+        },
+        {
+            "tool_name": "send_message_to_thread",
+            "call_id_present": False,
+            "matching_call_count": 1,
+            "semantic_output_present": True,
+            "observed_action": "fail_closed",
+            "error_status": 409,
+        },
+        {
+            "tool_name": "automation_update",
+            "call_id_present": True,
+            "matching_call_count": 0,
+            "semantic_output_present": True,
+            "observed_action": "fail_closed",
+            "error_status": 409,
+        },
+        {
+            "tool_name": "automation_update",
+            "call_id_present": False,
+            "matching_call_count": 0,
+            "semantic_output_present": False,
+            "observed_action": "fail_closed",
+            "error_status": 409,
+        },
+    ):
+        rejected = qualify_host_control_recovery(rejected_observation)
+        assert rejected["qualified"] is True
+        assert rejected["expected_action"] == "fail_closed"
+
     catalog = compile_catalog(_source())
     assert catalog["credential_free"] is True
     auto = next(
@@ -237,6 +350,38 @@ def main() -> int:
     )
     assert auto["eligible_candidates"]["image"] == ["codex-a", "codex-b"]
     assert auto["eligible_candidates"]["text"] == ["codex-a", "codex-b", "ark-text"]
+    assert next(
+        profile for profile in catalog["profiles"] if profile["id"] == "ark-text"
+    )["tool_transports"] == ["function_call"]
+    legacy_source = copy.deepcopy(_source())
+    for profile in legacy_source["profiles"]:
+        profile.pop("tool_transports")
+    legacy_catalog = compile_catalog(legacy_source)
+    assert next(
+        profile for profile in legacy_catalog["profiles"] if profile["id"] == "codex-a"
+    )["tool_transports"] == ["function_call"]
+    legacy_standard = normalize_selector_request(
+        {
+            "catalog_source": legacy_source,
+            "model_selector": "codex-a/gpt-5.6-sol",
+            "required_tool_transport": "function_call",
+        }
+    )
+    assert legacy_standard["eligible_candidates"] == [
+        "codex-a",
+        "codex-b",
+        "ark-text",
+    ]
+    expect_error(
+        lambda: normalize_selector_request(
+            {
+                "catalog_source": legacy_source,
+                "model_selector": "codex-a/gpt-5.6-sol",
+                "required_tool_transport": "custom_tool_call",
+            }
+        ),
+        "legacy catalog inferred unproven custom_tool_call support",
+    )
     assert auto["fast_candidates"] == ["codex-a", "codex-b"]
     assert auto["routing_policy"]["session_affinity"] == "hint_revalidated_per_attempt"
     assert auto["ring_id"] == "codex-accounts"
@@ -290,6 +435,31 @@ def main() -> int:
     )
     assert normalized_standard["normalized_model_selector"] == ("codex-b/gpt-5.6-sol")
     assert normalized_standard["service_tier"] == {"action": "preserve"}
+    normalized_code_mode = normalize_selector_request(
+        {
+            "catalog_source": _source(),
+            "model_selector": "codex-b/gpt-5.6-sol",
+            "required_tool_transport": "custom_tool_call",
+        }
+    )
+    assert normalized_code_mode["eligible_candidates"] == ["codex-b", "codex-a"]
+    assert normalized_code_mode["fallback_policy"] == "required_tool_transport_only"
+    custom_preserving_source = copy.deepcopy(_source())
+    custom_preserving_source["profiles"][2]["tool_transports"].append(
+        "custom_tool_call"
+    )
+    normalized_custom_adapter = normalize_selector_request(
+        {
+            "catalog_source": custom_preserving_source,
+            "model_selector": "auto/gpt-5.6-sol",
+            "required_tool_transport": "custom_tool_call",
+        }
+    )
+    assert normalized_custom_adapter["eligible_candidates"] == [
+        "codex-a",
+        "codex-b",
+        "ark-text",
+    ]
     normalized_standard_priority = normalize_selector_request(
         {
             "catalog_source": _source(),
@@ -324,6 +494,19 @@ def main() -> int:
     )
     runtime = project_runtime_status(preferred_fallback)
     assert runtime["execution"]["fallback_used"] is True
+
+    code_mode_to_ark = _runtime_status()
+    code_mode_to_ark["execution_observation"].update(
+        {
+            "required_tool_transport": "custom_tool_call",
+            "attempted_profiles": ["codex-a", "codex-b", "ark-text"],
+            "selected_profile": "ark-text",
+        }
+    )
+    expect_error(
+        lambda: project_runtime_status(code_mode_to_ark),
+        "custom_tool_call request was allowed to fall back to function-only provider",
+    )
 
     fast_fallback = _runtime_status()
     fast_fallback["execution_observation"].update(
@@ -582,17 +765,23 @@ def main() -> int:
             "target_ref": "public-target-ref",
             "changed_seams": [
                 "transport_pool",
+                "desktop_runtime_patch",
                 "modality_routing",
                 "request_normalizer",
+                "quota_recovery",
                 "settings_revision",
+                "tool_transport",
             ],
         }
     )
     assert "h2_reuse" in plan["required_checks"]
+    assert "asar_member_integrity" in plan["required_checks"]
     assert "no_eligible_fail_closed" in plan["required_checks"]
     assert "ordinary_selector_preserved" in plan["required_checks"]
     assert "effective_priority_admission" in plan["required_checks"]
     assert "turn_revision_match" in plan["required_checks"]
+    assert "stale_cooldown_invalidation" in plan["required_checks"]
+    assert "custom_tool_item_preserved" in plan["required_checks"]
 
     integration_request = json.loads(
         (PACKAGE_ROOT / "examples" / "integration-candidate.json").read_text()
@@ -605,6 +794,8 @@ def main() -> int:
         "fork/reusable-http2-transport",
         "operator/modality-routing",
         "fork/route-specific-fallback",
+        "operator/compat-stream-repair",
+        "fork/openai-compat-bounded-rate-limit-waits",
     ]
     assert integration["deployment_contract"]["session_store_policy"] == (
         "preserve_in_place_never_copy_or_delete"
@@ -612,9 +803,9 @@ def main() -> int:
 
     moved_source = copy.deepcopy(integration_request["integration"])
     moved_source["observed"]["source_heads"]["transport-pool"] = (
-        "7777777777777777777777777777777777777777"
+        "9999999999999999999999999999999999999999"
     )
-    moved_source["sources"][1]["head_sha"] = "7777777777777777777777777777777777777777"
+    moved_source["sources"][1]["head_sha"] = "9999999999999999999999999999999999999999"
     integration = reconcile_integration_candidate(moved_source)
     assert integration["sync_required"] is True
     assert integration["drift_reasons"] == [
@@ -622,7 +813,7 @@ def main() -> int:
             "kind": "source_moved",
             "source_id": "transport-pool",
             "last_sync_sha": "3333333333333333333333333333333333333333",
-            "observed_sha": "7777777777777777777777777777777777777777",
+            "observed_sha": "9999999999999999999999999999999999999999",
         }
     ]
 
@@ -646,7 +837,12 @@ def main() -> int:
         "normalize-request.json",
         "runtime-status.json",
         "qualification-snapshot.json",
+        "desktop-patch.json",
         "heartbeat-transport.json",
+        "host-control-recovery.json",
+        "outage-recovery.json",
+        "quota-recovery.json",
+        "tool-transport.json",
         "integration-candidate.json",
         "upgrade-request.json",
     ):

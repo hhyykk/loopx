@@ -15,23 +15,22 @@ desktop release workflow succeeds:
 The desktop shell still depends on a local `loopx` command at runtime. Install
 or update the LoopX CLI first, then open the desktop app.
 
-Official macOS release artifacts must be signed with an Apple Developer ID
-certificate and notarized before upload. Maintainers configure
-`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
-`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` as GitHub Actions secrets.
-Pull requests still build unsigned preview artifacts, but the release workflow
-fails closed when those secrets are unavailable rather than publishing a DMG
-that macOS Gatekeeper rejects.
+Published macOS preview artifacts use ad-hoc code signing to verify bundle
+integrity without requiring an Apple Developer account. They are not signed
+with a Developer ID and are not notarized, so macOS may require the operator
+to approve the first launch in System Settings > Privacy & Security.
 
 ## Runtime Model
 
 The shell:
 
-1. verifies or starts `loopx serve-status` on `127.0.0.1:8766`;
-2. verifies or starts `loopx chat` on `127.0.0.1:8767`;
-3. loads the versioned LoopX Chat workspace from the local Chat service;
-4. opens the existing personal workspace in one native window;
-5. terminates only the service process groups it started when the window exits.
+1. immediately renders an embedded startup surface instead of a blank WebView;
+2. verifies or starts `loopx serve-status` on `127.0.0.1:8766`;
+3. verifies or starts `loopx chat` on `127.0.0.1:8767`;
+4. loads the versioned LoopX Chat workspace only after its lightweight
+   capabilities endpoint is readable, retrying transient service replacement;
+5. opens the existing personal workspace in one native window;
+6. terminates only the service process groups it started when the window exits.
 
 An unknown process on either LoopX port is a hard startup error. Existing
 services are reused only after a successful response exposes both the exact
@@ -50,6 +49,11 @@ their internal Python entry module. The shell also recognizes the historical
 fixed-CLI and lightweight-entrypoint launcher shapes, so upgrading LoopX can
 replace an already-running older service without asking the operator to find
 and stop it manually.
+
+On macOS, when the standard `com.loopx.status` or `com.loopx.chat` LaunchAgent
+is loaded, Desktop keeps launchd as the single service owner. After replacing a
+stale listener it requests a launchd wake and waits through the throttle
+interval instead of racing a second Desktop-owned process onto the same port.
 
 The WebView is pinned to the loopback Chat origin served by the installed
 LoopX release. Dashboard requests to the status and Chat services remain
@@ -105,11 +109,14 @@ npm run build
 `src-tauri/target/release/bundle/`. The release workflow builds macOS `.dmg`
 and `.app.zip` artifacts on macOS, Windows `.msi` and `.exe` artifacts on
 Windows, and uploads them to the GitHub Release that triggered the workflow.
-It notarizes both the app and its disk image, then validates macOS code
-signing, Gatekeeper assessment, and both stapled tickets before upload. A
-separate `DESKTOP-SHA256SUMS` manifest covers all desktop artifacts attached
-by the workflow, and release builds use the Git tag as the desktop bundle
-version.
+It verifies the ad-hoc macOS app signature and disk-image integrity before
+upload. A separate `DESKTOP-SHA256SUMS` manifest covers all desktop artifacts
+attached by the workflow, and release builds use the Git tag as the desktop
+bundle version. A manual rerun for an existing tag is an explicit full desktop
+republish: it rebuilds both macOS and Windows assets, preserves the previous
+desktop set as a short-lived workflow artifact, validates the complete new
+four-file set, replaces all desktop binaries, and uploads the new checksum
+manifest last. Binary hashes may therefore change after a manual rerun.
 
 ## Disable Or Remove
 

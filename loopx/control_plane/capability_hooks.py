@@ -3,13 +3,19 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..file_lock import LockAcquireTimeoutError, exclusive_file_lock
+from ..file_lock import (
+    LOCK_POLICIES,
+    LockAcquisitionPolicy,
+    LockAcquireTimeoutError,
+    exclusive_file_lock,
+)
 from .effect_runtime import EffectRuntimeRejected, effect_runtime_result
 
 
@@ -689,6 +695,12 @@ def dispatch_post_writeback_hooks(
             outcomes=sizing_outcomes,
         )
 
+        compatibility_timeout = (
+            LOCK_POLICIES[LockAcquisitionPolicy.MUTATION].timeout_seconds
+            if lease_timeout_seconds is None
+            else max(0.0, lease_timeout_seconds)
+        )
+        compatibility_deadline = time.monotonic() + compatibility_timeout
         with ExitStack() as legacy_writer_guards:
             outcomes: list[dict[str, Any]] = []
             for raw_plan in typed_provider_plan:
@@ -702,7 +714,9 @@ def dispatch_post_writeback_hooks(
                         legacy_writer_guards,
                         runtime_root=runtime_root,
                         raw_plan=raw_plan,
-                        lease_timeout_seconds=lease_timeout_seconds,
+                        lease_timeout_seconds=max(
+                            0.0, compatibility_deadline - time.monotonic()
+                        ),
                     )
                     if runtime_root is not None
                     else None

@@ -20,6 +20,30 @@ const outputDir = resolve(repoRoot, "output/playwright/personal-workspace");
 const port = Number(process.env.LOOPX_PERSONAL_WORKSPACE_PORT ?? "5196");
 const packaged = process.env.LOOPX_PERSONAL_WORKSPACE_PACKAGED === "1";
 
+const periodicReportProjection = {
+  schema_version: "periodic_report_workspace_projection_v0",
+  goal_id: "product-release",
+  agent_id: "codex",
+  generation_id: "generation-workspace-smoke",
+  generated_at: "2026-09-01T10:00:00Z",
+  title: "Product Release milestone report",
+  summary: "A verified incremental report shown with the Goal's other durable outputs.",
+  content_sha256: `sha256:${"7".repeat(64)}`,
+  period_window: { start_at: "2026-08-25T10:00:00Z", end_at: "2026-09-01T10:00:00Z" },
+  interaction: { attention_kind: "progress", interaction: "inform", delivery: "surface", form: "milestone_report", writable: false },
+  delta: {
+    added_count: 1,
+    changed_count: 1,
+    item_count: 2,
+    items: [
+      { fact_id: "fact-added", source_ref: "todo:release-ready", title: "Release candidate verified", summary: "The candidate passed the bounded verification suite.", status: "done", content_kind: "outcome", change_kind: "added" },
+      { fact_id: "fact-changed", source_ref: "todo:rollout", title: "Rollout plan updated", summary: "The next rollout step now carries an explicit readback gate.", status: "open", content_kind: "next_action", change_kind: "changed", previous_status: "blocked" },
+    ],
+  },
+  publication: { publication_id: "publication-workspace-smoke", delivered_at: "2026-09-01T10:05:00Z", predecessor_publication_id: "publication-workspace-previous", cursor_id: "cursor-workspace-smoke" },
+  truth_contract: { published_cursor_is_source_of_truth: true, generation_receipt_is_delivery_receipt: false, projection_is_writable: false, browser_write_api: false },
+};
+
 function startServer() {
   if (packaged) {
     return spawn(process.env.LOOPX_PYTHON_BIN || "python3", [
@@ -41,6 +65,41 @@ async function visibleElementCount(locator) {
   }).length);
 }
 
+function capturedStatusGeneration(state) {
+  if (!state.captureNextStatusGeneration) return state.goalActivationStates;
+  if (!state.capturedStatusGeneration) {
+    state.capturedStatusGeneration = new Map(state.goalActivationStates);
+  }
+  return state.capturedStatusGeneration;
+}
+
+function filterStatusFixtureToScope(fixture, statusGeneration, scope) {
+  const activationForGoal = (goalId) => statusGeneration.get(goalId) ?? "active";
+  const matchesScope = (goalId) => activationForGoal(goalId) === scope;
+  fixture.attention_queue.items = fixture.attention_queue.items.filter((item) => matchesScope(item.goal_id));
+  fixture.attention_queue.item_count = fixture.attention_queue.items.length;
+  if (fixture.todo_index?.items) {
+    fixture.todo_index.items = fixture.todo_index.items.filter((item) => matchesScope(item.goal_id));
+    fixture.todo_index.total_count = fixture.todo_index.items.length;
+  }
+  if (fixture.usage_summary?.goals) {
+    fixture.usage_summary.goals = fixture.usage_summary.goals.filter((item) => matchesScope(item.goal_id));
+  }
+  if (fixture.event_ledger_summary?.goals) {
+    fixture.event_ledger_summary.goals = fixture.event_ledger_summary.goals.filter((item) => matchesScope(item.goal_id));
+  }
+  if (fixture.decision_freshness_summary?.items) {
+    fixture.decision_freshness_summary.items = fixture.decision_freshness_summary.items.filter((item) => matchesScope(item.goal_id));
+  }
+  if (fixture.agent_management_projection?.agents) {
+    fixture.agent_management_projection.agents = fixture.agent_management_projection.agents.filter((agent) =>
+      (agent.goal_ids ?? []).some(matchesScope) || matchesScope(agent.current_todo?.goal_id));
+  }
+  if (fixture.goal_channel_notification_projection?.goals) {
+    fixture.goal_channel_notification_projection.goals = fixture.goal_channel_notification_projection.goals.filter((item) => matchesScope(item.goal_id));
+  }
+}
+
 async function installApi(page) {
   let turnCounter = 0;
   const runtime = page.__loopxRuntime ??= { actionProposals: new Map(), larkConnections: [], messages: new Map(), sessions: new Map(), turnMessages: new Map() };
@@ -56,6 +115,8 @@ async function installApi(page) {
     durableResources: new Set(),
     durableWriteCount: 0,
     failNextLifecycleApply: false,
+    failNextLifecyclePreview: false,
+    failNextActionPreview: false,
     failNextStatusRequest: false,
     goalActivationStates: new Map([
       ["product-release", "active"],
@@ -64,18 +125,32 @@ async function installApi(page) {
       ["archived-notes", "stopped"],
     ]),
     interrupts: [],
+    goalConfigurationRequests: [],
     larkWrites: [],
     actionTransitions: [],
     allowNextHeartbeatApply: false,
     nextLifecycleApplyDelayMs: 0,
+    nextLifecyclePreviewDelayMs: 0,
+    nextActionPreviewDelayMs: 0,
     nextStatusDelayMs: 0,
+    nextFullStatusDelayMs: 0,
+    failNextFullStatus: false,
+    captureNextStatusGeneration: false,
+    capturedStatusGeneration: null,
+    activationChangeAfterCapturedActive: null,
     statusRequestCount: 0,
     turnRequests: [],
     get larkConnections() { return runtime.larkConnections; },
   };
-  await page.route(`http://127.0.0.1:${port}/status.json`, async (route) => {
+  await page.route(`http://127.0.0.1:${port}/status.json*`, async (route) => {
     state.statusRequestCount += 1;
     const fixture = structuredClone(require(resolve(repoRoot, "examples/status.example.json")));
+    const statusGeneration = capturedStatusGeneration(state);
+    fixture.local_dashboard_api = {
+      ...(fixture.local_dashboard_api ?? {}),
+      periodic_report_index_url: "/periodic-report-workspace",
+      periodic_report_detail_url: "/periodic-report-workspace-projection",
+    };
     const directoryFixtures = [
       { id: "product-release", display_name: "Product Release" },
       { id: "research-monitor", display_name: "Research Monitor" },
@@ -84,7 +159,7 @@ async function installApi(page) {
       { id: "archived-notes", display_name: "Archived Notes" },
     ];
     for (const directoryGoal of directoryFixtures) {
-      const activation_state = state.goalActivationStates.get(directoryGoal.id) ?? "active";
+      const activation_state = statusGeneration.get(directoryGoal.id) ?? "active";
       const existingGoal = fixture.run_history.goals.find((goal) => goal.id === directoryGoal.id);
       if (existingGoal) {
         existingGoal.activation_state = activation_state;
@@ -189,6 +264,45 @@ async function installApi(page) {
         state: "running",
       });
     }
+    if (!fixture.run_history.goals.some((goal) => goal.id === "multi-agent-projection")) {
+      fixture.run_history.goals.push({
+        id: "multi-agent-projection", display_name: "Multi Agent Projection", activation_state: "active",
+        status: "active-read-only", registry_member: true, legacy_runtime_goal: false,
+        adapter_kind: "generic_project_goal_v0", adapter_status: "connected",
+        lifecycle_phase: "registered", lifecycle_flags: ["registered"],
+        quota: { compute: 1, window_hours: 24, slot_minutes: 1, allowed_slots: 1440, spent_slots: 0, state: "eligible" },
+        index_exists: false, raw_index_records: 0, unique_runs: 0, latest_runs: [],
+      });
+      fixture.attention_queue.items.push({
+        agent_todos: { items: [], open_count: 2, source_section: "Agent Todo", total_count: 2 },
+        goal_id: "multi-agent-projection",
+        project_asset: {
+          agent_todos: { items: [], open: 2, done: 0, total: 2 },
+          gate: "none", next_action: "Continue the latest work lane", owner: "LoopX", stop_condition: "Both lanes complete",
+        },
+        recommended_action: "Continue the latest work lane", severity: "info", status: "active", waiting_on: "codex",
+      });
+      fixture.agent_management_projection.agents.push(
+        {
+          agent_id: "codex-older-lane",
+          current_todo: { claimed_by: "codex-older-lane", goal_id: "multi-agent-projection", role: "agent", status: "open", task_class: "advancement_task", title: "Older lane work", todo_id: "todo-older-lane" },
+          goal_ids: ["multi-agent-projection"], last_activity_at: "2026-08-24T10:00:00+08:00", next_action: "Continue projected todo todo-older-lane.", state: "running",
+        },
+        {
+          agent_id: "codex-latest-lane",
+          current_todo: { claimed_by: "codex-latest-lane", goal_id: "multi-agent-projection", role: "agent", status: "open", task_class: "advancement_task", title: "Latest lane work", todo_id: "todo-latest-lane" },
+          goal_ids: ["multi-agent-projection"], last_activity_at: "2026-08-24T15:00:00+08:00", next_action: "Continue projected todo todo-latest-lane.", state: "running",
+        },
+      );
+    }
+    const goalActivationScope = new URL(route.request().url()).searchParams.get("goal_activation");
+    const isActiveScope = goalActivationScope === "active";
+    const activeGoalCount = fixture.run_history.goals.filter((goal) => goal.activation_state !== "stopped").length;
+    const stoppedGoalCount = fixture.run_history.goals.length - activeGoalCount;
+    const registryRevision = [...statusGeneration.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([goalId, activationState]) => `${goalId}:${activationState}`)
+      .join("|");
     const delayMs = state.nextStatusDelayMs;
     state.nextStatusDelayMs = 0;
     if (delayMs > 0) await new Promise((resolveWait) => setTimeout(resolveWait, delayMs));
@@ -197,7 +311,82 @@ async function installApi(page) {
       await route.fulfill({ contentType: "application/json", json: { error: "temporary status failure" }, status: 503 });
       return;
     }
+    if (isActiveScope) {
+      fixture.goal_projection = {
+        schema_version: "loopx_goal_projection_scope_v0",
+        scope: "active",
+        complete: false,
+        projected_goal_count: activeGoalCount,
+        registry_goal_count: fixture.run_history.goals.length,
+        registry_revision: registryRevision,
+      };
+      fixture.run_history.goals = fixture.run_history.goals.filter((goal) => goal.activation_state !== "stopped");
+      filterStatusFixtureToScope(fixture, statusGeneration, "active");
+      // Freeze only the first half of the active-first read. The stopped
+      // request must observe the registry after the intervening lifecycle
+      // change so this fixture exercises the cross-snapshot revision fence.
+      state.captureNextStatusGeneration = false;
+      state.capturedStatusGeneration = null;
+      if (state.activationChangeAfterCapturedActive) {
+        const { goalId, activationState } = state.activationChangeAfterCapturedActive;
+        state.goalActivationStates.set(goalId, activationState);
+        state.activationChangeAfterCapturedActive = null;
+      }
+    } else if (goalActivationScope === "stopped") {
+      const fullDelayMs = state.nextFullStatusDelayMs;
+      state.nextFullStatusDelayMs = 0;
+      if (fullDelayMs > 0) await new Promise((resolveWait) => setTimeout(resolveWait, fullDelayMs));
+      if (state.failNextFullStatus) {
+        state.failNextFullStatus = false;
+        await route.fulfill({ contentType: "application/json", json: { error: "stopped goals unavailable" }, status: 503 });
+        return;
+      }
+      fixture.goal_projection = {
+        schema_version: "loopx_goal_projection_scope_v0",
+        scope: "stopped",
+        complete: false,
+        projected_goal_count: stoppedGoalCount,
+        registry_goal_count: fixture.run_history.goals.length,
+        registry_revision: registryRevision,
+      };
+      fixture.run_history.goals = fixture.run_history.goals.filter((goal) => goal.activation_state === "stopped");
+      filterStatusFixtureToScope(fixture, statusGeneration, "stopped");
+    } else {
+      fixture.goal_projection = {
+        schema_version: "loopx_goal_projection_scope_v0",
+        scope: "all",
+        complete: true,
+        projected_goal_count: fixture.run_history.goals.length,
+        registry_goal_count: fixture.run_history.goals.length,
+        registry_revision: registryRevision,
+      };
+    }
     await route.fulfill({ contentType: "application/json", json: fixture, status: 200 });
+  });
+  await page.route("**/periodic-report-workspace?*", async (route) => {
+    const goalId = new URL(route.request().url()).searchParams.get("goal_id");
+    const items = goalId === periodicReportProjection.goal_id ? [{
+      goal_id: periodicReportProjection.goal_id,
+      agent_id: periodicReportProjection.agent_id,
+      generation_id: periodicReportProjection.generation_id,
+      publication_id: periodicReportProjection.publication.publication_id,
+      delivered_at: periodicReportProjection.publication.delivered_at,
+      predecessor_publication_id: periodicReportProjection.publication.predecessor_publication_id,
+      detail_ref: {
+        goal_id: periodicReportProjection.goal_id,
+        agent_id: periodicReportProjection.agent_id,
+        generation_id: periodicReportProjection.generation_id,
+        content_sha256: periodicReportProjection.content_sha256,
+      },
+    }] : [];
+    await route.fulfill({
+      contentType: "application/json",
+      json: { ok: true, periodic_reports: { schema_version: "periodic_report_workspace_index_v0", count: items.length, items } },
+      status: 200,
+    });
+  });
+  await page.route("**/periodic-report-workspace-projection?*", async (route) => {
+    await route.fulfill({ contentType: "application/json", json: { ok: true, projection: periodicReportProjection }, status: 200 });
   });
   await page.route(`http://127.0.0.1:${port}/api/ssh-source/ensure`, async (route) => {
     await route.fulfill({
@@ -241,6 +430,90 @@ async function installApi(page) {
   await page.route("**/api/chat/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.pathname === "/api/chat/goal-configuration" && request.method() === "GET") {
+      const goalId = url.searchParams.get("goal_id");
+      const periodicConfiguration = {
+        schema_version: "periodic_report_machine_defaults_v0",
+        enabled: true,
+        inheritance: "live_machine_default",
+        profile_preset: "weekly-progress",
+        route_ref: "loopx-manager",
+        timezone: "Asia/Shanghai",
+      };
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: true,
+        schema_version: "goal_configuration_inspection_v0",
+        status: "configured",
+        goal_id: goalId,
+        revision: "sha256:goal-current",
+        available_capabilities: ["periodic_report"],
+        capability_catalog: {
+          schema_version: "capability_configuration_catalog_v0",
+          capabilities: [{
+            capability_id: "periodic_report",
+            display_name: "Periodic reports",
+            description: "Publish bounded progress reports.",
+            available_scopes: ["machine", "goal"],
+            machine_namespace: "periodic_report",
+            goal_feature_id: "periodic_report",
+            effective_value_policy: "goal_override_over_live_machine_default",
+            default: { enabled: false, timezone: "UTC" },
+            machine_current: periodicConfiguration,
+            effective_configuration: {
+              schema_version: "capability_configuration_resolution_v0",
+              capability_id: "periodic_report",
+              source: "machine_default",
+              configuration: periodicConfiguration,
+              inherited: true,
+              goal_override_present: false,
+              machine_default_present: true,
+              effective_revision: "sha256:periodic-effective",
+            },
+            configuration_editor: {
+              schema_version: "capability_configuration_editor_v0",
+              editable: true,
+              supported_scopes: ["machine", "goal"],
+              writable_scopes: ["machine", "goal"],
+              fields: [
+                { key: "enabled", label: "Enabled", description: "", input_kind: "boolean", required: false },
+                { key: "profile_preset", label: "Profile preset", description: "", input_kind: "text", required: false },
+                { key: "route_ref", label: "Goal Channel route", description: "", input_kind: "text", required: false },
+                { key: "timezone", label: "Timezone", description: "", input_kind: "text", required: true },
+              ],
+            },
+          }],
+        },
+      }, status: 200 });
+      return;
+    }
+    if (url.pathname === "/api/chat/goal-configuration/preview" && request.method() === "POST") {
+      const body = request.postDataJSON();
+      state.goalConfigurationRequests.push({ phase: "preview", ...body });
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: true, schema_version: "goal_configuration_update_plan_v0", status: "preview",
+        action: "create", current_revision: "absent", desired_revision: "sha256:desired",
+        base_revision: "sha256:goal-current", plan_revision: "sha256:goal-plan", writes_required: 1,
+        goal_id: body.goal_id, capability_id: body.capability_id,
+        changed_fields: ["periodic_report"], goal_configuration: body.configuration,
+        capability_catalog: { schema_version: "capability_configuration_catalog_v0", capabilities: [] },
+      }, status: 201 });
+      return;
+    }
+    if (url.pathname === "/api/chat/goal-configuration/apply" && request.method() === "POST") {
+      const body = request.postDataJSON();
+      state.goalConfigurationRequests.push({ phase: "apply", ...body });
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: false, schema_version: "goal_configuration_transaction_v0", status: "partial_write",
+        goal_id: body.goal_id, capability_id: body.capability_id,
+        plan_revision: body.expected_plan_revision, applied_revision: "sha256:goal-applied",
+        source_written: true, shared_sync_pending: true, readback_verified: true,
+        changed_fields: ["periodic_report"], goal_configuration: body.configuration,
+        capability_catalog: { schema_version: "capability_configuration_catalog_v0", capabilities: [] },
+        error: "shared projection did not synchronize",
+        recommended_action: `rerun loopx sync-global --goal-id ${body.goal_id}`,
+      }, status: 207 });
+      return;
+    }
     const resumedEvents = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/turns\/([^/]+)\/events$/);
     if (resumedEvents && request.method() === "GET") {
       const sessionId = resumedEvents[1];
@@ -448,6 +721,30 @@ async function installApi(page) {
     const url = new URL(request.url());
     if (url.pathname === "/api/actions/preview") {
       const body = request.postDataJSON();
+      const actionDelayMs = state.nextActionPreviewDelayMs;
+      state.nextActionPreviewDelayMs = 0;
+      const lifecycleDelayMs = body.action_kind === "goal.lifecycle" ? state.nextLifecyclePreviewDelayMs : 0;
+      state.nextLifecyclePreviewDelayMs = 0;
+      const previewDelayMs = Math.max(actionDelayMs, lifecycleDelayMs);
+      if (previewDelayMs > 0) await new Promise((resolveWait) => setTimeout(resolveWait, previewDelayMs));
+      if (state.failNextActionPreview) {
+        state.failNextActionPreview = false;
+        await route.fulfill({
+          contentType: "application/json",
+          json: { error: "Action preview temporarily unavailable", error_code: "preview_unavailable", ok: false },
+          status: 503,
+        });
+        return;
+      }
+      if (body.action_kind === "goal.lifecycle" && state.failNextLifecyclePreview) {
+        state.failNextLifecyclePreview = false;
+        await route.fulfill({
+          contentType: "application/json",
+          json: { error: "Lifecycle preview temporarily unavailable", error_code: "preview_unavailable", ok: false },
+          status: 503,
+        });
+        return;
+      }
       const proposal_id = `proposal-${body.idempotency_key}`;
       actionKinds.set(proposal_id, body.action_kind);
       state.actionPreviews.push({ ...body, proposalId: proposal_id });
@@ -624,27 +921,41 @@ async function main() {
     if (await page.locator(".personal-digest-stats button").count()) throw new Error("Away digest still behaves like hidden channel navigation");
     if (body.includes("Agent 设置")) throw new Error("Sidebar still exposes the read-only Agent settings dead end");
     if (await page.locator(".personal-global-rail").count()) throw new Error("Old icon rail is visible");
-    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 4) throw new Error("Active Goal directory did not exclude stopped Goals");
+    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 5) throw new Error("Active Goal directory did not exclude stopped Goals");
     const stoppedDirectory = page.locator(".personal-stopped-goals");
     if (!(await stoppedDirectory.isVisible()) || await stoppedDirectory.getAttribute("open") !== null) throw new Error("Stopped Goals are not available in a collapsed directory section");
+    await page.waitForFunction(() => document.querySelectorAll(".personal-stopped-goals .personal-goal-row").length === 2, null, { timeout: 3_000 });
+    await stoppedDirectory.locator("summary").click();
+    await page.locator(".personal-goal-link").filter({ hasText: "Legacy Benchmark" }).click();
+    await page.waitForFunction(() => new URL(window.location.href).searchParams.get("goalId") === "legacy-benchmark");
+    const stoppedGoalBody = await page.locator(".personal-channel").innerText();
+    if (!stoppedGoalBody.includes("Legacy Benchmark") || !stoppedGoalBody.includes("历史、Todo 和证据仍保留")) {
+      throw new Error(`Stopped Goal lost its archive context after merge: ${stoppedGoalBody.slice(0, 1200)}`);
+    }
+    await page.locator(".personal-goal-link").filter({ hasText: "Product Release" }).click();
+    await stoppedDirectory.locator("summary").click();
     const writesBeforeLifecyclePreview = api.durableWriteCount;
     const statusRequestsBeforeStop = api.statusRequestCount;
+    api.nextLifecyclePreviewDelayMs = 900;
     api.nextLifecycleApplyDelayMs = 900;
     api.nextStatusDelayMs = 900;
     await page.getByRole("button", { name: "停止 Product Release", exact: true }).click();
     await page.waitForFunction(
-      () => document.querySelectorAll(".personal-goal-list:not(.is-stopped) .personal-goal-row").length === 3,
+      () => document.querySelectorAll(".personal-goal-list:not(.is-stopped) .personal-goal-row").length === 4,
       null,
       { timeout: 600 },
     );
+    const pendingStop = page.locator('.personal-stopped-goals .personal-goal-lifecycle[aria-label="恢复 Product Release"]');
+    if (await pendingStop.getAttribute("aria-busy") !== "true") throw new Error("Pending Goal stop does not expose accessible progress");
+    await page.waitForTimeout(1_000);
     const stopPreview = api.actionPreviews.findLast((preview) => preview.action_kind === "goal.lifecycle" && preview.normalized_parameters.operation === "stop");
     if (!stopPreview || stopPreview.normalized_parameters.goal_id !== "product-release") throw new Error("Goal stop did not create the expected typed preview");
     if (api.durableWriteCount !== writesBeforeLifecyclePreview) throw new Error("Goal stop wrote durable state before its typed apply completed");
     if (await page.getByText("确认执行", { exact: true }).count()) throw new Error("Goal stop still opened a redundant confirmation drawer");
-    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 3) throw new Error("Optimistic Goal stop did not update the active sidebar immediately");
+    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 4) throw new Error("Optimistic Goal stop did not update the active sidebar immediately");
     await page.waitForTimeout(2_000);
     if (api.statusRequestCount <= statusRequestsBeforeStop) throw new Error("Successful Goal stop did not start background full-status reconciliation");
-    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 3) throw new Error("Full-status reconciliation reverted a successful Goal stop");
+    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 4) throw new Error("Full-status reconciliation reverted a successful Goal stop");
     await stoppedDirectory.locator("summary").click();
     await page.getByRole("button", { name: "恢复 Product Release", exact: true }).click();
     await page.getByText("确认执行", { exact: true }).waitFor({ state: "visible" });
@@ -655,7 +966,7 @@ async function main() {
     await page.getByRole("button", { name: "恢复 Goal", exact: true }).click();
     await page.getByRole("button", { name: "停止 Product Release", exact: true }).waitFor({ state: "attached", timeout: 600 });
     await page.waitForTimeout(1_100);
-    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 4) throw new Error("Full-status reconciliation reverted a successful Goal resume");
+    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 5) throw new Error("Full-status reconciliation reverted a successful Goal resume");
 
     api.nextStatusDelayMs = 1_600;
     await page.getByRole("button", { name: "停止 Product Release", exact: true }).click();
@@ -665,7 +976,14 @@ async function main() {
     await page.getByRole("button", { name: "恢复 Goal", exact: true }).click();
     await page.getByRole("button", { name: "停止 Product Release", exact: true }).waitFor({ state: "attached" });
     await page.waitForTimeout(1_800);
-    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 4) throw new Error("A stale background response overwrote a newer optimistic Goal transition");
+    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 5) throw new Error("A stale background response overwrote a newer optimistic Goal transition");
+
+    api.failNextLifecyclePreview = true;
+    api.nextLifecyclePreviewDelayMs = 900;
+    await page.getByRole("button", { name: "停止 Product Release", exact: true }).click();
+    await page.getByRole("button", { name: "恢复 Product Release", exact: true }).waitFor({ state: "attached", timeout: 600 });
+    await page.getByRole("button", { name: "停止 Product Release", exact: true }).waitFor({ state: "attached", timeout: 2_000 });
+    if (api.goalActivationStates.get("product-release") !== "active") throw new Error("Rejected Goal stop preview mutated the durable fixture state");
 
     api.failNextLifecycleApply = true;
     api.nextLifecycleApplyDelayMs = 900;
@@ -678,11 +996,11 @@ async function main() {
     await page.getByRole("button", { name: "停止 Product Release", exact: true }).click();
     await page.waitForTimeout(900);
     if (await page.getByText("无法读取状态", { exact: false }).count()) throw new Error("Background lifecycle reconciliation replaced the workspace with a fatal status error");
-    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 3) throw new Error("Background reconciliation failure reverted the successful optimistic Goal state");
+    if ((await page.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 4) throw new Error("Background reconciliation failure reverted the successful optimistic Goal state");
     const closeLifecycleDrawer = page.getByRole("button", { name: "关闭", exact: true });
     if (await closeLifecycleDrawer.count()) await closeLifecycleDrawer.click();
     await page.emulateMedia({ reducedMotion: "reduce" });
-    const stoppedChevronTransition = await stoppedDirectory.locator("summary svg").evaluate((element) => getComputedStyle(element).transitionDuration);
+    const stoppedChevronTransition = await stoppedDirectory.locator("summary > svg:first-child").evaluate((element) => getComputedStyle(element).transitionDuration);
     if (stoppedChevronTransition !== "0s") throw new Error(`Stopped Goals disclosure ignores reduced motion: ${stoppedChevronTransition}`);
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.screenshot({ path: resolve(outputDir, "goal-lifecycle-directory.png"), fullPage: false, animations: "disabled" });
@@ -708,7 +1026,8 @@ async function main() {
     await page.getByText("LoopX Manager", { exact: true }).first().waitFor({ state: "visible" });
     if (await page.locator("html").getAttribute("lang") !== "en") throw new Error("English locale did not survive reload");
     await page.locator(".personal-goal-link").first().click();
-    await page.getByRole("button", { name: "Goal details" }).click();
+    await page.getByRole("button", { name: "Open Goal details or capability settings" }).click();
+    await page.getByRole("group", { name: "Goal settings" }).getByRole("button", { name: /Goal details/ }).click();
     await page.getByText("Repository", { exact: true }).waitFor({ state: "visible" });
     await page.getByText("Execution Session", { exact: true }).waitFor({ state: "visible" });
     await page.getByText("Read only", { exact: true }).waitFor({ state: "visible" });
@@ -773,7 +1092,8 @@ async function main() {
     if (api.durableWriteCount !== writesBeforeEnglishPreviews) throw new Error("English write previews mutated durable state before confirmation");
     await page.getByRole("button", { name: "Close", exact: true }).click();
 
-    await page.getByRole("button", { name: "Goal details" }).click();
+    await page.getByRole("button", { name: "Open Goal details or capability settings" }).click();
+    await page.getByRole("group", { name: "Goal settings" }).getByRole("button", { name: /Goal details/ }).click();
     await page.getByRole("button", { name: "Set up Heartbeat", exact: true }).click();
     const englishHeartbeatDraft = await page.getByLabel("Send a message to LoopX").inputValue();
     for (const field of ["Frequency: Daily", "Stop condition: Goal completes", "Notification: Only notify me when needed"]) {
@@ -929,12 +1249,57 @@ async function main() {
     if (api.durableWriteCount !== writesBeforeGoalCreate + 1) throw new Error("Repeated proposal apply duplicated durable state");
     pass(9, "A repeated apply request kept one durable resource and one first-turn resource key.");
     await page.getByRole("button", { name: /关闭详情/ }).click();
+    const actionReceiptClose = page.getByRole("button", { name: "关闭操作回执", exact: true });
+    if (await actionReceiptClose.isVisible().catch(() => false)) await actionReceiptClose.click();
 
     const goalButton = page.locator(".personal-goal-link").first();
     await goalButton.click();
     const goalNavigation = page.getByRole("navigation", { name: "Goal 视图" });
     const defaultTasksTab = goalNavigation.getByRole("button", { name: "Tasks" });
     if (await defaultTasksTab.getAttribute("aria-current") !== "page") throw new Error("Selecting a Goal did not prioritize its Tasks view");
+    await page.screenshot({ path: resolve(outputDir, "goal-tasks-loopx-theme.png"), fullPage: false, animations: "disabled" });
+    await goalNavigation.getByRole("button", { name: "Files" }).click();
+    const publicFiles = page.locator(".personal-files-list > button");
+    await publicFiles.first().waitFor({ state: "visible" });
+    await page.screenshot({ path: resolve(outputDir, "goal-files-loopx-theme.png"), fullPage: false, animations: "disabled" });
+    await goalNavigation.getByRole("button", { name: "Chat" }).click();
+    await page.locator(".personal-channel-timeline").waitFor({ state: "visible" });
+    await page.screenshot({ path: resolve(outputDir, "goal-chat-loopx-theme.png"), fullPage: false, animations: "disabled" });
+    await defaultTasksTab.click();
+    const fullDesktopViewport = page.viewportSize();
+    await page.setViewportSize({ width: 900, height: 720 });
+    const compactHeaderButtons = [
+      page.locator(".personal-mobile-menu"),
+      page.locator(".personal-refresh-control .personal-icon-button"),
+    ];
+    for (const button of compactHeaderButtons) {
+      const box = await button.boundingBox();
+      if (!box || Math.abs(box.width - 36) > 0.5 || Math.abs(box.height - 36) > 0.5) {
+        throw new Error(`Compact header icon button was compressed: ${JSON.stringify(box)}`);
+      }
+    }
+    const compactGoalSettingsBox = await page.locator(".personal-goal-tools-trigger").boundingBox();
+    if (!compactGoalSettingsBox || compactGoalSettingsBox.width < 40 || compactGoalSettingsBox.height < 36) {
+      throw new Error(`Compact Goal settings trigger was compressed: ${JSON.stringify(compactGoalSettingsBox)}`);
+    }
+    const compactHeaderLayout = await page.evaluate(() => {
+      const live = document.querySelector(".personal-live-indicator");
+      return {
+        documentWidth: document.documentElement.scrollWidth,
+        liveHeight: live?.getBoundingClientRect().height ?? 0,
+        liveScrollWidth: live?.scrollWidth ?? 0,
+        liveWidth: live?.getBoundingClientRect().width ?? 0,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    if (compactHeaderLayout.liveScrollWidth > compactHeaderLayout.liveWidth + 1 || compactHeaderLayout.liveHeight > 36) {
+      throw new Error(`Compact header live status wrapped: ${JSON.stringify(compactHeaderLayout)}`);
+    }
+    if (compactHeaderLayout.documentWidth > compactHeaderLayout.viewportWidth + 1) {
+      throw new Error(`Compact header caused horizontal overflow: ${JSON.stringify(compactHeaderLayout)}`);
+    }
+    await page.screenshot({ path: resolve(outputDir, "goal-header-compact-width.png"), fullPage: false, animations: "disabled" });
+    if (fullDesktopViewport) await page.setViewportSize(fullDesktopViewport);
     await page.locator(".personal-goal-link", { hasText: "Progress Projection" }).click();
     await page.getByRole("heading", { name: "Progress Projection" }).waitFor({ state: "visible" });
     const progressHeader = page.locator(".personal-channel-title p");
@@ -945,6 +1310,24 @@ async function main() {
     await completedColumn.getByText("42", { exact: true }).waitFor({ state: "visible" });
     await completedColumn.getByText("Completed A", { exact: true }).waitFor({ state: "visible" });
     if (await completedColumn.getByText("Completed Monitor", { exact: true }).count()) throw new Error("Completed continuous monitor leaked into the completed Tasks column");
+    await page.locator(".personal-goal-link", { hasText: "Multi Agent Projection" }).click();
+    const multiAgentHeader = await page.locator(".personal-channel-title p").innerText();
+    if (!multiAgentHeader.includes("2 个工作 Agent") || multiAgentHeader.includes("codex-older-lane ·")) {
+      throw new Error(`Multi-Agent Goal header still implies arbitrary single-lane ownership: ${multiAgentHeader}`);
+    }
+    if ((await page.locator(".personal-object-list", { hasText: "待执行 / 进行中" }).locator(".personal-task-card").count()) !== 2) {
+      throw new Error("All-Agent default did not preserve both projected work lanes");
+    }
+    const laneFilter = page.getByRole("combobox", { name: "按工作 Agent 筛选" });
+    if (await laneFilter.inputValue() !== "all") throw new Error("Multi-Agent Tasks view did not default to all work lanes");
+    await page.screenshot({ path: resolve(outputDir, "multi-agent-task-lanes.png"), fullPage: false, animations: "disabled" });
+    await laneFilter.selectOption("codex-latest-lane");
+    const filteredText = await page.locator(".personal-object-list", { hasText: "待执行 / 进行中" }).innerText();
+    if (!filteredText.includes("Latest lane work") || filteredText.includes("Older lane work")) {
+      throw new Error(`Work-Agent filter did not consistently filter task cards: ${filteredText}`);
+    }
+    const runtimeSelector = page.getByRole("combobox", { name: "选择聊天 Runtime" });
+    if (!await runtimeSelector.count()) throw new Error("Chat runtime selector is not explicitly labelled independently from work-Agent lanes");
     await goalButton.click();
     const readBoardGeometry = async () => {
       const kanban = page.locator(".personal-task-kanban");
@@ -1004,7 +1387,31 @@ async function main() {
     await page.waitForTimeout(200);
     await selectFirstGoal();
     await page.locator(".personal-object-list").first().waitFor({ state: "visible" });
-    await page.getByRole("button", { name: "Goal 详情" }).click();
+    if (await page.locator(".personal-task-capability-callout").count()) throw new Error("Goal capability settings still consume a full-width Tasks row");
+    await page.getByRole("button", { name: "打开 Goal 详情或能力配置" }).click();
+    const goalSettingsMenu = page.getByRole("group", { name: "Goal 设置" });
+    const capabilityMenuItem = goalSettingsMenu.getByRole("button", { name: /能力配置/ });
+    await capabilityMenuItem.waitFor({ state: "visible" });
+    await page.screenshot({ path: resolve(outputDir, "goal-settings-unified-menu.png"), fullPage: false, animations: "disabled" });
+    await capabilityMenuItem.click();
+    await page.getByRole("heading", { level: 1, name: "Goal 能力", exact: true }).waitFor({ state: "visible" });
+    if (await page.locator(".personal-workspace-shell").count()) throw new Error("Unified Goal capability action did not open the Settings surface");
+    await page.getByRole("button", { name: "预览变更", exact: true }).click();
+    await page.getByText("锁定 revision 的变更预览", { exact: true }).waitFor({ state: "visible" });
+    const goalConfigurationPreview = api.goalConfigurationRequests.find((item) => item.phase === "preview");
+    const projectedKeys = Object.keys(goalConfigurationPreview?.configuration ?? {}).sort((left, right) => left.localeCompare(right));
+    if (JSON.stringify(projectedKeys) !== JSON.stringify(["enabled", "profile_preset", "route_ref", "timezone"])) {
+      throw new Error(`Goal configuration preview leaked hidden machine fields: ${JSON.stringify(goalConfigurationPreview)}`);
+    }
+    await page.getByRole("button", { name: "应用此预览", exact: true }).click();
+    await page.getByText("Goal 值已保存；共享投影仍需修复", { exact: true }).waitFor({ state: "visible" });
+    if (!(await page.getByText(/loopx sync-global --goal-id/u).isVisible())) throw new Error("Partial Goal write did not expose its reconciliation action");
+    const goalConfigurationApply = api.goalConfigurationRequests.find((item) => item.phase === "apply");
+    if (goalConfigurationApply?.expected_plan_revision !== "sha256:goal-plan") throw new Error("Goal configuration apply lost its reviewed plan revision");
+    await page.getByRole("button", { name: "返回工作区", exact: true }).click();
+    await page.getByRole("button", { name: "Tasks", current: "page" }).waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "打开 Goal 详情或能力配置" }).click();
+    await page.getByRole("group", { name: "Goal 设置" }).getByRole("button", { name: /Goal 详情/ }).click();
     await page.getByText("仓库", { exact: true }).waitFor({ state: "visible" });
     await page.getByText("执行 Session", { exact: true }).waitFor({ state: "visible" });
     await page.getByText("只读", { exact: true }).waitFor({ state: "visible" });
@@ -1077,9 +1484,18 @@ async function main() {
     await editDialog.getByRole("button", { name: "取消" }).click();
     await page.screenshot({ path: resolve(outputDir, "lark-goal-connections.png"), fullPage: false, animations: "disabled" });
     await page.getByRole("button", { name: "返回工作区", exact: true }).click();
+    await selectProductReleaseGoal();
     await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Tasks" }).click();
     await page.locator(".personal-object-list").first().waitFor({ state: "visible" });
     await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Files" }).click();
+    const reportOutput = page.getByTestId("personal-goal-outputs").getByRole("button", { name: /Product Release milestone report/ });
+    await reportOutput.waitFor({ state: "visible" });
+    await reportOutput.click();
+    await page.getByTestId("personal-periodic-report-detail").getByText("Release candidate verified", { exact: true }).waitFor({ state: "visible" });
+    await page.getByTestId("personal-periodic-report-detail").getByText("Rollout plan updated", { exact: true }).waitFor({ state: "visible" });
+    if (await page.locator('[data-testid="frontstage-milestone-reports"]').count()) throw new Error("Milestone report still rendered in the deprecated Ops Frontstage");
+    await page.getByRole("button", { name: /关闭详情/ }).click();
+    await selectFirstGoal();
     await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Chat" }).click();
 
     const composer = page.getByLabel("向 LoopX 发送消息");
@@ -1213,7 +1629,8 @@ async function main() {
     if (!heartbeatPreview) throw new Error("Continuation intent did not map to heartbeat.bind");
     await page.getByRole("button", { name: "关闭", exact: true }).click();
 
-    await page.getByRole("button", { name: "Goal 详情" }).click();
+    await page.getByRole("button", { name: "打开 Goal 详情或能力配置" }).click();
+    await page.getByRole("group", { name: "Goal 设置" }).getByRole("button", { name: /Goal 详情/ }).click();
     await page.getByRole("button", { name: "Tasks" }).click();
     const taskCards = page.locator(".personal-object-list", { hasText: "进行中" }).locator(".personal-task-card");
     const taskRow = taskCards.first().locator(":scope > button");
@@ -1265,6 +1682,28 @@ async function main() {
       if (!api.actionPreviews.some((preview) => preview.action_kind === actionKind && (operation === null || preview.normalized_parameters.operation === operation))) throw new Error(`Todo ${label} did not create the expected typed preview`);
       await page.getByRole("button", { name: "关闭", exact: true }).click();
     }
+    api.nextActionPreviewDelayMs = 900;
+    const quickComplete = taskCards.first().getByRole("button", { name: /^标记完成：/u });
+    const quickPreviewCount = api.actionPreviews.length;
+    await quickComplete.click();
+    await page.waitForFunction(
+      () => document.querySelector('button[aria-label^="标记完成："]')?.getAttribute("aria-busy") === "true",
+      null,
+      { timeout: 600 },
+    );
+    if (!(await quickComplete.isDisabled())) throw new Error("Quick Todo completion remained clickable while preview creation was pending");
+    await page.getByText(/^正在准备确认预览：/u).waitFor({ state: "visible", timeout: 600 });
+    await page.getByText("确认执行").waitFor({ state: "visible", timeout: 2_000 });
+    if (api.actionPreviews.length !== quickPreviewCount + 1) throw new Error("Quick Todo completion did not create exactly one typed preview");
+    const quickPreview = api.actionPreviews.at(-1);
+    if (quickPreview?.action_kind !== "todo.update" || quickPreview.normalized_parameters.operation !== "complete") throw new Error(`Quick Todo completion created the wrong typed preview: ${JSON.stringify(quickPreview)}`);
+    await page.getByRole("button", { name: "关闭", exact: true }).click();
+    api.failNextActionPreview = true;
+    api.nextActionPreviewDelayMs = 300;
+    await quickComplete.click();
+    await page.getByText(/^无法准备确认预览：/u).waitFor({ state: "visible", timeout: 1_000 });
+    if (await quickComplete.isDisabled()) throw new Error("Quick Todo completion stayed disabled after a preview failure");
+    if (api.actionPreviews.length !== quickPreviewCount + 1) throw new Error("A rejected quick completion preview was recorded as ready");
     await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Chat" }).click();
     await page.getByRole("dialog").filter({ hasText: "确认执行" }).waitFor({ state: "hidden" });
 
@@ -1300,7 +1739,10 @@ async function main() {
         await page.getByText("已应用，LoopX 状态将刷新。").waitFor({ state: "visible" });
         if (api.durableWriteCount !== writesBeforeApply + 1) throw new Error("Monitor confirmation did not produce exactly one durable write");
         if (!api.actionApplies.includes(monitorUpdate.proposalId)) throw new Error("Monitor confirmation did not apply the previewed proposal");
+        api.nextStatusDelayMs = 1_600;
         await page.getByRole("button", { name: "查看更新后的 Goal", exact: true }).click();
+        await page.getByRole("dialog").filter({ hasText: "执行结果" }).waitFor({ state: "hidden", timeout: 600 });
+        await goalNavigation.getByRole("button", { name: "Tasks", current: "page" }).waitFor({ state: "visible", timeout: 600 });
         await goalNavigation.getByRole("button", { name: "Chat" }).click();
       } else {
         await page.getByRole("button", { name: "关闭", exact: true }).click();
@@ -1308,17 +1750,28 @@ async function main() {
     }
     pass(10, "Continuation mapped to heartbeat.bind and bounded monitoring mapped to monitor.create/continuous_monitor UI.");
 
-    const agentSelect = page.getByLabel("选择 Agent");
-    const unavailableAgent = agentSelect.locator('option[value="offline-agent"]');
-    if ((await unavailableAgent.count()) !== 1) throw new Error(`Unavailable Agent missing; options=${await agentSelect.locator("option").allTextContents()}`);
-    const unavailableDisabled = (await unavailableAgent.getAttribute("disabled")) !== null;
+    const agentSelect = page.getByRole("combobox", { name: "选择聊天 Runtime" });
+    await agentSelect.click();
+    const agentListbox = page.getByRole("listbox", { name: "选择聊天 Runtime" });
+    const unavailableAgent = agentListbox.getByRole("option", { name: /Offline Agent · 不可用/ });
+    if ((await unavailableAgent.count()) !== 1) throw new Error(`Unavailable Agent missing; options=${await agentListbox.getByRole("option").allTextContents()}`);
+    const unavailableDisabled = await unavailableAgent.isDisabled();
     const unavailableLabel = await unavailableAgent.textContent();
     if (!unavailableDisabled || !unavailableLabel?.includes("不可用")) {
       throw new Error(`Unavailable Agent is selectable or lacks explanation; disabled=${unavailableDisabled}; label=${unavailableLabel}`);
     }
+    await page.screenshot({ path: resolve(outputDir, "agent-select-open.png"), fullPage: false, animations: "disabled" });
+    await page.keyboard.press("ArrowDown");
+    const focusedAgentOption = await page.locator(":focus").textContent();
+    if (!focusedAgentOption?.includes("Claude Code")) throw new Error(`Agent keyboard navigation did not advance: ${focusedAgentOption}`);
+    await page.keyboard.press("Escape");
+    if (await agentListbox.isVisible().catch(() => false)) throw new Error("Agent menu did not close on Escape");
+    if (!(await agentSelect.evaluate((element) => element === document.activeElement))) throw new Error("Agent menu did not restore trigger focus");
     pass(14, "Codex remained the healthy default and the unavailable Agent option was disabled with explanation.");
-    await agentSelect.selectOption("claude-code");
-    if ((await agentSelect.inputValue()) !== "claude-code") throw new Error("Healthy Agent selection did not update");
+    await agentSelect.click();
+    const reopenedAgentListbox = page.getByRole("listbox", { name: "选择聊天 Runtime" });
+    await reopenedAgentListbox.getByRole("option", { name: "Claude Code", exact: true }).click();
+    if ((await agentSelect.getAttribute("data-value")) !== "claude-code") throw new Error("Healthy Agent selection did not update");
     await page.getByRole("button", { name: "刷新状态" }).click();
 
     await page.locator(".personal-run-row").first().click();
@@ -1433,15 +1886,17 @@ async function main() {
     await remote.getByLabel("名称").fill("Remote build host");
     await remote.getByLabel("本地转发 URL").fill("http://127.0.0.1:8976/status.json");
     await remote.getByRole("button", { name: "添加只读来源" }).click();
-    const remoteSourceSelect = remote.getByLabel("选择控制面来源");
-    // 3 saved sources (本机 + remote-lab + Remote build host) plus the
-    // quick-add optgroup exposing the remaining configured host (remote-build).
-    if (await remoteSourceSelect.locator("option").count() !== 4) throw new Error("Multiple SSH tunnel sources were not retained in the source catalog");
-    if (await remoteSourceSelect.locator("optgroup").count() !== 1) throw new Error("Configured SSH Host quick-add group is missing");
-    await remoteSourceSelect.selectOption({ label: "remote-build" });
+    const remoteSourceSelect = remote.getByRole("combobox", { name: "选择控制面来源" });
+    await remoteSourceSelect.click();
+    const remoteSourceListbox = remote.getByRole("listbox", { name: "选择控制面来源" });
+    if (await remoteSourceListbox.getByRole("option").count() !== 4) throw new Error("Multiple SSH tunnel sources were not retained in the source catalog");
+    if (await remoteSourceListbox.locator(".personal-select-group-label").count() !== 1) throw new Error("Configured SSH Host quick-add group is missing");
+    await remote.screenshot({ path: resolve(outputDir, "control-plane-select-open.png"), fullPage: false, animations: "disabled" });
+    await remoteSourceListbox.getByRole("option", { name: "remote-build", exact: true }).click();
     await remote.locator(".personal-read-only-source", { hasText: "remote-build" }).waitFor({ state: "visible", timeout: 10_000 });
     pass(21, "Quick-add configured SSH host from the control-plane source dropdown.");
-    await remoteSourceSelect.selectOption({ label: "remote-lab" });
+    await remoteSourceSelect.click();
+    await remote.getByRole("listbox", { name: "选择控制面来源" }).getByRole("option", { name: "remote-lab", exact: true }).click();
     await remote.locator(".personal-read-only-source", { hasText: "remote-lab" }).waitFor({ state: "visible", timeout: 10_000 });
     await remote.locator(".personal-channel-composer").waitFor({ state: "detached", timeout: 3_000 });
     await remote.screenshot({ path: resolve(outputDir, "remote-read-only-source.png"), fullPage: false, animations: "disabled" });
@@ -1473,6 +1928,14 @@ async function main() {
     await installApi(mobile);
     await mobile.goto(url, { waitUntil: "networkidle" });
     await mobile.getByTestId("personal-goal-home").waitFor({ state: "visible" });
+    const mobileLaneSeparators = await mobile.locator(".personal-home-lane").evaluateAll((lanes) => lanes.map((lane) => {
+      const style = getComputedStyle(lane);
+      return { borderLeftWidth: style.borderLeftWidth, borderTopWidth: style.borderTopWidth };
+    }));
+    if (mobileLaneSeparators.some((lane) => lane.borderLeftWidth !== "0px")
+      || mobileLaneSeparators.slice(1).some((lane) => lane.borderTopWidth !== "1px")) {
+      throw new Error(`Mobile lanes did not switch to horizontal separators: ${JSON.stringify(mobileLaneSeparators)}`);
+    }
     const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     if (mobileOverflow > 1) throw new Error(`Mobile workspace has ${mobileOverflow}px horizontal overflow`);
     await mobile.screenshot({ path: resolve(outputDir, "mobile-first-screen.png"), fullPage: false, animations: "disabled" });
@@ -1529,18 +1992,93 @@ async function main() {
     }
     await mobileManagerLink.click();
     await mobile.locator(".personal-home-board").waitFor({ state: "visible" });
+    await mobileNavigationTrigger.click();
+    await mobile.getByRole("dialog", { name: "Goal 导航" }).waitFor({ state: "visible" });
+    await mobile.locator(".personal-goal-link").first().click();
+    await mobile.getByRole("button", { name: "Tasks", current: "page" }).waitFor({ state: "visible" });
+    await mobile.getByRole("button", { name: "打开 Goal 详情或能力配置" }).click();
+    const mobileGoalToolsMenu = mobile.getByRole("group", { name: "Goal 设置" });
+    await mobileGoalToolsMenu.waitFor({ state: "visible" });
+    const mobileMenuBox = await mobileGoalToolsMenu.boundingBox();
+    if (!mobileMenuBox || mobileMenuBox.x < 0 || mobileMenuBox.x + mobileMenuBox.width > 390) {
+      throw new Error(`Mobile Goal settings menu escaped the viewport: ${JSON.stringify(mobileMenuBox)}`);
+    }
+    const mobileGoalOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    if (mobileGoalOverflow > 1) throw new Error(`Mobile Goal header has ${mobileGoalOverflow}px horizontal overflow`);
+    await mobile.screenshot({ path: resolve(outputDir, "mobile-goal-settings-menu.png"), fullPage: false, animations: "disabled" });
     await mobile.close();
-    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Personal workspace did not start with the default theme");
+    const progressive = await browser.newPage({ viewport: { width: 1512, height: 982 } });
+    const progressiveApi = await installApi(progressive);
+    progressiveApi.nextFullStatusDelayMs = 1_500;
+    await progressive.goto(url, { waitUntil: "domcontentloaded" });
+    await progressive.getByTestId("personal-goal-home").waitFor({ state: "visible", timeout: 10_000 });
+    const progressiveActiveVisibleBeforeStopped = await progressive.waitForFunction(
+      () => document.querySelectorAll(".personal-goal-list:not(.is-stopped) .personal-goal-row").length === 5,
+      null,
+      { timeout: 3_000 },
+    );
+    const stoppedLoadingVisible = await progressive.locator(".personal-stopped-goals summary svg.is-spinning, .personal-stopped-goals summary svg[class*='spinning']").count();
+    if (!progressiveActiveVisibleBeforeStopped) throw new Error("Active Goals did not render first while the stopped archive was still loading");
+    if (stoppedLoadingVisible === 0) throw new Error("Stopped Goals archive did not expose an accessible loading state");
+    await progressive.locator(".personal-stopped-goals .personal-goal-row").first().waitFor({ state: "attached", timeout: 6_000 });
+    const progressiveStoppedCount = await progressive.locator(".personal-stopped-goals .personal-goal-row").count();
+    if (progressiveStoppedCount !== 2) throw new Error(`Stopped Goals archive loaded the wrong count: ${progressiveStoppedCount}`);
+    if ((await progressive.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 5) throw new Error("Active Goal directory regressed after the stopped archive loaded");
+    pass(21, "The stopped archive loads after active Goals: active Goals are interactive first, the stopped section shows an accessible loading state, then stopped Goals arrive without replacing the page.");
+    await progressive.close();
+
+    const revisionRace = await browser.newPage({ viewport: { width: 1512, height: 982 } });
+    const revisionRaceApi = await installApi(revisionRace);
+    revisionRaceApi.captureNextStatusGeneration = true;
+    revisionRaceApi.activationChangeAfterCapturedActive = {
+      goalId: "product-release",
+      activationState: "stopped",
+    };
+    revisionRaceApi.nextFullStatusDelayMs = 800;
+    await revisionRace.goto(url, { waitUntil: "domcontentloaded" });
+    await revisionRace.getByTestId("personal-goal-home").waitFor({ state: "visible", timeout: 10_000 });
+    await revisionRace.locator(".personal-stopped-goals .personal-goal-row").first().waitFor({ state: "attached", timeout: 6_000 });
+    await revisionRace.waitForFunction(() => document.querySelectorAll(".personal-goal-list:not(.is-stopped) .personal-goal-row").length === 4, null, { timeout: 6_000 });
+    if (await revisionRace.locator(".personal-stopped-goal-error").count()) {
+      throw new Error("Registry revision mismatch did not converge after the bounded automatic resync");
+    }
+    if (await revisionRace.locator(".personal-goal-row").filter({ hasText: "Product Release" }).count() !== 1) {
+      throw new Error("Registry revision race duplicated or omitted Product Release");
+    }
+    await revisionRace.close();
+
+    const progressiveError = await browser.newPage({ viewport: { width: 1512, height: 982 } });
+    const errorApi = await installApi(progressiveError);
+    errorApi.failNextFullStatus = true;
+    await progressiveError.goto(url, { waitUntil: "domcontentloaded" });
+    await progressiveError.getByTestId("personal-goal-home").waitFor({ state: "visible", timeout: 10_000 });
+    await progressiveError.locator(".personal-stopped-goal-error").waitFor({ state: "visible", timeout: 4_000 });
+    if ((await progressiveError.locator(".personal-goal-list:not(.is-stopped) .personal-goal-row").count()) !== 5) throw new Error("A failed stopped archive replaced the active workspace");
+    await progressiveError.getByText("重试", { exact: true }).click();
+    await progressiveError.locator(".personal-stopped-goals .personal-goal-row").first().waitFor({ state: "attached", timeout: 6_000 });
+    const errorRecoveredCount = await progressiveError.locator(".personal-stopped-goals .personal-goal-row").count();
+    if (errorRecoveredCount !== 2) throw new Error(`Retry did not recover the stopped archive: ${errorRecoveredCount}`);
+    pass(22, "A stopped-archive failure keeps active Goals usable and offers a retry that restores the stopped section without a full-page error.");
+    await progressiveError.close();
+
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "loopx") throw new Error("Personal workspace did not start with the LoopX standard theme");
     if (await page.getByRole("button", { name: /切换到野兽主题|切换到默认主题/ }).count()) throw new Error("Workspace header still exposes the old theme toggle");
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await page.getByRole("button", { name: /外观/ }).click();
     await page.getByRole("radio", { name: /高对比/ }).click();
     if (await page.locator(".personal-settings-page").getAttribute("data-pw-theme") !== "brutal") throw new Error("Settings did not enable the high-contrast theme");
-    await page.getByRole("radio", { name: /默认/ }).click();
-    if (await page.locator(".personal-settings-page").getAttribute("data-pw-theme") !== "paper") throw new Error("Settings did not restore the default theme");
+    await page.getByRole("radio", { name: /纸张/ }).click();
+    if (await page.locator(".personal-settings-page").getAttribute("data-pw-theme") !== "paper") throw new Error("Settings did not enable the paper theme");
+    await page.getByRole("radio", { name: /LoopX 标准/ }).click();
+    if (await page.locator(".personal-settings-page").getAttribute("data-pw-theme") !== "loopx") throw new Error("Settings did not restore the LoopX standard theme");
+    if (await page.evaluate(() => localStorage.getItem("loopx-pw-theme")) !== "loopx") throw new Error("LoopX standard theme was not persisted");
+    await page.screenshot({ path: resolve(outputDir, "desktop-settings-loopx-theme.png"), fullPage: false, animations: "disabled" });
     await page.getByRole("button", { name: "返回工作区", exact: true }).click();
-    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Workspace did not apply the Settings theme readback");
-    pass(16, "The Settings appearance tab toggles the high-contrast theme and returns to the default theme.");
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "loopx") throw new Error("Workspace did not apply the LoopX standard theme readback");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.getByTestId("personal-goal-home").waitFor({ state: "visible" });
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "loopx") throw new Error("LoopX standard theme did not survive reload");
+    pass(16, "The Settings appearance tab switches among all three themes and restores the LoopX standard default.");
     await page.locator(".personal-manager-link").first().click();
     await page.waitForTimeout(600);
     const workerCards = await page.locator(".personal-worker-strip > button").count();

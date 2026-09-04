@@ -116,9 +116,12 @@ contract for local write affordances:
 }
 ```
 
-The dashboard frontstage ops route uses a TanStack Query-backed local status
-reader for `/frontstage?mode=ops&statusUrl=<relative-or-loopback>`. Showcase
-mode still ignores `statusUrl`; only explicit ops mode may fetch a status feed.
+The deprecated dashboard diagnostics route uses a TanStack Query-backed local
+status reader at
+`/deprecated/frontstage/ops?statusUrl=<relative-or-loopback>`. The old
+`/frontstage?mode=ops` form redirects to that namespace. Showcase mode still
+ignores `statusUrl`; only the explicit deprecated diagnostics route may fetch a
+status feed.
 The query layer validates `status_contract.schema_version` before trusting a
 loopback feed. If the feed is below the dashboard's expected schema version,
 the route shows stale-daemon repair copy using `status_contract.reload_hint`
@@ -1396,6 +1399,13 @@ remain visible, while `interaction_contract.user_channel` becomes
 `action_required=false`, `notify=DONT_NOTIFY` until the bounded reminder window
 or a material gate/host change. Other blocker-push
 cases may still be de-duplicated when the same blocker was surfaced recently.
+
+The suppression decision also removes `actions` and `non_blocking` from the
+final user channel, so a remaining `user_action` cannot re-promote the same
+contract to `NOTIFY`. Provider sinks must deduplicate delivery by gate identity
+plus material state generation, with an additional reminder generation only
+for an explicitly due reminder window; presentation text is not delivery
+identity.
 Eligible monitor-only no-transition polls keep open user todos in
 `user_todo_summary`, but do not force repeated notification or set
 `requires_user_action=true`; they should surface as a quiet

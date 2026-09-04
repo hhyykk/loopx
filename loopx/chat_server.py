@@ -22,7 +22,9 @@ from .chat_agent import CodexChatAgentError
 from .chat_attachments import normalize_chat_image_attachments
 from .chat_actions import ChatActionService, ProtectedActionGate
 from .chat_action_store import ACTION_KINDS, ActionConflictError, ChatActionStore
+from . import chat_configuration_api as config_api
 from .chat_runtime import ChatRuntimeController, TERMINAL_TURN_STATES
+from .chat_status_api import ChatStatusRequestMixin
 from .chat_ssh_source_api import SSH_SOURCE_ENSURE_PATH, SshSourceRequestMixin
 from .chat_store import ChatSessionStore
 from .control_plane.status.ssh_host_catalog import (
@@ -63,7 +65,6 @@ from .paths import resolve_runtime_root
 from .release_manifest import release_runtime_identity
 from .registry import registry_goals, resolve_state_file
 from .state_projection import build_active_state_structured_projection
-from .status import collect_status
 from .status_server import (
     cors_response_headers,
     is_loopback_host,
@@ -430,6 +431,8 @@ class ChatRequestHandler(
     AttachedSessionRequestMixin,
     SshSourceRequestMixin,
     LarkChatRequestMixin,
+    config_api.ChatConfigurationRequestMixin,
+    ChatStatusRequestMixin,
     BaseHTTPRequestHandler,
 ):
     server: ChatHTTPServer
@@ -533,31 +536,6 @@ class ChatRequestHandler(
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
-
-    def _status(self) -> None:
-        try:
-            projection = collect_status(
-                registry_path=self.server.registry_path,
-                runtime_root_override=self.server.runtime_root_override,
-                scan_roots=self.server.scan_roots,
-                limit=self.server.limit,
-                goal_id=self.server.selected_goal_id,
-                include_public_boundary_scan=False,
-            )
-            protected_paths = [
-                self.server.registry_path,
-                *self.server.scan_roots,
-            ]
-            projection = json.loads(
-                redact_local_paths(
-                    json.dumps(projection, ensure_ascii=False),
-                    protected_paths=protected_paths,
-                )
-            )
-        except Exception:
-            self._send_error("LoopX status could not be projected for the workspace.", status=500)
-            return
-        self._send_json(projection)
 
     def _create_session(self) -> None:
         try:
@@ -1319,6 +1297,7 @@ class ChatRequestHandler(
             CHAT_LARK_CHATS_PATH: self._lark_chats,
             CHAT_LARK_CONNECTIONS_PATH: self._lark_connections,
             CHAT_GOAL_CHANNEL_TARGETS_PATH: self._goal_channel_targets,
+            **self._configuration_get_routes(),
             DEFAULT_CHAT_STATUS_PATH: self._status,
             SSH_HOST_CATALOG_PATH: self._ssh_hosts,
         }
@@ -1358,6 +1337,7 @@ class ChatRequestHandler(
             CHAT_GOAL_CHANNEL_CONFIGURE_PATH: self._goal_channel_configure,
             CHAT_LARK_APP_SETUPS_PATH: self._lark_setup_start,
             CHAT_LARK_CONNECTIONS_PATH: self._lark_connect,
+            **self._configuration_post_routes(),
             SSH_SOURCE_ENSURE_PATH: self._ssh_source_ensure,
         }
         if path in post_dispatch:
@@ -1446,6 +1426,7 @@ def serve_chat(
     )
     server = ChatHTTPServer((host, port), ChatRequestHandler)
     server.registry_path = resolved_registry_path
+    server.runtime_root = runtime_root
     server.runtime_root_override = resolved_runtime_root_override
     server.scan_roots = resolved_scan_roots
     server.limit = limit

@@ -7,6 +7,7 @@ import {
   RunGoal,
   RunRecord,
   StatusPayload,
+  type PeriodicReportProjection,
   AgentManagementProjection,
   TodoItem,
   TodoGroup,
@@ -18,6 +19,13 @@ import {
   withGoalActivationState,
   withoutGoal,
 } from "../data/status";
+import {
+  fetchPeriodicReportIndex,
+  fetchPeriodicReportProjection,
+  periodicReportApiUrls,
+  resolveLocalStatusUrl,
+  scopedStatusUrl,
+} from "../data/local-status-query";
 import {
   ChatApiError,
   applyTypedAction,
@@ -45,6 +53,17 @@ import {
   type ProtectedActionProposal,
   type TodoProposal,
 } from "../data/chat";
+import {
+  beginStatusRequest,
+  createStatusRequestFence,
+  resetStatusRequestFence,
+  reserveStatusSourceSelection,
+  statusRequestCanCommit,
+  statusRequestIsCurrent,
+  type StatusRequest,
+  type StatusRequestFence,
+} from "../data/status-request-fence";
+import { mergeScopedStatusProjections } from "../data/status-merge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
@@ -66,6 +85,7 @@ import {
   type WorkspaceTimelineItem,
   type WorkspaceWorker,
   type WorkspaceGoalNotification,
+  type WorkspaceGoalArchiveLoadState,
   type WorkspaceActionPreview,
   type WorkspaceActionPreviewRequest,
 } from "../features/personal-workspace/personal-workspace-model";
@@ -126,74 +146,6 @@ type DataSource =
   | { kind: "file"; label: string }
   | { kind: "url"; label: string };
 
-type StatusRequestFence = {
-  loadedUrl: string | null;
-  projectionRevision: number;
-  requestedUrl: string | null;
-  selectionRevision: number;
-};
-
-type StatusRequest = {
-  background: boolean;
-  projectionRevision: number;
-  selectionRevision: number;
-  url: string;
-};
-
-function reserveStatusSourceSelection(fence: StatusRequestFence, url: string) {
-  fence.selectionRevision += 1;
-  fence.requestedUrl = url;
-  return fence.selectionRevision;
-}
-
-function beginStatusRequest(
-  fence: StatusRequestFence,
-  url: string,
-  options: { background: boolean; selectionRevision?: number },
-): StatusRequest | null {
-  if (options.background) {
-    if (fence.requestedUrl !== null || fence.loadedUrl !== url) return null;
-    return {
-      background: true,
-      projectionRevision: fence.projectionRevision,
-      selectionRevision: fence.selectionRevision,
-      url,
-    };
-  }
-  const selectionRevision = options.selectionRevision ?? fence.selectionRevision + 1;
-  if (options.selectionRevision !== undefined && fence.selectionRevision !== selectionRevision) {
-    return null;
-  }
-  fence.selectionRevision = selectionRevision;
-  fence.projectionRevision += 1;
-  fence.requestedUrl = url;
-  return {
-    background: false,
-    projectionRevision: fence.projectionRevision,
-    selectionRevision,
-    url,
-  };
-}
-
-function statusRequestIsCurrent(fence: StatusRequestFence, request: StatusRequest) {
-  return fence.projectionRevision === request.projectionRevision
-    && fence.selectionRevision === request.selectionRevision;
-}
-
-function statusRequestCanCommit(fence: StatusRequestFence, request: StatusRequest) {
-  return statusRequestIsCurrent(fence, request) && (
-    !request.background
-    || (fence.requestedUrl === null && fence.loadedUrl === request.url)
-  );
-}
-
-function resetStatusRequestFence(fence: StatusRequestFence) {
-  fence.projectionRevision += 1;
-  fence.selectionRevision += 1;
-  fence.requestedUrl = null;
-  fence.loadedUrl = null;
-}
-
 async function fetchStatusPayload(url: string) {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -216,6 +168,7 @@ type GoalDirectoryRow = {
 type AgentManagementRow = {
   agentId: string;
   claimedTodos: TodoExplorerItem[];
+  currentTodo: AgentManagementProjection["agents"][number]["current_todo"];
   evidenceRefs: string[];
   goalIds: string[];
   handoffNote: string | null;
@@ -439,6 +392,7 @@ function buildAgentManagementRows(
     return {
       agentId,
       claimedTodos,
+      currentTodo: projected?.current_todo ?? null,
       evidenceRefs: [],
       goalIds,
       handoffNote: null,
@@ -609,15 +563,6 @@ const personalGoalStateVariant: Record<PersonalGoalState, BadgeVariant> = {
   "已完成": "neutral",
 };
 
-function personalOpsHref(goalId?: string) {
-  const params = new URLSearchParams();
-  params.set("view", "ops");
-  if (goalId) {
-    params.set("goalId", goalId);
-  }
-  return `/?${params.toString()}`;
-}
-
 function personalGoalTitle(goalId: string, displayName?: string | null) {
   const registeredDisplayName = cleanShareText(displayName);
   if (registeredDisplayName) {
@@ -756,6 +701,37 @@ function personalAgentTodoFromItem(todo: TodoItem, row: GoalDirectoryRow): Perso
 
 function personalAgentTodos(row: GoalDirectoryRow): PersonalAgentTodoItem[] {
   return (getShareTodos(row, "agent")?.items ?? []).map((todo) => personalAgentTodoFromItem(todo, row));
+}
+
+function personalAgentTodoFromProjection(
+  todo: NonNullable<AgentManagementProjection["agents"][number]["current_todo"]>,
+  row: GoalDirectoryRow,
+): PersonalAgentTodoItem {
+  return {
+    claimedBy: todo.claimed_by ?? null,
+    done: todo.status === "done" || todo.status === "completed",
+    index: -1,
+    priority: todo.priority ?? null,
+    status: todo.status ?? null,
+    taskClass: todo.task_class ?? null,
+    text: compactShareText(todo.title, 112),
+    todoId: todo.todo_id?.trim() || `${row.goal.id}:agent:${todo.claimed_by ?? "unknown"}:current`,
+  };
+}
+
+function mergePersonalAgentTodos(
+  projectedTodos: PersonalAgentTodoItem[],
+  agentRows: AgentManagementRow[],
+  row: GoalDirectoryRow,
+): PersonalAgentTodoItem[] {
+  const merged = new Map(projectedTodos.map((todo) => [todo.todoId, todo]));
+  for (const agent of agentRows) {
+    const current = agent.currentTodo;
+    if (!current || current.goal_id !== row.goal.id) continue;
+    const todo = personalAgentTodoFromProjection(current, row);
+    if (!merged.has(todo.todoId)) merged.set(todo.todoId, todo);
+  }
+  return [...merged.values()];
 }
 
 /**
@@ -1156,18 +1132,17 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
     const state = personalGoalState(payload, row);
     const needsYouTodo = allUserTodos.find((todo) => todo.goalId === goal.id);
     const needsYou = needsYouTodo?.text ?? null;
-    const goalAgentTodos = personalAgentTodos(row);
     const agentTodoFacts = personalAgentTodoFacts(row);
     const goalAgentRows = agentRows.filter(
-      (agent) => agent.goalIds.includes(goal.id) && !/unassigned|unknown/i.test(agent.agentId),
+      (agent) => agent.goalIds.includes(goal.id)
+        && !/unassigned|unknown/i.test(agent.agentId)
+        && (agent.currentTodo?.goal_id === goal.id || agent.claimedTodos.some((todo) => todo.goalId === goal.id)),
     );
-    const agentRow =
-      goalAgentRows.find(
-        (agent) => /codex/i.test(agent.agentId) && agent.status.variant !== "danger",
-      ) ??
-      goalAgentRows.find((agent) => agent.status.variant !== "danger") ??
-      goalAgentRows.find((agent) => /codex/i.test(agent.agentId)) ??
-      goalAgentRows[0];
+    const sortedGoalAgentRows = [...goalAgentRows].sort((left, right) =>
+      (right.lastActivity ?? "").localeCompare(left.lastActivity ?? ""),
+    );
+    const agentRow = sortedGoalAgentRows[0];
+    const goalAgentTodos = mergePersonalAgentTodos(personalAgentTodos(row), sortedGoalAgentRows, row);
     const nextSentence = [
       agentTodoFacts.nextTodoText,
       row.queueItem?.recommended_action,
@@ -1178,6 +1153,14 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
     return [{
       activationState: goal.activation_state,
       agentId: agentRow?.agentId ?? "codex",
+      agentLaneCount: sortedGoalAgentRows.length,
+      agentLanes: sortedGoalAgentRows.map((agent) => ({
+        agentId: agent.agentId,
+        label: agent.agentId,
+        lastActivityAt: agent.lastActivity,
+        state: agent.status.label,
+      })),
+      agentLabel: agentRow?.agentId,
       agentSentence: personalAgentSentence(payload, row, state),
       agentTodos: [...goalAgentTodos, ...agentTodoFacts.recentCompleted],
       doneTodoCount: agentTodoFacts.doneTodoCount,
@@ -1266,12 +1249,14 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
   };
 }
 function PersonalGoalHome({
+  goalArchiveLoadState,
   isLoading,
   onGoalActivationStateChange,
   onGoalDeleted,
   onSelectGoal,
   onReconcileStatus,
   onRefresh,
+  onRetryGoalArchive,
   payload,
   rows,
   selectedGoalId,
@@ -1279,12 +1264,14 @@ function PersonalGoalHome({
   theme,
   toggleTheme,
 }: {
+  goalArchiveLoadState: WorkspaceGoalArchiveLoadState;
   isLoading: boolean;
   onGoalActivationStateChange: (goalId: string, activationState: "active" | "stopped") => void;
   onGoalDeleted: (goalId: string) => void;
   onSelectGoal: (goalId: string) => void;
   onReconcileStatus: () => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
+  onRetryGoalArchive: () => void | Promise<void>;
   payload: StatusPayload;
   rows: GoalDirectoryRow[];
   selectedGoalId: string;
@@ -1308,6 +1295,9 @@ function PersonalGoalHome({
   }>>([]);
   const model = buildPersonalHomeModel(payload, rows);
   const selectedGoal = model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
+  const [periodicReport, setPeriodicReport] = useState<PeriodicReportProjection | null>(null);
+  const [periodicReportError, setPeriodicReportError] = useState<string | null>(null);
+  const [periodicReportLoading, setPeriodicReportLoading] = useState(false);
   const sessionDiscoveryKey = model.goals.map((goal) => `${goal.goalId}:${goal.agentId}`).join("|");
   const contextId = selectedGoal?.goalId ?? "manager";
   const managerSummary = !payload.ok
@@ -1408,6 +1398,46 @@ function PersonalGoalHome({
         visibleUserTodos: goalUserTodos,
       }
     : model;
+
+  useEffect(() => {
+    const resolved = resolveLocalStatusUrl(
+      statusSourceControl.activeSource.statusUrl,
+      window.location.href,
+    );
+    const urls = resolved.source ? periodicReportApiUrls(payload, resolved.source) : null;
+    if (!selectedGoal || !urls?.indexUrl || !urls.detailUrl) {
+      setPeriodicReport(null);
+      setPeriodicReportError(null);
+      setPeriodicReportLoading(false);
+      return;
+    }
+    const { detailUrl, indexUrl } = urls;
+    let cancelled = false;
+    setPeriodicReport(null);
+    setPeriodicReportError(null);
+    setPeriodicReportLoading(true);
+    void fetchPeriodicReportIndex(indexUrl, selectedGoal.goalId)
+      .then(async (index) => {
+        const ref = index.items[0]?.detail_ref;
+        return ref ? fetchPeriodicReportProjection(detailUrl, ref) : null;
+      })
+      .then((report) => {
+        if (!cancelled) setPeriodicReport(report);
+      })
+      .catch((error) => {
+        if (!cancelled) setPeriodicReportError(formatStatusError(error));
+      })
+      .finally(() => {
+        if (!cancelled) setPeriodicReportLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    payload,
+    selectedGoal?.goalId,
+    statusSourceControl.activeSource.statusUrl,
+  ]);
 
   function recordRuntimeBinding(targetContextId: string, binding: PersonalRuntimeBinding | null) {
     setRuntimeBindings((current) => {
@@ -2338,9 +2368,49 @@ function PersonalGoalHome({
         todoId: goal.runEvidence.todoId ?? undefined,
       },
     }] : []),
+    ...(selectedGoal && periodicReport ? [{
+      id: `output:${selectedGoal.goalId}:report:${periodicReport.publication.publication_id}`,
+      kind: "output" as const,
+      output: {
+        agentId: periodicReport.agent_id,
+        agentLabel: personalAgentLabel(periodicReport.agent_id),
+        createdAt: periodicReport.publication.delivered_at,
+        goalId: selectedGoal.goalId,
+        goalTitle: selectedGoal.title,
+        kind: "report" as const,
+        outputId: periodicReport.publication.publication_id,
+        report: {
+          addedCount: periodicReport.delta.added_count,
+          changedCount: periodicReport.delta.changed_count,
+          deliveredAt: periodicReport.publication.delivered_at,
+          generationId: periodicReport.generation_id,
+          items: periodicReport.delta.items.map((item) => ({
+            changeKind: item.change_kind,
+            previousStatus: item.previous_status,
+            sourceRef: item.source_ref,
+            status: item.status,
+            summary: item.summary,
+            title: item.title,
+          })),
+          periodEndAt: periodicReport.period_window.end_at,
+          periodStartAt: periodicReport.period_window.start_at,
+          predecessorPublicationId: periodicReport.publication.predecessor_publication_id,
+          publicationId: periodicReport.publication.publication_id,
+        },
+        safePreview: periodicReport.delta.items
+          .map((item) => `${item.change_kind === "added" ? "+" : "~"} ${item.title}\n${item.summary}`)
+          .join("\n\n"),
+        summary: periodicReport.summary,
+        title: periodicReport.title,
+      },
+    }] : []),
   ];
   const workspaceModel = {
     ...normalizePersonalHomeModel(model),
+    periodicReports: {
+      error: periodicReportError,
+      loading: periodicReportLoading,
+    },
     timeline: workspaceTimeline,
   };
   return (
@@ -2462,6 +2532,7 @@ function PersonalGoalHome({
           onGoalActivationStateChange,
           onGoalDeleted,
           onReconcileStatus,
+          onRetryGoalArchive,
           onExportOutput: async (output) => {
             const contents = [
               `# ${output.title}`,
@@ -2488,6 +2559,7 @@ function PersonalGoalHome({
           onSendMessage: async (message, agentId, goalId, attachments) => sendManagerQuestion(message, { agentId, goalId, attachments }),
           onStartNewRunSession: startNewManagerSession,
         }}
+        goalArchiveLoadState={goalArchiveLoadState}
         model={workspaceModel}
         readOnly={readOnly}
         selectedAgentId={selectedAgent.agentId}
@@ -2590,17 +2662,18 @@ export function DashboardPage() {
   const [statusUrl, setStatusUrl] = useState(search.statusUrl);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [goalArchiveLoadState, setGoalArchiveLoadState] = useState<WorkspaceGoalArchiveLoadState>({
+    error: null,
+    phase: "idle",
+  });
   const [requestedStatusUrl, setRequestedStatusUrl] = useState<string | null>(
     search.statusUrl.trim() || null,
   );
   const [exampleModeRequested, setExampleModeRequested] = useState(false);
   const suppressedStatusUrlRef = useRef<string | null>(null);
-  const statusRequestFenceRef = useRef<StatusRequestFence>({
-    loadedUrl: null,
-    projectionRevision: 0,
-    requestedUrl: search.statusUrl.trim() || null,
-    selectionRevision: 0,
-  });
+  const statusRequestFenceRef = useRef<StatusRequestFence>(
+    createStatusRequestFence(search.statusUrl.trim() || null),
+  );
   const routeStatusRequestUrl = !exampleModeRequested && source.kind === "example"
     ? search.statusUrl.trim()
     : "";
@@ -2624,9 +2697,72 @@ export function DashboardPage() {
     [runHistory.goals, queue.items],
   );
 
+  function loadGoalArchive(url: string, request: StatusRequest, resyncAttempt = 0) {
+    setGoalArchiveLoadState({ error: null, phase: "loading" });
+    void fetchStatusPayload(scopedStatusUrl(url, "stopped", window.location.href))
+      .then((archivePayload) => {
+        if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
+        const archiveRevision = archivePayload.goal_projection?.registry_revision ?? null;
+        const revisionMismatch = request.registryRevision !== null
+          && request.registryRevision !== undefined
+          && archiveRevision !== null
+          && request.registryRevision !== archiveRevision;
+        setPayload((current) => mergeScopedStatusProjections(current, archivePayload));
+        if (revisionMismatch && resyncAttempt < 1) {
+          void loadFromUrl(url, { background: true, resyncAttempt: resyncAttempt + 1 });
+          return;
+        }
+        setGoalArchiveLoadState(
+          revisionMismatch
+            ? { error: "Goal 状态在加载历史时发生变化，请重试。", phase: "error" }
+            : { error: null, phase: "ready" },
+        );
+      })
+      .catch((error) => {
+        if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
+        setGoalArchiveLoadState({ error: formatStatusError(error), phase: "error" });
+      });
+  }
+
+  function retryGoalArchive() {
+    const url = source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl);
+    const request = beginStatusRequest(statusRequestFenceRef.current, url, { background: true });
+    if (request) loadGoalArchive(url, request);
+  }
+
+  async function commitLoadedStatus(
+    url: string,
+    nextPayload: StatusPayload,
+    request: StatusRequest,
+  ) {
+    if (request.background) {
+      setPayload((current) => mergeScopedStatusProjections(current, nextPayload));
+      return true;
+    }
+    const nextSource: DataSource = { kind: "url", label: url };
+    statusRequestFenceRef.current.loadedUrl = url;
+    setPayload(nextPayload);
+    setSource(nextSource);
+    setStatusUrl(url);
+    await navigate({
+      search: (current) => ({
+        ...current,
+        statusUrl: url,
+      }),
+    });
+    if (!statusRequestIsCurrent(statusRequestFenceRef.current, request)) return false;
+    statusRequestFenceRef.current.requestedUrl = null;
+    setRequestedStatusUrl(null);
+    return true;
+  }
+
   async function loadFromUrl(
     url: string,
-    options: { background?: boolean; selectionRevision?: number } = {},
+    options: {
+      background?: boolean;
+      resyncAttempt?: number;
+      selectionRevision?: number;
+    } = {},
   ) {
     const trimmed = url.trim();
     const background = options.background === true;
@@ -2645,28 +2781,21 @@ export function DashboardPage() {
       setRequestedStatusUrl(trimmed);
       setIsLoading(true);
       setLoadError(null);
+      setGoalArchiveLoadState({ error: null, phase: "idle" });
     }
     try {
-      const nextPayload = await fetchStatusPayload(trimmed);
+      const nextPayload = await fetchStatusPayload(
+        scopedStatusUrl(trimmed, "active", window.location.href),
+      );
       if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
-      if (background) {
-        setPayload(nextPayload);
+      request.registryRevision = nextPayload.goal_projection?.registry_revision ?? null;
+      if (!await commitLoadedStatus(trimmed, nextPayload, request)) return;
+      if (nextPayload.goal_projection?.scope !== "active"
+        || nextPayload.goal_projection.complete) {
+        setGoalArchiveLoadState({ error: null, phase: "ready" });
         return;
       }
-      const nextSource: DataSource = { kind: "url", label: trimmed };
-      statusRequestFenceRef.current.loadedUrl = trimmed;
-      setPayload(nextPayload);
-      setSource(nextSource);
-      setStatusUrl(trimmed);
-      await navigate({
-        search: (current) => ({
-          ...current,
-          statusUrl: trimmed,
-        }),
-      });
-      if (!statusRequestIsCurrent(statusRequestFenceRef.current, request)) return;
-      statusRequestFenceRef.current.requestedUrl = null;
-      setRequestedStatusUrl(null);
+      loadGoalArchive(trimmed, request, options.resyncAttempt ?? 0);
     } catch (error) {
       if (!statusRequestIsCurrent(statusRequestFenceRef.current, request)) return;
       if (!background) setLoadError(formatStatusError(error));
@@ -2754,6 +2883,7 @@ export function DashboardPage() {
     setRequestedStatusUrl(null);
     setLoadError(null);
     setIsLoading(false);
+    setGoalArchiveLoadState({ error: null, phase: "ready" });
     void navigate({
       search: (current) => ({
         ...current,
@@ -2806,7 +2936,8 @@ export function DashboardPage() {
       }
       return;
     }
-    if (search.goalId && !goalIds.has(search.goalId)) {
+    if (search.goalId && !goalIds.has(search.goalId)
+      && goalArchiveLoadState.phase !== "loading") {
       void navigate({
         search: (current) => ({
           ...current,
@@ -2814,7 +2945,7 @@ export function DashboardPage() {
         }),
       });
     }
-  }, [goalRows, navigate, search.goalId, search.statusUrl, source.kind]);
+  }, [goalArchiveLoadState.phase, goalRows, navigate, search.goalId, search.statusUrl, source.kind]);
 
   function selectGoal(goalId: string) {
     void navigate({
@@ -2841,6 +2972,7 @@ export function DashboardPage() {
 
   return (
     <PersonalGoalHome
+      goalArchiveLoadState={goalArchiveLoadState}
       isLoading={isLoading}
       onGoalActivationStateChange={(goalId, activationState) => {
         statusRequestFenceRef.current.projectionRevision += 1;
@@ -2855,6 +2987,7 @@ export function DashboardPage() {
         source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl),
         { background: true },
       )}
+      onRetryGoalArchive={retryGoalArchive}
       onRefresh={() => loadFromUrl(source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl))}
       payload={payload}
       rows={goalRows}

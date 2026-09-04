@@ -72,9 +72,10 @@ export const AUTHORITY_STORE_PROVIDER_PROFILES = {
     atomic_commit_mapping: "one_sql_transaction_over_head_events_and_receipts",
     receipt_and_cursor_mapping: "unique_operation_row_and_per_goal_sequence",
     store_lineage_mapping: "service_managed_database_incarnation",
-    trust_boundary: "authenticated_tenant_scoped_loopx_service_role",
+    trust_boundary: "transaction_local_tenant_scoped_service_database_role",
     qualification_holds: [
-      "service_authentication_database_role_and_audit_policy",
+      "service_api_authentication_and_tenant_authorization",
+      "service_role_provisioning_and_audit_policy",
       "restore_incarnation_rotation",
       "failover_pool_exhaustion_and_cancellation",
       "shadow_parity_and_authority_source_promotion",

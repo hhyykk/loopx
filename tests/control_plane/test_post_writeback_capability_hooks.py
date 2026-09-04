@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 
 import pytest
 
@@ -20,6 +21,10 @@ from loopx.control_plane.capability_hooks import (
     dispatch_post_writeback_hooks,
 )
 from loopx.file_lock import exclusive_file_lock
+from loopx.capabilities.periodic_report.incremental import (
+    build_periodic_report_publication_candidate,
+    commit_periodic_report_publication_cursor,
+)
 from loopx.capabilities.periodic_report.post_writeback_hook import (
     build_periodic_report_post_writeback_projection,
     evaluate_periodic_report_trigger_evaluation_intent,
@@ -809,17 +814,21 @@ def test_periodic_report_hook_requires_explicit_goal_profile_opt_in(tmp_path) ->
 
     assert (
         periodic_report_post_writeback_hooks_for_goal(
-            registry_path=registry_path, goal_id="goal-1"
+            registry_path=registry_path,
+            runtime_root=tmp_path / "runtime",
+            goal_id="goal-1",
         )
         == ()
     )
 
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
-    registry["goals"][0]["control_plane"]["periodic_report"]["enabled"] = True
+    registry["goals"][0]["control_plane"]["periodic_report"].update(
+        {"enabled": True, "route_ref": "loopx-concierge"}
+    )
     registry_path.write_text(json.dumps(registry), encoding="utf-8")
 
     hooks = periodic_report_post_writeback_hooks_for_goal(
-        registry_path=registry_path, goal_id="goal-1"
+        registry_path=registry_path, runtime_root=tmp_path / "runtime", goal_id="goal-1"
     )
     assert len(hooks) == 1
     assert hooks[0].hook_id == "periodic_report.runtime_trigger"
@@ -848,6 +857,235 @@ def test_periodic_report_hook_requires_explicit_goal_profile_opt_in(tmp_path) ->
     assert decision["eligible"] is True
     assert decision["selected_trigger_kind"] == "bounded_segment_milestone"
     assert decision["boundary"]["external_writes_performed"] is False
+
+
+def test_periodic_report_hook_uses_live_machine_default_without_goal_mutation(
+    tmp_path,
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    registry_payload = {"goals": [{"id": "goal-1"}]}
+    registry_path.write_text(json.dumps(registry_payload), encoding="utf-8")
+    runtime_root = tmp_path / "runtime"
+    defaults = {
+        "schema_version": "loopx_machine_configuration_v0",
+        "namespaces": {
+            "periodic_report": {
+                "schema_version": "periodic_report_machine_defaults_v0",
+                "enabled": True,
+                "inheritance": "live_machine_default",
+                "profile_preset": "weekly-progress",
+                "route_ref": "loopx-concierge",
+                "timezone": "Asia/Shanghai",
+            }
+        },
+    }
+    from loopx.capabilities.periodic_report.machine_store import (
+        configure_periodic_report_machine_defaults,
+    )
+
+    preview = configure_periodic_report_machine_defaults(
+        runtime_root=runtime_root,
+        machine_defaults=defaults,
+    )
+    configure_periodic_report_machine_defaults(
+        runtime_root=runtime_root,
+        machine_defaults=defaults,
+        execute=True,
+        expected_plan_revision=preview["plan_revision"],
+    )
+
+    hooks = periodic_report_post_writeback_hooks_for_goal(
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id="goal-1",
+    )
+
+    assert len(hooks) == 1
+    assert json.loads(registry_path.read_text(encoding="utf-8")) == registry_payload
+
+
+def _write_unreadable_periodic_report_machine_store(runtime_root: Path) -> None:
+    store = runtime_root / "machine" / "configuration.json"
+    store.parent.mkdir(parents=True)
+    store.write_text(
+        json.dumps(
+            {
+                "schema_version": "loopx_machine_configuration_v0",
+                "namespaces": {
+                    "periodic_report": {
+                        "schema_version": "periodic_report_machine_defaults_v0",
+                        "enabled": "true",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_periodic_report_hook_degrades_to_no_hooks_when_machine_store_is_unreadable(
+    tmp_path,
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps({"goals": [{"id": "goal-1"}]}),
+        encoding="utf-8",
+    )
+    runtime_root = tmp_path / "runtime"
+    _write_unreadable_periodic_report_machine_store(runtime_root)
+
+    with pytest.warns(UserWarning, match="periodic_report.enabled must be a boolean"):
+        assert (
+            periodic_report_post_writeback_hooks_for_goal(
+                registry_path=registry_path,
+                runtime_root=runtime_root,
+                goal_id="goal-1",
+            )
+            == ()
+        )
+
+
+def test_periodic_report_hook_degrades_to_no_hooks_on_legacy_machine_namespace(
+    tmp_path,
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps({"goals": [{"id": "goal-1"}]}),
+        encoding="utf-8",
+    )
+    runtime_root = tmp_path / "runtime"
+    store = runtime_root / "machine" / "configuration.json"
+    store.parent.mkdir(parents=True)
+    store.write_text(
+        json.dumps(
+            {
+                "schema_version": "loopx_machine_configuration_v0",
+                "namespaces": {
+                    "periodic_report": {
+                        "schema_version": "periodic_report_machine_defaults_v0",
+                        "enabled": True,
+                        "delivery_style": "weekly",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.warns(UserWarning, match="periodic_report contains unsupported fields"):
+        assert (
+            periodic_report_post_writeback_hooks_for_goal(
+                registry_path=registry_path,
+                runtime_root=runtime_root,
+                goal_id="goal-1",
+            )
+            == ()
+        )
+
+
+def test_periodic_report_hook_reports_invalid_goal_overrides_like_canonical_resolver(
+    tmp_path,
+) -> None:
+    from loopx.capabilities.periodic_report.machine_defaults import (
+        resolve_goal_periodic_report_subscription,
+    )
+
+    invalid_overrides = [
+        (
+            {"enabled": True},
+            "goal periodic_report.profile_preset is required",
+        ),
+        (
+            {
+                "enabled": "true",
+                "profile_preset": "weekly-progress",
+                "route_ref": "loopx-concierge",
+            },
+            "goal periodic_report.enabled must be a boolean",
+        ),
+    ]
+    for override, expected_error in invalid_overrides:
+        goal = {"id": "goal-1", "control_plane": {"periodic_report": override}}
+        with pytest.raises((TypeError, ValueError), match=expected_error):
+            resolve_goal_periodic_report_subscription(goal)
+
+        registry_path = tmp_path / "registry.json"
+        registry_path.write_text(
+            json.dumps({"goals": [goal]}),
+            encoding="utf-8",
+        )
+        with pytest.warns(UserWarning, match=expected_error):
+            assert (
+                periodic_report_post_writeback_hooks_for_goal(
+                    registry_path=registry_path,
+                    runtime_root=tmp_path / "runtime",
+                    goal_id="goal-1",
+                )
+                == ()
+            )
+
+
+def test_todo_complete_survives_unreadable_periodic_report_machine_store(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from loopx.cli import main as cli_main
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    state = tmp_path / "STATE.md"
+    state.write_text(
+        "# Goal\n\n"
+        "## Agent Todo\n\n"
+        "- [ ] [P1] demo work item\n"
+        "  <!-- loopx:todo status=open task_class=advancement_task "
+        "claimed_by=agent-a todo_id=todo_dem0item -->\n",
+        encoding="utf-8",
+    )
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "goals": [
+                    {
+                        "id": "goal-1",
+                        "repo": str(tmp_path),
+                        "state_file": "STATE.md",
+                        "agents": [{"id": "agent-a"}],
+                    }
+                ],
+                "common_runtime_root": str(runtime_root),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_unreadable_periodic_report_machine_store(runtime_root)
+
+    with pytest.warns(UserWarning, match="periodic_report.enabled must be a boolean"):
+        exit_code = cli_main(
+            [
+                "--registry",
+                str(registry_path),
+                "--format",
+                "json",
+                "todo",
+                "complete",
+                "--goal-id",
+                "goal-1",
+                "--todo-id",
+                "todo_dem0item",
+                "--agent-id",
+                "agent-a",
+                "--evidence",
+                "demo",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["completed"] is True
 
 
 def test_periodic_report_projection_reduces_durable_successor_transition(
@@ -1020,6 +1258,128 @@ def test_periodic_report_projection_reduces_terminal_after_todo_completion(
     receipt = projection["stage_completion"]
     assert receipt["transition"] == "goal_terminal"
     assert receipt["frontier_identity"] == "validated-goal-terminal"
+
+
+def _published_report_goal_fixtures(
+    tmp_path,
+    *,
+    runs,
+) -> tuple[Path, Path, Path]:
+    """Materialize the state file, registry, and runs index for goal-1.
+
+    The projection-under-test only needs one open advancement todo on the
+    active state; the runs rows below drive the stage-completion receipt.
+    """
+
+    state_path = tmp_path / "goal.md"
+    state_path.write_text(
+        "# Goal\n\n## User Todo\n\n## Agent Todo\n\n"
+        "- [ ] Pick the next bounded slice of follow-up work.\n"
+        "  <!-- loopx:todo todo_id=todo-followup status=open "
+        "task_class=advancement_task claimed_by=agent-1 -->\n",
+        encoding="utf-8",
+    )
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {"goals": [{"id": "goal-1", "repo": str(tmp_path), "state_file": "goal.md"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "goals" / "goal-1" / "runs").mkdir(parents=True)
+    return runtime_root, registry_path, state_path
+
+
+def test_periodic_report_hook_accepts_projection_after_a_published_report(
+    tmp_path,
+) -> None:
+    runs = [
+        {
+            "generated_at": "2026-08-30T11:00:00Z",
+            "goal_id": "goal-1",
+            "agent_vision": {
+                "schema_version": "goal_vision_replan_contract_v0",
+                "agent_id": "agent-1",
+                "state": "active",
+                "vision_patch": {"acceptance_summary": "Follow-up slice is scoped."},
+            },
+            "autonomous_replan_ack": {
+                "recorded": True,
+                "frontier_identity": "frontier-followup",
+                "semantic_delta": {
+                    "accepted": True,
+                    "outcomes": ["fresh_vision_path_outcome"],
+                    "trigger_kinds": ["vision_successor_required"],
+                    "obligation_id": "replan-2",
+                },
+            },
+        },
+        {
+            "generated_at": "2026-08-30T10:00:00Z",
+            "goal_id": "goal-1",
+            "agent_vision": {
+                "schema_version": "goal_vision_replan_contract_v0",
+                "agent_id": "agent-1",
+                "state": "vision_closed",
+                "vision_patch": {"acceptance_summary": "Initial slice accepted and reported."},
+            },
+            "vision_checkpoint": {
+                "schema_version": "vision_checkpoint_v0",
+                "satisfied": True,
+                "decision": "patched",
+                "triggers": [
+                    {
+                        "kind": "material_delivery_outcome",
+                        "delivery_outcome": "outcome_progress",
+                    }
+                ],
+            },
+        },
+    ]
+    runtime_root, registry_path, state_path = _published_report_goal_fixtures(
+        tmp_path, runs=runs
+    )
+    ((runtime_root / "goals" / "goal-1" / "runs") / "index.jsonl").write_text(
+        "".join(json.dumps(run) + "\n" for run in runs), encoding="utf-8"
+    )
+    candidate = build_periodic_report_publication_candidate(
+        goal_id="goal-1",
+        agent_id="agent-1",
+        generation_id="report_generation_first",
+        trigger_receipt={"coalesced_trigger_ids": ["trigger_first"]},
+        facts=[],
+        baseline=None,
+    )
+    commit_periodic_report_publication_cursor(
+        runtime_root=runtime_root,
+        candidate=candidate,
+        publication_id="goal-channel:first",
+        delivered_at="2026-08-30T12:00:00Z",
+        covered_until="2026-08-30T11:00:00Z",
+    )
+
+    projection = build_periodic_report_post_writeback_projection(
+        payload={"state": {"path": str(state_path)}},
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id="goal-1",
+        agent_id="agent-1",
+    )
+
+    assert projection["last_report"]["covered_trigger_ids"] == ["trigger_first"]
+
+    hook_input = _input()
+    hook_input["projection"] = projection  # type: ignore[assignment]
+    dispatch = dispatch_post_writeback_hooks(
+        [periodic_report_post_writeback_hook()],
+        hook_input=hook_input,
+    )
+
+    assert dispatch["failures"] == []
+    assert dispatch["intent_count"] == 1
+    intent = dispatch["intents"][0]
+    assert intent["payload"]["last_report"]["covered_trigger_ids"] == ["trigger_first"]
 
 
 def test_post_writeback_concurrent_exact_dispatch_single_flight(tmp_path) -> None:
@@ -1384,6 +1744,81 @@ def test_post_writeback_legacy_lock_timeout_isolates_other_hooks(
         (tmp_path / "goals" / "goal-1" / "post_writeback_hooks").glob("*.json")
     )
     assert len(receipts) == 1
+
+
+def test_post_writeback_legacy_locks_share_one_batch_deadline(
+    tmp_path: Path,
+) -> None:
+    calls = {"free": 0}
+    locked_hooks = [
+        _named_hook(
+            hook_id=f"periodic_report.locked_{suffix}",
+            key=f"periodic-report:locked-{suffix}",
+            payload={"stage_identity": suffix},
+        )
+        for suffix in ("a", "b", "c")
+    ]
+    free_hook = _named_hook(
+        hook_id="periodic_report.free_z",
+        key="periodic-report:free-z",
+        payload={"stage_identity": "z"},
+        before_return=lambda: calls.__setitem__("free", calls["free"] + 1),
+    )
+    hooks = [*locked_hooks, free_hook]
+    input_data = _input()
+    preflight = capability_hooks.effect_runtime_result(
+        "capability_hook.post_writeback.transaction",
+        {
+            "schema_version": "loopx_post_writeback_hook_transaction_request_v0",
+            "phase": "preflight",
+            "runtime_root": str(tmp_path.resolve()),
+            "source": None,
+            "hook_input": input_data,
+            "registrations": [hook.contract() for hook in hooks],
+            "transaction_id": None,
+            "provider_outcomes": [],
+        },
+    )
+    assert isinstance(preflight, dict)
+    plans = preflight["provider_plan"]
+    assert isinstance(plans, list)
+    locked_hook_ids = {hook.hook_id for hook in locked_hooks}
+    locked_receipts = [
+        tmp_path
+        / "goals"
+        / "goal-1"
+        / "post_writeback_hooks"
+        / f"{plan['dispatch_id']}.json"
+        for plan in plans
+        if isinstance(plan, dict) and plan.get("hook_id") in locked_hook_ids
+    ]
+    assert len(locked_receipts) == 3
+
+    with ExitStack() as held_locks:
+        for receipt in locked_receipts:
+            held_locks.enter_context(
+                exclusive_file_lock(receipt, operation="legacy_writer_test")
+            )
+        started = time.monotonic()
+        dispatch = dispatch_post_writeback_hooks(
+            hooks,
+            hook_input=input_data,
+            runtime_root=tmp_path,
+            lease_timeout_seconds=0.05,
+        )
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 0.13
+    assert calls == {"free": 1}
+    assert dispatch["invoked_count"] == 1
+    assert dispatch["intent_count"] == 1
+    assert dispatch["intents"][0]["idempotency_key"] == "periodic-report:free-z"
+    assert [failure["hook_id"] for failure in dispatch["failures"]] == [
+        hook.hook_id for hook in locked_hooks
+    ]
+    assert {failure["error_code"] for failure in dispatch["failures"]} == {
+        "lock_acquire_timeout"
+    }
 
 
 def test_post_writeback_ts_cas_lock_timeout_preserves_free_sibling_result(
@@ -1774,3 +2209,110 @@ with exclusive_file_lock(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=3)
+
+
+def _split_root_registry(tmp_path: Path) -> tuple[Path, Path, Path]:
+    runtime_registry = tmp_path / "runtime-registry"
+    runtime_override = tmp_path / "runtime-override"
+    runtime_registry.mkdir()
+    runtime_override.mkdir()
+    registry_path = tmp_path / "registry.global.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "common_runtime_root": str(runtime_registry),
+                "goals": [{"id": "goal-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return registry_path, runtime_registry, runtime_override
+
+
+def test_todo_complete_composition_passes_effective_runtime_root_to_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The todo complete hook composition reads machine defaults under the override."""
+
+    import argparse
+
+    from loopx.cli_runtime import dispatch_common_command
+
+    registry_path, _runtime_registry, runtime_override = _split_root_registry(tmp_path)
+    captured: dict[str, object] = {}
+
+    def capture_hooks(
+        *, registry_path: Path, goal_id: str, runtime_root: Path | None
+    ) -> tuple[PostWritebackHookRegistration, ...]:
+        captured["runtime_root"] = runtime_root
+        return ()
+
+    monkeypatch.setattr(
+        "loopx.capabilities.periodic_report.post_writeback_hook"
+        ".periodic_report_post_writeback_hooks_for_goal",
+        capture_hooks,
+    )
+    monkeypatch.setattr(
+        "loopx.cli_commands.todo.handle_todo_command",
+        lambda *_args, **_kwargs: 0,
+    )
+    args = argparse.Namespace(
+        command="todo",
+        todo_command="complete",
+        goal_id="goal-1",
+        runtime_root=str(runtime_override),
+    )
+
+    result = dispatch_common_command(
+        args,
+        registry_path=registry_path,
+        allow_missing_registry=False,
+    )
+
+    assert result == 0
+    assert captured["runtime_root"] == runtime_override
+
+
+def test_refresh_state_composition_passes_effective_runtime_root_to_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The refresh-state hook composition reads machine defaults under the override."""
+
+    from loopx import cli as cli_module
+
+    registry_path, _runtime_registry, runtime_override = _split_root_registry(tmp_path)
+    captured: dict[str, object] = {}
+
+    def capture_hooks(
+        *, registry_path: Path, goal_id: str, runtime_root: Path | None
+    ) -> tuple[PostWritebackHookRegistration, ...]:
+        captured["runtime_root"] = runtime_root
+        return ()
+
+    monkeypatch.setattr(
+        cli_module,
+        "periodic_report_post_writeback_hooks_for_goal",
+        capture_hooks,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "handle_project_lifecycle_command",
+        lambda *_args, **_kwargs: 7,
+    )
+
+    exit_code = cli_module.main(
+        [
+            "--registry",
+            str(registry_path),
+            "--runtime-root",
+            str(runtime_override),
+            "refresh-state",
+            "--goal-id",
+            "goal-1",
+        ]
+    )
+
+    assert exit_code == 7
+    assert captured["runtime_root"] == runtime_override

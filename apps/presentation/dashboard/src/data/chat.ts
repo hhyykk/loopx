@@ -905,6 +905,349 @@ export async function configureGoalChannelAutoNotify(options: { autoNotify: bool
   );
 }
 
+export const periodicReportMachineConfigurationSchema = z.object({
+  schema_version: z.literal("periodic_report_machine_defaults_v0"),
+  enabled: z.boolean(),
+  inheritance: z.literal("live_machine_default"),
+  profile_preset: z.string().optional(),
+  route_ref: z.string().optional(),
+  timezone: z.string(),
+});
+
+export const machineConfigurationSchema = z.object({
+  schema_version: z.literal("loopx_machine_configuration_v0"),
+  namespaces: z.record(z.string(), z.record(z.string(), z.unknown())),
+});
+
+export const machineConfigurationNamespaceDescriptorSchema = z.object({
+  namespace: z.string(),
+  title: z.string(),
+  description: z.string(),
+  schema_versions: z.array(z.string()).min(1),
+  configuration_template: z.record(z.string(), z.unknown()),
+  template_status: z.enum(["ready", "schema_only"]),
+});
+
+export const machineConfigurationCatalogSchema = z.object({
+  schema_version: z.literal("machine_configuration_catalog_v0"),
+  namespaces: z.array(machineConfigurationNamespaceDescriptorSchema),
+});
+
+export const capabilityConfigurationFieldSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  description: z.string(),
+  input_kind: z.enum(["boolean", "number", "select", "string_list", "text"]),
+  required: z.boolean(),
+  minimum: z.number().int().optional(),
+  maximum: z.number().int().optional(),
+  options: z.array(z.string()).optional(),
+});
+
+export const capabilityConfigurationEditorSchema = z.object({
+  schema_version: z.literal("capability_configuration_editor_v0"),
+  editable: z.boolean(),
+  supported_scopes: z.array(z.enum(["goal", "machine"])),
+  writable_scopes: z.array(z.enum(["goal", "machine"])),
+  fields: z.array(capabilityConfigurationFieldSchema),
+  read_only_reason: z.string().optional(),
+});
+
+export const capabilityConfigurationCatalogSchema = z.object({
+  schema_version: z.literal("capability_configuration_catalog_v0"),
+  capabilities: z.array(z.object({
+    capability_id: z.string(),
+    display_name: z.string(),
+    description: z.string(),
+    available_scopes: z.array(z.enum(["goal", "machine"])),
+    machine_namespace: z.string().optional(),
+    goal_feature_id: z.string().optional(),
+    effective_value_policy: z.literal("goal_override_over_live_machine_default").optional(),
+    availability: z.string().optional(),
+    default: z.record(z.string(), z.unknown()).optional(),
+    current: z.record(z.string(), z.unknown()).optional(),
+    machine_current: z.record(z.string(), z.unknown()).optional(),
+    effective_configuration: z.object({
+      schema_version: z.literal("capability_configuration_resolution_v0"),
+      capability_id: z.string(),
+      source: z.enum(["goal_override", "machine_default", "capability_default", "not_configured"]),
+      configuration: z.record(z.string(), z.unknown()).nullable(),
+      inherited: z.boolean(),
+      goal_override_present: z.boolean(),
+      machine_default_present: z.boolean(),
+      effective_revision: z.string(),
+    }).optional(),
+    documentation: z.record(z.string(), z.unknown()).optional(),
+    configuration_editor: capabilityConfigurationEditorSchema,
+  })),
+});
+
+export const goalConfigurationInspectionSchema = z.object({
+  ok: z.literal(true),
+  schema_version: z.literal("goal_configuration_inspection_v0"),
+  status: z.literal("configured"),
+  goal_id: z.string(),
+  revision: z.string(),
+  available_capabilities: z.array(z.string()),
+  capability_catalog: capabilityConfigurationCatalogSchema,
+});
+
+const goalConfigurationMutationBaseSchema = z.object({
+  ok: z.literal(true),
+  goal_id: z.string(),
+  capability_id: z.string(),
+  changed_fields: z.array(z.string()),
+  goal_configuration: z.record(z.string(), z.unknown()).nullable(),
+  capability_catalog: capabilityConfigurationCatalogSchema,
+});
+
+export const goalConfigurationPreviewSchema = goalConfigurationMutationBaseSchema.extend({
+  schema_version: z.literal("goal_configuration_update_plan_v0"),
+  status: z.literal("preview"),
+  action: z.enum(["create", "update", "delete", "unchanged"]),
+  current_revision: z.string(),
+  desired_revision: z.string(),
+  base_revision: z.string(),
+  plan_revision: z.string(),
+  writes_required: z.number().int().nonnegative(),
+});
+
+export const goalConfigurationTransactionSchema = goalConfigurationMutationBaseSchema.extend({
+  schema_version: z.literal("goal_configuration_transaction_v0"),
+  status: z.enum(["applied", "unchanged"]),
+  plan_revision: z.string(),
+  applied_revision: z.string(),
+  readback_verified: z.literal(true),
+});
+
+export const goalConfigurationPartialWriteSchema = z.object({
+  ok: z.literal(false),
+  schema_version: z.literal("goal_configuration_transaction_v0"),
+  status: z.literal("partial_write"),
+  goal_id: z.string(),
+  capability_id: z.string(),
+  plan_revision: z.string(),
+  applied_revision: z.string().nullable(),
+  source_written: z.literal(true),
+  shared_sync_pending: z.literal(true),
+  readback_verified: z.boolean(),
+  changed_fields: z.array(z.string()),
+  goal_configuration: z.record(z.string(), z.unknown()).nullable(),
+  capability_catalog: capabilityConfigurationCatalogSchema,
+  error: z.string(),
+  recommended_action: z.string(),
+});
+
+export const goalConfigurationApplyResultSchema = z.union([
+  goalConfigurationTransactionSchema,
+  goalConfigurationPartialWriteSchema,
+]);
+
+const machineConfigurationBaseSchema = z.object({
+  ok: z.literal(true),
+  available_namespaces: z.array(z.string()),
+  namespace_catalog: machineConfigurationCatalogSchema.optional().default({
+    schema_version: "machine_configuration_catalog_v0",
+    namespaces: [],
+  }),
+  capability_catalog: capabilityConfigurationCatalogSchema,
+  changed_namespaces: z.array(z.string()).optional().default([]),
+  machine_configuration: machineConfigurationSchema.nullable().optional(),
+});
+
+export const machineConfigurationInspectionSchema = machineConfigurationBaseSchema.extend({
+  schema_version: z.literal("machine_configuration_inspection_v0"),
+  status: z.enum(["configured", "absent"]),
+  revision: z.string(),
+});
+
+export const machineConfigurationPreviewSchema = machineConfigurationBaseSchema.extend({
+  schema_version: z.literal("machine_configuration_update_plan_v0"),
+  status: z.literal("preview"),
+  action: z.enum(["create", "update", "delete", "unchanged"]),
+  current_revision: z.string(),
+  desired_revision: z.string(),
+  plan_revision: z.string(),
+  writes_required: z.number().int().nonnegative(),
+  machine_configuration: machineConfigurationSchema.nullable(),
+});
+
+export const machineConfigurationTransactionSchema = machineConfigurationBaseSchema.extend({
+  schema_version: z.literal("machine_configuration_transaction_v0"),
+  status: z.enum(["applied", "unchanged"]),
+  plan_revision: z.string(),
+  transaction_id: z.string().nullable(),
+  readback_verified: z.literal(true),
+  rollback_available: z.boolean(),
+  applied_revision: z.string().optional(),
+  prior_revision: z.string().optional(),
+});
+
+export const machineConfigurationRollbackPlanSchema = machineConfigurationBaseSchema.extend({
+  schema_version: z.literal("machine_configuration_rollback_plan_v0"),
+  status: z.literal("preview"),
+  action: z.enum(["delete", "restore", "unchanged", "blocked"]),
+  reason: z.string(),
+  transaction_id: z.string(),
+  plan_revision: z.string(),
+  rollback_allowed: z.boolean(),
+  writes_required: z.number().int().nonnegative(),
+});
+
+export const machineConfigurationRollbackReceiptSchema = machineConfigurationBaseSchema.extend({
+  schema_version: z.literal("machine_configuration_rollback_receipt_v0"),
+  status: z.enum(["rolled_back", "unchanged"]),
+  transaction_id: z.string(),
+  plan_revision: z.string(),
+  rollback_id: z.string().nullable(),
+  readback_verified: z.literal(true),
+});
+
+export type MachineConfiguration = z.infer<typeof machineConfigurationSchema>;
+export type MachineConfigurationNamespaceDescriptor = z.infer<typeof machineConfigurationNamespaceDescriptorSchema>;
+export type CapabilityConfigurationCatalog = z.infer<typeof capabilityConfigurationCatalogSchema>;
+export type CapabilityConfigurationEditor = z.infer<typeof capabilityConfigurationEditorSchema>;
+export type GoalConfigurationInspection = z.infer<typeof goalConfigurationInspectionSchema>;
+export type GoalConfigurationPreview = z.infer<typeof goalConfigurationPreviewSchema>;
+export type GoalConfigurationTransaction = z.infer<typeof goalConfigurationTransactionSchema>;
+export type GoalConfigurationPartialWrite = z.infer<typeof goalConfigurationPartialWriteSchema>;
+export type GoalConfigurationApplyResult = z.infer<typeof goalConfigurationApplyResultSchema>;
+export type MachineConfigurationInspection = z.infer<typeof machineConfigurationInspectionSchema>;
+export type MachineConfigurationPreview = z.infer<typeof machineConfigurationPreviewSchema>;
+export type MachineConfigurationTransaction = z.infer<typeof machineConfigurationTransactionSchema>;
+export type MachineConfigurationRollbackPlan = z.infer<typeof machineConfigurationRollbackPlanSchema>;
+
+export async function fetchMachineConfiguration() {
+  return machineConfigurationInspectionSchema.parse(
+    await requestJson<unknown>("/api/chat/machine-configuration"),
+  );
+}
+
+export async function fetchGoalConfiguration(goalId: string) {
+  const query = new URLSearchParams({ goal_id: goalId });
+  return goalConfigurationInspectionSchema.parse(
+    await requestJson<unknown>(`/api/chat/goal-configuration?${query.toString()}`),
+  );
+}
+
+export async function previewGoalConfiguration(
+  goalId: string,
+  capabilityId: string,
+  configuration: Record<string, unknown> | null,
+) {
+  return goalConfigurationPreviewSchema.parse(
+    await requestJson<unknown>("/api/chat/goal-configuration/preview", {
+      method: "POST",
+      body: JSON.stringify({
+        goal_id: goalId,
+        capability_id: capabilityId,
+        configuration,
+      }),
+    }),
+  );
+}
+
+export async function applyGoalConfiguration(
+  goalId: string,
+  capabilityId: string,
+  configuration: Record<string, unknown> | null,
+  expectedPlanRevision: string,
+) {
+  return goalConfigurationApplyResultSchema.parse(
+    await requestJson<unknown>("/api/chat/goal-configuration/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        goal_id: goalId,
+        capability_id: capabilityId,
+        configuration,
+        expected_plan_revision: expectedPlanRevision,
+      }),
+    }),
+  );
+}
+
+export async function previewMachineConfiguration(
+  namespace: string,
+  namespaceConfiguration: Record<string, unknown>,
+) {
+  return machineConfigurationPreviewSchema.parse(
+    await requestJson<unknown>("/api/chat/machine-configuration/preview", {
+      method: "POST",
+      body: JSON.stringify({
+        namespace,
+        namespace_configuration: namespaceConfiguration,
+      }),
+    }),
+  );
+}
+
+export async function applyMachineConfiguration(
+  namespace: string,
+  namespaceConfiguration: Record<string, unknown>,
+  expectedPlanRevision: string,
+) {
+  return machineConfigurationTransactionSchema.parse(
+    await requestJson<unknown>("/api/chat/machine-configuration/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        expected_plan_revision: expectedPlanRevision,
+        namespace,
+        namespace_configuration: namespaceConfiguration,
+      }),
+    }),
+  );
+}
+
+export async function previewMachineConfigurationRemoval(namespace: string) {
+  return machineConfigurationPreviewSchema.parse(
+    await requestJson<unknown>("/api/chat/machine-configuration/preview", {
+      method: "POST",
+      body: JSON.stringify({ namespace, operation: "remove" }),
+    }),
+  );
+}
+
+export async function applyMachineConfigurationRemoval(
+  namespace: string,
+  expectedPlanRevision: string,
+) {
+  return machineConfigurationTransactionSchema.parse(
+    await requestJson<unknown>("/api/chat/machine-configuration/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        expected_plan_revision: expectedPlanRevision,
+        namespace,
+        operation: "remove",
+      }),
+    }),
+  );
+}
+
+export async function previewMachineConfigurationRollback(transactionId: string) {
+  return machineConfigurationRollbackPlanSchema.parse(
+    await requestJson<unknown>("/api/chat/machine-configuration/rollback", {
+      method: "POST",
+      body: JSON.stringify({ execute: false, transaction_id: transactionId }),
+    }),
+  );
+}
+
+export async function applyMachineConfigurationRollback(
+  transactionId: string,
+  expectedPlanRevision: string,
+) {
+  return machineConfigurationRollbackReceiptSchema.parse(
+    await requestJson<unknown>("/api/chat/machine-configuration/rollback", {
+      method: "POST",
+      body: JSON.stringify({
+        execute: true,
+        expected_plan_revision: expectedPlanRevision,
+        transaction_id: transactionId,
+      }),
+    }),
+  );
+}
+
 export type GoalRepositoryContext = {
   branch: string;
   identity: string;

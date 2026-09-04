@@ -15,10 +15,19 @@ from loopx.extensions.lark.goal_channel_contracts import (
     GOAL_CHANNEL_BINDING_SCHEMA_VERSION,
     write_goal_channel_binding,
 )
+from loopx.extensions.lark.goal_channel_targets import add_lark_goal_channel_target
+from loopx.capabilities.periodic_report.machine_store import (
+    configure_periodic_report_machine_defaults,
+)
 from loopx.extensions.lark.periodic_report_delivery import (
     DELIVERY_INTENT_SCHEMA,
     GOAL_CHANNEL_DELIVERY_REQUEST_SCHEMA,
     deliver_periodic_report_to_goal_channel,
+)
+from loopx.capabilities.periodic_report.incremental import (
+    build_periodic_report_publication_candidate,
+    read_periodic_report_publication_cursor,
+    write_periodic_report_publication_candidate,
 )
 from loopx.extensions.lark import periodic_report_cli
 from loopx.presentation.renderers.periodic_report_markdown import (
@@ -94,6 +103,81 @@ def _extension_activation() -> dict[str, Any]:
     }
 
 
+def _write_publication_candidate(
+    runtime_root: Path, generation_bundle: dict[str, Any]
+) -> None:
+    candidate = build_periodic_report_publication_candidate(
+        goal_id=GOAL_ID,
+        agent_id="example-agent",
+        generation_id=generation_bundle["generation_receipt"]["generation_id"],
+        trigger_receipt={"coalesced_trigger_ids": ["trigger_stage_1"]},
+        facts=[
+            {
+                "source_ref": "todo:stage_1",
+                "title": "Stage 1 completed",
+                "summary": "The stage outcome was validated.",
+                "content_kind": "outcome",
+                "status": "done",
+            }
+        ],
+        baseline=None,
+    )
+    path = (
+        runtime_root
+        / "goals"
+        / GOAL_ID
+        / "periodic_reports"
+        / "fixture"
+        / "publication-candidate.json"
+    )
+    write_periodic_report_publication_candidate(path=path, candidate=candidate)
+
+
+def test_goal_channel_readback_advances_publication_cursor_only_on_success(
+    tmp_path: Path,
+) -> None:
+    registry_path = tmp_path / ".loopx" / "registry.json"
+    registry_path.parent.mkdir()
+    registry_path.write_text("{}", encoding="utf-8")
+    runtime_root = tmp_path / "runtime"
+    _write_binding(registry_path)
+    request = _request()
+    _write_publication_candidate(runtime_root, request["generation_bundle"])
+
+    preview = deliver_periodic_report_to_goal_channel(
+        request,
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id=GOAL_ID,
+        extension_activation=_extension_activation(),
+    )
+    assert preview["publication_cursor"] is None
+    assert (
+        read_periodic_report_publication_cursor(
+            runtime_root=runtime_root,
+            goal_id=GOAL_ID,
+            agent_id="example-agent",
+        )
+        is None
+    )
+
+    delivered = deliver_periodic_report_to_goal_channel(
+        request,
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id=GOAL_ID,
+        extension_activation=_extension_activation(),
+        execute=True,
+        runner=_runner([]),
+    )
+    cursor = delivered["publication_cursor"]
+    assert (
+        cursor["generation_id"]
+        == request["generation_bundle"]["generation_receipt"]["generation_id"]
+    )
+    assert cursor["covered_trigger_ids"] == ["trigger_stage_1"]
+
+
 def _write_binding(
     registry_path: Path,
     *,
@@ -122,6 +206,100 @@ def _write_binding(
             },
         },
     )
+
+
+def _write_machine_default_route(runtime_root: Path) -> None:
+    target_path = runtime_root / "goal-channel-targets.json"
+    add_lark_goal_channel_target(
+        target_path=target_path,
+        target_name="loopx-concierge",
+        chat_id=CHAT_ID,
+        chat_name="LoopX Concierge",
+        identity_mode="project_bot",
+        sender_profile="project-reporter",
+        sender_identity="bot",
+        bot_app_id=APP_ID,
+        bot_display_name="Project Reporter",
+        cli_bin="lark-cli",
+        execute=True,
+    )
+    defaults = {
+        "schema_version": "loopx_machine_configuration_v0",
+        "namespaces": {
+            "periodic_report": {
+                "schema_version": "periodic_report_machine_defaults_v0",
+                "enabled": True,
+                "inheritance": "live_machine_default",
+                "profile_preset": "weekly-progress",
+                "route_ref": "loopx-concierge",
+                "timezone": "Asia/Shanghai",
+            }
+        },
+    }
+    preview = configure_periodic_report_machine_defaults(
+        runtime_root=runtime_root,
+        machine_defaults=defaults,
+    )
+    configure_periodic_report_machine_defaults(
+        runtime_root=runtime_root,
+        machine_defaults=defaults,
+        execute=True,
+        expected_plan_revision=preview["plan_revision"],
+    )
+
+
+def test_unbound_goal_uses_live_machine_default_shared_target(tmp_path: Path) -> None:
+    registry_path = tmp_path / ".loopx" / "registry.json"
+    runtime_root = tmp_path / "runtime"
+    registry_path.parent.mkdir()
+    registry_path.write_text(json.dumps({"goals": [{"id": GOAL_ID}]}), encoding="utf-8")
+    _write_machine_default_route(runtime_root)
+    calls: list[list[str]] = []
+
+    result = deliver_periodic_report_to_goal_channel(
+        _request(),
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id=GOAL_ID,
+        extension_activation=_extension_activation(),
+        execute=True,
+        runner=_runner(calls),
+    )
+
+    assert result["status"] == "satisfied"
+    assert result["boundary"]["machine_default_route_allowed_when_unbound"] is True
+    assert not (registry_path.parent / "goal-channel.json").exists()
+
+
+def test_explicit_goal_channel_binding_wins_over_machine_default_route(
+    tmp_path: Path,
+) -> None:
+    registry_path = tmp_path / ".loopx" / "registry.json"
+    runtime_root = tmp_path / "runtime"
+    registry_path.parent.mkdir()
+    registry_path.write_text(json.dumps({"goals": [{"id": GOAL_ID}]}), encoding="utf-8")
+    _write_binding(registry_path)
+    _write_machine_default_route(runtime_root)
+    targets_path = runtime_root / "goal-channel-targets.json"
+    targets = json.loads(targets_path.read_text(encoding="utf-8"))
+    targets["targets"]["loopx-concierge"]["identity"]["sender_profile"] = (
+        "must-not-be-used"
+    )
+    targets_path.write_text(json.dumps(targets), encoding="utf-8")
+    calls: list[list[str]] = []
+
+    result = deliver_periodic_report_to_goal_channel(
+        _request(),
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id=GOAL_ID,
+        extension_activation=_extension_activation(),
+        execute=True,
+        runner=_runner(calls),
+    )
+
+    assert result["status"] == "satisfied"
+    assert all("must-not-be-used" not in args for args in calls)
 
 
 def _runner(calls: list[list[str]], *, normalized_readback: bool = False):
@@ -165,8 +343,7 @@ def _runner(calls: list[list[str]], *, normalized_readback: bool = False):
                 markdown = card["elements"][0]["text"]["content"]
                 footer = card["elements"][2]["elements"][0]["content"]
                 message_content = (
-                    f'<card title="{title}">\n{markdown}\n---\n'
-                    f"📝 {footer}\n</card>"
+                    f'<card title="{title}">\n{markdown}\n---\n📝 {footer}\n</card>'
                 )
             payload = {
                 "ok": True,

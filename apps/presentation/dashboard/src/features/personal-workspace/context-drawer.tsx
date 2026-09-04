@@ -530,6 +530,28 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                 <div><dt>Agent</dt><dd>{selection.item.agentLabel ?? selection.item.agentId ?? "LoopX"}</dd></div>
               </dl>
             </section>
+            {selection.item.report ? (
+              <section className="personal-report-detail" data-testid="personal-periodic-report-detail">
+                <header>
+                  <span><strong>+{selection.item.report.addedCount}</strong>{t("files.reportAdded")}</span>
+                  <span><strong>{selection.item.report.changedCount}</strong>{t("files.reportChanged")}</span>
+                </header>
+                <p>{selection.item.report.periodStartAt} → {selection.item.report.periodEndAt}</p>
+                <ol>
+                  {selection.item.report.items.map((item) => (
+                    <li data-change-kind={item.changeKind} key={item.sourceRef}>
+                      <small>{item.changeKind} · {item.status}</small>
+                      <strong>{item.title}</strong>
+                      <p>{item.summary}</p>
+                    </li>
+                  ))}
+                </ol>
+                <footer>
+                  <span>{t("files.reportPublication")}: {selection.item.report.publicationId}</span>
+                  <span>{t("files.reportGeneration")}: {selection.item.report.generationId}</span>
+                </footer>
+              </section>
+            ) : null}
             {selection.item.safePreview ? <pre aria-label={t("drawer.outputSafePreview")} className="personal-safe-preview">{selection.item.safePreview}</pre> : <p className="personal-preview-unavailable">{t("drawer.previewUnavailable")}</p>}
             <div className="personal-drawer-action-grid">
               <button className="personal-primary-action" onClick={() => { callbacks.onOpenOutput?.(selection.item); onClose(); }} type="button"><ExternalLink size={16} />{t("common.open")}</button>
@@ -548,7 +570,7 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
               <dl>{selection.item.fields.map((field) => <div key={field.key}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
             </section>
             {selection.item.status === "applied" ? <p className="personal-proposal-state is-applied"><Check size={16} />{t("drawer.proposalApplied")}</p> : null}
-            {selection.item.status === "applied" && selection.item.goalId ? <button className="personal-primary-action" onClick={() => void (async () => { await callbacks.onOpenGoal?.(selection.item.goalId!); onClose(); })()} type="button"><ExternalLink size={16} />{selection.item.actionKind === "goal.create" ? t("drawer.proposalEnterGoal") : t("drawer.proposalViewGoal")}</button> : null}
+            {selection.item.status === "applied" && selection.item.goalId ? <button className="personal-primary-action" onClick={() => { const goalId = selection.item.goalId!; onClose(); void callbacks.onOpenGoal?.(goalId); }} type="button"><ExternalLink size={16} />{selection.item.actionKind === "goal.create" ? t("drawer.proposalEnterGoal") : t("drawer.proposalViewGoal")}</button> : null}
             {selection.item.status === "stale" ? <p className="personal-proposal-state is-stale">{t("drawer.proposalStale")}</p> : null}
             {selection.item.status === "error" ? <div className="personal-proposal-state is-error"><span>{t("drawer.proposalApplyFailed")}</span>{selection.item.errorMessage ? <small>{selection.item.errorMessage}</small> : null}<small>{t("drawer.proposalApplyFailedHint")}</small></div> : null}
             {selection.item.status === "rejected" ? <p className="personal-proposal-state is-error">{t("drawer.proposalRejected")}</p> : null}

@@ -5,6 +5,7 @@ import { Pool, type PoolClient } from "pg";
 
 import {
   installPostgreSqlAuthorityStoreSchema,
+  POSTGRESQL_AUTHORITY_STORE_SCHEMA_SQL,
   PostgreSqlAuthorityStore,
   type PostgreSqlAuthorityConnection,
   type PostgreSqlAuthorityDatabase,
@@ -17,6 +18,12 @@ import {
 const connectionString = process.env.LOOPX_TEST_POSTGRES_URL;
 const pool = connectionString ? new Pool({ connectionString, max: 12 }) : null;
 const STORE_IDENTITY = `postgresql:${"b".repeat(32)}`;
+const TENANT_SCOPED_TABLES = [
+  "authority_heads",
+  "authority_commits",
+  "authority_events",
+  "authority_receipts",
+] as const;
 
 function wrapClient(client: PoolClient): PostgreSqlAuthorityConnection {
   return {
@@ -27,6 +34,66 @@ function wrapClient(client: PoolClient): PostgreSqlAuthorityConnection {
 
 function databaseFromPool(value: Pool): PostgreSqlAuthorityDatabase {
   return { connect: async () => wrapClient(await value.connect()) };
+}
+
+function quotedRole(role: string): string {
+  assert.match(role, /^[a-z][a-z0-9_]+$/);
+  return `"${role}"`;
+}
+
+async function createRuntimeRole(role: string): Promise<void> {
+  const identifier = quotedRole(role);
+  await pool!.query(`CREATE ROLE ${identifier} NOLOGIN`);
+  await pool!.query(`GRANT USAGE ON SCHEMA loopx_control_plane TO ${identifier}`);
+  await pool!.query(
+    `GRANT SELECT ON loopx_control_plane.authority_store_metadata TO ${identifier}`,
+  );
+  await pool!.query(
+    `GRANT SELECT, INSERT, UPDATE ON loopx_control_plane.authority_heads TO ${identifier}`,
+  );
+  await pool!.query(
+    `GRANT SELECT, INSERT ON loopx_control_plane.authority_commits,
+       loopx_control_plane.authority_events,
+       loopx_control_plane.authority_receipts TO ${identifier}`,
+  );
+}
+
+function databaseForRuntimeRole(value: Pool, role: string): PostgreSqlAuthorityDatabase {
+  const identifier = quotedRole(role);
+  return {
+    connect: async () => {
+      const client = await value.connect();
+      await client.query("RESET ROLE");
+      await client.query(`SET ROLE ${identifier}`);
+      return {
+        query: async (text, values) =>
+          await client.query(text, values ? [...values] : undefined),
+        release: async (error) => {
+          try {
+            await client.query("RESET ROLE");
+            client.release(error);
+          } catch (resetError) {
+            client.release(resetError as Error);
+          }
+        },
+      };
+    },
+  };
+}
+
+async function queryAsRuntimeRole(
+  value: Pool,
+  role: string,
+  operation: (client: PoolClient) => Promise<void>,
+): Promise<void> {
+  const client = await value.connect();
+  try {
+    await client.query(`SET ROLE ${quotedRole(role)}`);
+    await operation(client);
+  } finally {
+    await client.query("RESET ROLE");
+    client.release();
+  }
 }
 
 const database = pool ? databaseFromPool(pool) : null;
@@ -192,10 +259,165 @@ if (database && installed) {
       /database incarnation/,
     );
   });
+
+  test("PostgreSQL runtime role is confined by transaction-local tenant RLS", async (t) => {
+    await installed;
+    const role = `loopx_test_runtime_${randomUUID().replaceAll("-", "")}`;
+    const firstTenant = `tenant-${randomUUID()}`;
+    const secondTenant = `tenant-${randomUUID()}`;
+    const goalId = `goal-${randomUUID()}`;
+    const runtimePool = new Pool({ connectionString, max: 1 });
+    await createRuntimeRole(role);
+    t.after(async () => {
+      await runtimePool.end();
+      await cleanScope(firstTenant, goalId);
+      await cleanScope(secondTenant, goalId);
+      await pool!.query(`DROP OWNED BY ${quotedRole(role)}`);
+      await pool!.query(`DROP ROLE ${quotedRole(role)}`);
+    });
+
+    const runtimeDatabase = databaseForRuntimeRole(runtimePool, role);
+    const first = new PostgreSqlAuthorityStore(runtimeDatabase, {
+      tenant_id: firstTenant,
+      goal_id: goalId,
+    });
+    const second = new PostgreSqlAuthorityStore(runtimeDatabase, {
+      tenant_id: secondTenant,
+      goal_id: goalId,
+    });
+    assert.equal((await first.commitAuthority(commit(null, "operation-a", 1, 1))).status, "applied");
+    assert.equal((await second.commitAuthority(commit(null, "operation-b", 1, 1))).status, "applied");
+    assert.equal((await first.loadAuthority()).status, "loaded");
+    assert.equal((await second.readReceipt("operation-b")).status, "found");
+
+    await queryAsRuntimeRole(runtimePool, role, async (client) => {
+      for (const table of TENANT_SCOPED_TABLES) {
+        const unscoped = await client.query(
+          `SELECT tenant_id FROM loopx_control_plane.${table}`,
+        );
+        assert.equal(unscoped.rowCount, 0, `${table} must fail closed without tenant context`);
+      }
+
+      await client.query("BEGIN READ ONLY");
+      await client.query(
+        "SELECT set_config('loopx.tenant_id', $1, TRUE)",
+        [firstTenant],
+      );
+      for (const table of TENANT_SCOPED_TABLES) {
+        const scoped = await client.query(
+          `SELECT DISTINCT tenant_id FROM loopx_control_plane.${table}`,
+        );
+        assert.deepEqual(scoped.rows, [{ tenant_id: firstTenant }]);
+      }
+      await client.query("ROLLBACK");
+
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('loopx.tenant_id', $1, TRUE)",
+        [firstTenant],
+      );
+      await assert.rejects(
+        client.query(
+          `INSERT INTO loopx_control_plane.authority_heads
+             (tenant_id, goal_id, provider_revision, cursor, head)
+           VALUES ($1, $2, 0, 0, NULL)`,
+          [secondTenant, `forbidden-${randomUUID()}`],
+        ),
+        /row-level security policy/,
+      );
+      await client.query("ROLLBACK");
+
+      await assert.rejects(
+        client.query(
+          `UPDATE loopx_control_plane.authority_store_metadata
+           SET store_identity = $1 WHERE singleton = TRUE`,
+          [`postgresql:${"d".repeat(32)}`],
+        ),
+        /permission denied/,
+      );
+    });
+  });
 } else {
   test("PostgreSQL authority-store integration (set LOOPX_TEST_POSTGRES_URL)", { skip: true }, () => {});
 }
 
 test.after(async () => {
   await pool?.end();
+});
+
+test("PostgreSQL schema declares fail-closed tenant RLS on every scoped table", () => {
+  for (const table of TENANT_SCOPED_TABLES) {
+    assert.match(
+      POSTGRESQL_AUTHORITY_STORE_SCHEMA_SQL,
+      new RegExp(`ALTER TABLE loopx_control_plane\\.${table} FORCE ROW LEVEL SECURITY`),
+    );
+    assert.match(
+      POSTGRESQL_AUTHORITY_STORE_SCHEMA_SQL,
+      new RegExp(`CREATE POLICY ${table}_tenant_scope`),
+    );
+  }
+  assert.match(
+    POSTGRESQL_AUTHORITY_STORE_SCHEMA_SQL,
+    /current_setting\('loopx\.tenant_id', TRUE\)/,
+  );
+});
+
+test("PostgreSQL provider evicts and awaits cleanup-uncertain read connections", async () => {
+  const tenantId = "tenant-cleanup-fault";
+  const rollbackFailure = new Error("injected rollback failure");
+  const queries: string[] = [];
+  let finishRelease: (() => void) | undefined;
+  let resultSettled = false;
+  const releaseGate = new Promise<void>((resolve) => {
+    finishRelease = resolve;
+  });
+  let reportRelease: ((error: Error | undefined) => void) | undefined;
+  const releaseStarted = new Promise<Error | undefined>((resolve) => {
+    reportRelease = resolve;
+  });
+  const faultingDatabase: PostgreSqlAuthorityDatabase = {
+    connect: async () => ({
+      query: async (text) => {
+        queries.push(text);
+        if (text === "ROLLBACK") throw rollbackFailure;
+        if (text.includes("set_config")) {
+          return { rows: [{ tenant_id: tenantId }], rowCount: 1 };
+        }
+        if (text.includes("authority_store_metadata")) {
+          return {
+            rows: [{ schema_version: "loopx_postgresql_authority_store_v0", store_identity: STORE_IDENTITY }],
+            rowCount: 1,
+          };
+        }
+        if (text.includes("authority_heads")) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      release: async (error) => {
+        reportRelease?.(error);
+        await releaseGate;
+      },
+    }),
+  };
+  const store = new PostgreSqlAuthorityStore(faultingDatabase, {
+    tenant_id: tenantId,
+    goal_id: "goal-cleanup-fault",
+  });
+
+  const resultPromise = store.loadAuthority().then((result) => {
+    resultSettled = true;
+    return result;
+  });
+  assert.strictEqual(await releaseStarted, rollbackFailure);
+  assert.equal(resultSettled, false, "read result must wait for asynchronous connection eviction");
+  assert.ok(finishRelease);
+  finishRelease();
+
+  assert.deepEqual(await resultPromise, {
+    status: "unavailable",
+    reason_code: "provider_read_unavailable",
+    reason: "PostgreSQL authority store is unavailable",
+  });
+  assert.equal(queries.filter((query) => query === "ROLLBACK").length, 1);
 });

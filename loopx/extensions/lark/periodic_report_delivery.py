@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -13,10 +14,21 @@ from ...capabilities.periodic_report.bindings import (
     build_periodic_report_generation_bundle,
 )
 from ...capabilities.periodic_report.core import _reject_raw_keys
+from ...capabilities.periodic_report.incremental import (
+    commit_periodic_report_publication_cursor,
+    find_periodic_report_publication_candidate,
+)
+from ...capabilities.periodic_report.machine_defaults import (
+    resolve_goal_periodic_report_subscription,
+)
+from ...capabilities.periodic_report.machine_store import (
+    read_periodic_report_machine_defaults,
+)
 from . import LARK_EXTENSION_ID, LARK_GOAL_CHANNEL_PERMISSION
 from .goal_channel_contracts import (
     binding_for_goal,
     default_goal_channel_binding_path,
+    goal_from_registry,
     read_goal_channel_binding,
 )
 from .goal_channel_targets import (
@@ -38,6 +50,7 @@ from .goal_channel_transport import (
 )
 from .presentation.kanban import CommandRunner, default_subprocess_runner
 from .presentation.periodic_report import periodic_report_lark_sink_adapter
+from ...registry import read_json
 
 
 GOAL_CHANNEL_DELIVERY_REQUEST_SCHEMA = (
@@ -139,9 +152,28 @@ def _resolved_goal_channel_binding(
         default_goal_channel_binding_path(registry_path)
     )
     raw = binding_for_goal(payload, goal_id)
+    target_ref = str((raw or {}).get("target_ref") or "").strip()
     if raw is None:
-        raise ValueError("periodic report delivery requires a Goal Channel binding")
-    target_ref = str(raw.get("target_ref") or "").strip()
+        goal = goal_from_registry(read_json(registry_path), goal_id)
+        subscription = resolve_goal_periodic_report_subscription(
+            goal,
+            read_periodic_report_machine_defaults(runtime_root),
+        )
+        if subscription.get("enabled") is not True:
+            raise ValueError(
+                "periodic report delivery requires an enabled subscription"
+            )
+        target_ref = str(subscription.get("route_ref") or "").strip()
+        if not target_ref:
+            raise ValueError("periodic report subscription route is missing")
+        raw = {
+            "goal_id": goal_id,
+            "provider": "lark",
+            "enabled": True,
+            "target_ref": target_ref,
+            "channel": {},
+            "identity": {},
+        }
     target = None
     if target_ref:
         target = goal_channel_target_for_name(
@@ -150,8 +182,17 @@ def _resolved_goal_channel_binding(
         )
         if target is None:
             raise ValueError("periodic report Goal Channel target is missing")
+    resolution_payload = payload
+    if binding_for_goal(payload, goal_id) is None:
+        resolution_payload = {
+            **payload,
+            "bindings": {
+                **dict(payload.get("bindings") or {}),
+                goal_id: raw,
+            },
+        }
     resolved = binding_for_goal(
-        payload,
+        resolution_payload,
         goal_id,
         provider_target=target,
     )
@@ -573,6 +614,25 @@ def deliver_periodic_report_to_goal_channel(
         ),
         "message_results": message_results,
     }
+    publication_cursor = None
+    if satisfied:
+        generation_id = str(generation["generation_receipt"]["generation_id"])
+        candidate = find_periodic_report_publication_candidate(
+            runtime_root=runtime_root,
+            goal_id=goal_id,
+            generation_id=generation_id,
+        )
+        if candidate is not None:
+            publication_cursor = commit_periodic_report_publication_cursor(
+                runtime_root=runtime_root,
+                candidate=candidate,
+                publication_id=(
+                    "goal-channel-"
+                    + hashlib.sha256(idempotency_key.encode()).hexdigest()[:24]
+                ),
+                delivered_at=datetime.now(timezone.utc).isoformat(),
+                covered_until=str(generation["document"]["period_window"]["end_at"]),
+            )
     return {
         "ok": bool(satisfied or not execute),
         "schema_version": GOAL_CHANNEL_DELIVERY_RESULT_SCHEMA,
@@ -580,8 +640,16 @@ def deliver_periodic_report_to_goal_channel(
         "intent_satisfied": satisfied,
         "generation_id": generation["generation_receipt"]["generation_id"],
         "sink_result": sink_result,
+        "publication_cursor": publication_cursor,
+        "incremental_baseline": (
+            candidate.get("incremental_baseline")
+            if satisfied and candidate is not None
+            else None
+        ),
         "boundary": {
-            "goal_channel_binding_required": True,
+            "goal_channel_binding_required": False,
+            "goal_channel_binding_preferred": True,
+            "machine_default_route_allowed_when_unbound": True,
             "project_bot_identity_required": True,
             "caller_identity_override_allowed": False,
             "exact_sender_and_chat_readback_required": True,

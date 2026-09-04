@@ -12,9 +12,10 @@
   （release 0.11.0、Python API 1、Holt 固定为 0.8.6）。Stage 2A 的可执行资格
   验证只接受这份 SDK 合同与本 checkout 的 helper；它仍是候选证据，不是合并门槛
   或 authority promotion
-- PostgreSQL 基线：TypeScript Stage 2B candidate 已实现 store contract，且已通过
-  真实 PostgreSQL 16 transaction matrix；shared authority service、runtime caller、
-  authentication boundary 与 authority promotion 均尚未交付
+- PostgreSQL 基线：TypeScript Stage 2B candidate 已实现 store contract、
+  transaction-local tenant context 与 forced row-level security，且已通过真实
+  PostgreSQL 16 transaction matrix；shared authority service、runtime caller、
+  principal authentication/tenant authorization 与 authority promotion 均尚未交付
 - 语言说明：[英文版](./shared-goal-authority-state-provider-v0.md)与本中文版互为
   语义镜像；两者不一致属于缺陷
 
@@ -460,9 +461,11 @@ todo 已提交就要求调用方重新发一条 operation。
 未知 command type fail closed。transfer 或 delegated assignment、任意 todo/gate
 mutation、quota reservation 与 external effect 仍需要后续 runtime 合同与
 qualification；非空 write scope 与跨 todo scope-overlap 拒绝同样需要后续 command
-contract 与 qualification。下面的可恢复执行动词是 Stage 3 切片；第 5 节的步骤
-1-4 与 7-10（identity、digest、replay、CAS、reload、rebase、budget）对每个动词
-原样适用，只有每动词的前置条件与迁移（步骤 5-6）不同。
+contract 与 qualification。下面的可恢复执行动词在 #3669 历史实施序列中曾称为
+Stage 3；按照第 11 节当前的交付编号，已合入的这部分属于 Stage 0 reference foundation，
+不是第 11 节的 Stage 3 远端 shadow 阶段。第 5 节的步骤 1-4 与 7-10
+（identity、digest、replay、CAS、reload、rebase、budget）对每个动词原样适用，只有
+每动词的前置条件与迁移（步骤 5-6）不同。
 
 ### 5.2 `renew_work`
 
@@ -850,7 +853,9 @@ Stage 3/4 qualification 必须保持以下 ownership 与 proof 边界：
    把现有 Markdown/task-lease writer shadow 到 `FileAuthorityStore`；验证 parity、
    crash recovery、migration 与一键 rollback。随后通过一个单独评审的 promotion，
    让 file aggregate 成为本地 coordination authority，并 fence legacy writer；
-   只有晋升后 Markdown 与 task-lease 文件才退为 projection。
+   只有晋升后 Markdown 与 task-lease 文件才退为 projection。仅证明 projection
+   结构或 head digest 相等仍然不够；promotion 还必须在精确的 qualified revision
+   上证明 provider 完整复现 Todo 消费方可见语义。
 5. **Stage 3——远端单向 shadow parity。** 晋升后的本地 `FileAuthorityStore` 仍是
    唯一 authority；将已提交观察投影到 NoKV 或 PostgreSQL 候选。Provider parity
    只对比 Todo/claim、lease fence、
@@ -865,6 +870,36 @@ Stage 3/4 qualification 必须保持以下 ownership 与 proof 边界：
 7. **Stage 5——切换唯一 authority source。** 只有经过评审的晋升，才能让 shared
    LoopX service 成为唯一 writer。本地 `.loopx` 退为 cache、offline projection 与
    诊断材料。绝不长期维持 dual-write 或 dual-master。
+
+#### Stage 2C 观察基础：本地提交后 capture
+
+Stage 2C 的前半段是一个显式开启、默认关闭的产品路径。先预览，再开启：
+
+```bash
+loopx configure-goal --goal-id GOAL --local-authority-shadow-file
+loopx configure-goal --goal-id GOAL --local-authority-shadow-file --execute
+```
+
+Todo、handoff-mode、follow-up 与 task-lease facade 会在本地主写返回成功后，采样
+完整当前本地投影，再让 `FileAuthorityStore` 保存该 snapshot。
+`observation_trigger` 只记录为何开始采样，不是主写 transaction identity；并发主写
+因此可能出现在该次 snapshot 中。`captured` 或 `replayed` 只证明候选侧 observation
+commit，不表示已经对比 source 与 candidate；结果明确携带
+`parity_verdict=not_evaluated`。
+
+候选数据位于 legacy 单 Goal runtime tree
+之外的 `authority-shadow/file/`，因此 state migration 不会复制 store identity 或
+revision；真正执行迁移时，会从迁移后的本地主状态为目标端建立一条新 lineage。
+候选失败只形成 observation result，不会推翻已经完成的本地写入。
+
+用
+`loopx configure-goal --goal-id GOAL --clear-local-authority-shadow --execute`
+即可关闭 observer。这里回退的只是观察路径：Markdown 与 task-lease 文件始终是
+canonical。本切片不会读取候选来决策，不会 fence legacy writer，不会资格化远端
+provider，也没有完成 Stage 2C 后半段的本地 canonical promotion。若进程恰好在本地
+提交后、observer 调用前崩溃，该次 observation 可能丢失；后续成功写入或 migration
+seed 会刷新完整当前投影，但这里不宣称已有 durable shadow outbox 或与主写 transaction
+关联的 receipt。这套 plumbing 不是 parity evidence，不能单独支持 Stage 2C promotion。
 
 ### 实施前置条件：先让本地文件模式经过同一协调合同
 
@@ -915,7 +950,7 @@ Stage 2 的 aggregate 与 provider shadow。该 aggregate 必须把 `handoff_mod
 lineage，却不会因此获得当前权威；把恢复状态晋升为 live authority head，必须经过
 显式的 lineage 与 binding fence。
 
-#### Stage 2B PostgreSQL candidate 状态（2026-09-01）
+#### Stage 2B PostgreSQL candidate 状态（2026-09-02）
 
 首个 PostgreSQL candidate 已实现由 LoopX 持有的 TypeScript store contract，而非
 引入第二个语义权威。Store handle 绑定 `(tenant_id, goal_id)`，只接收 service 持有的
@@ -927,6 +962,18 @@ scoped head row，校验 opaque provider revision，以 unique constraint fence
 的错误返回 typed `ambiguous`，只能通过 receipt readback reconcile。Database
 incarnation metadata 由行政部署路径安装，不能被隐式重新绑定。
 
+数据库 trust-boundary 切片现在会为每次 provider operation 设置 transaction-local
+`loopx.tenant_id` context，并在所有 tenant-scoped table 上同时 enable 与 force
+PostgreSQL row-level security。读操作使用 read-only transaction，并在返回前
+rollback，因此 pooled session 不会残留上一个 tenant context。缺少 context 时看不到
+任何 scoped row；`WITH CHECK` 会拒绝写入 active context 之外的 tenant。资格化所用的
+restricted-role profile 只获得 schema usage、metadata read 与 scoped table 所需的最小
+权限，因此不能重新绑定 database-incarnation metadata，也不能安装 schema policy。
+
+这只是 service 内部的 defense in depth，不是 tenant authentication。Service 仍持有
+database role，并且必须先认证 principal、授权其 tenant，才能选择 transaction context。
+Agent 永远拿不到该 role；RLS 也不会让 caller 自报的 tenant id 自动变可信。
+
 本切片还把 strict JSON validation 与 commit normalization 从 file 实现抽到统一的
 TypeScript authority-store codec。File 与 PostgreSQL 现在运行同一套 provider-neutral
 conformance suite，覆盖 projection-plus-receipt 原子提交、CAS contention、历史 receipt
@@ -934,22 +981,169 @@ replay、operation fencing、有序 cursor scan、返回值隔离，以及 malfo
 被拒绝。
 
 真实 PostgreSQL qualification 从这里开始，而不是等到 shadow 或 canary。一个真实
-PostgreSQL 16 实例已通过九行 durable 验证：共享 conformance matrix、同一 head 的并发
-CAS、不同 tenant 复用相同 goal 与 operation id、transaction rollback 后不暴露 head
-或 receipt、已提交 transaction 丢失响应后的 receipt 恢复，以及拒绝 database
-incarnation rebind。Fake 仍可覆盖 adapter 分支，但不能证明 row lock、unique
-constraint、rollback 或 commit visibility；因此后续每个 PostgreSQL provider 切片都
-必须保留真实数据库门禁。
+PostgreSQL 16 实例已通过共享 conformance matrix、同一 head 的并发 CAS、不同 tenant
+复用相同 goal 与 operation id、transaction rollback 后不暴露 head 或 receipt、已提交
+transaction 丢失响应后的 receipt 恢复、拒绝 database incarnation rebind，以及受限
+role 的双 tenant RLS matrix。最后一项证明：缺少 transaction context 时看不到 scoped
+row，跨 context 写入失败，runtime role 也不能修改行政 metadata。Fake 仍可覆盖 adapter
+分支，但不能证明 row lock、unique constraint、rollback、commit visibility、privilege
+或 RLS；因此后续每个 PostgreSQL provider 切片都必须保留真实数据库门禁。
 
 该 candidate 仍是 coverage-only。没有 production LoopX entry point 构造它，本地模式
-保持不变，Agent 也不能获得注入的 pool。Service authentication 与 database role、
-tenant authorization/RLS、restore incarnation rotation、pool exhaustion/cancellation/
-failover、单向 shadow parity 与 authority-source promotion 仍是显式 hold。从这里到
-TEST ONLY canary，预计还需三个经 review 的切片：service trust 与 deployment boundary；
-单向 runtime shadow 加 parity；最后是有界 canary 与 promotion gate。
+保持不变，Agent 也不能获得注入的 pool。Service trust boundary 内的数据库
+runtime-role/RLS 行为现已实现并完成资格化。Service API authentication、
+principal-to-tenant authorization、production runtime caller、restore
+incarnation rotation、pool exhaustion/cancellation/failover、单向 shadow parity、TEST
+ONLY canary 与 authority-source promotion 仍是显式 hold。下一个 PostgreSQL 切片必须
+资格化 authenticated service/deployment 与 failure boundary，不能把 database RLS 当成
+仍缺失的 API authorization layer。
 
-File-backed provider shadow 属于 Stage 2；其第一个切片已通过 #3529 合入
-`main`，证据记录在下方的 Stage 2 状态小节。
+File-backed provider 合同与 executor 属于 Stage 2；其第一个切片已通过 #3529
+合入 `main`，证据记录在下方的 Stage 2 状态小节。该切片证明 aggregate 与 provider
+边界，但还不是 Stage 2C 的生产 runtime shadow：它没有接入 legacy Todo 或
+task-lease writer。
+
+#### Stage 2C 提交后 runtime shadow 状态（2026-09-03）
+
+第一个接入真实写路径的 shadow 切片由以下精确配置显式启用，默认关闭：
+
+```json
+{
+  "coordination": {
+    "runtime_shadow": {
+      "enabled": true,
+      "schema_version": "loopx_coordination_runtime_shadow_config_v0",
+      "provider": "file_v0"
+    }
+  }
+}
+```
+
+三个值缺一不可；配置缺失、关闭、格式错误或 provider 不受支持时，legacy 结果保持
+不变，并返回 typed disabled evidence。启用后，runtime 遵守以下边界：
+
+- legacy Markdown Todo writer 或 task-lease writer 先成功提交且继续作为 canonical；
+  只有 primary mutation 成功后才派发 shadow；
+- Python adapter 通过 `todo list` 共用的 canonical read-record 合同投影已提交 Todo
+  view，完整保留消费方可见的 identity、文本、优先级、过滤、continuation、resume、
+  调度、归档、完成、note 与 evidence 字段；随后按稳定 Todo identity 排序，并把该
+  view 与紧凑 lease 一起通过既有 TypeScript effect runtime 发送；
+- TypeScript owner 在同一笔 `AuthorityStore` transaction 中写 projection 与 operation
+  receipt。写前先查询既有 receipt；同一 operation id 搭配不同 normalized content
+  会被拒绝；provider-revision contention 只做固定次数重试；ambiguous commit 只能
+  通过读取精确 durable receipt 恢复；
+- `applied` 会读回 receipt，并在 provider head 尚未被后续提交覆盖时验证当前
+  projection。所有结果都声明 `decision_read_from_shadow=false`；shadow 被关闭、失败、
+  冲突或 ambiguous，都不能拒绝、回滚或改写已经提交的 primary result。
+
+跨 runtime 测试从 Todo 与 task-lease 两条 hook 验证真实的 Python -> TypeScript ->
+`FileAuthorityStore` 路径，覆盖 default-off、稳定 replay、内容漂移拒绝、ambiguous
+commit 恢复、projection read-back 与 shadow failure isolation。这里仅关闭第一个
+runtime-shadow 切片。后续 typed inspection seam 会把当前紧凑 legacy projection 与
+file head 对比，返回 `missing`、`matched` 或 `drifted` 以及两侧内容摘要。该 seam 默认
+关闭、只读，并始终返回 `decision_read_from_shadow=false`；它为 migration 提供可复用
+的 baseline/parity observation，但不会把 observation 升格为 authority。
+
+同一显式 opt-in 后面现在也有了下一个 migration primitive：
+`coordination.runtime_shadow.bootstrap` 只允许在 file shadow 尚未初始化时安装一份
+规范化 legacy projection。第一条已提交 event 持久绑定 source version、source
+projection digest 与 `legacy_canonical_shadow` mode declaration；由于尚未执行任何
+Agent operation，它刻意携带空 receipt payload。精确重放从第一条 transaction 恢复，
+包括提交成功但响应丢失的 ambiguous 情形；如果已有不同 lineage，则 fail closed。
+这是后续管理面 migration command 所需的 provider-owned bootstrap effect，但它仍不能
+promotion shadow，也不能参与协调决策。
+
+管理面 caller 是显式且 preview-first 的：
+
+```bash
+loopx coordination-shadow inspect --goal-id <goal-id>
+loopx coordination-shadow bootstrap --goal-id <goal-id>
+loopx coordination-shadow bootstrap --goal-id <goal-id> --execute
+loopx coordination-shadow qualify --goal-id <goal-id> \
+  --minimum-operations 3 \
+  --require-event-kind todo_claim \
+  --require-event-kind task_lease_acquire
+loopx coordination-shadow rollback --goal-id <goal-id> \
+  --provider-revision <revision-from-inspect> --execute
+```
+
+它从当前 canonical Todo 与 task-lease view 派生紧凑 projection，只报告计数与摘要，
+并要求 `--execute` 才调用 bootstrap。写入成功后会立即通过 typed parity inspection
+读回。除非目标开启精确的 goal-level `file_v0` shadow opt-in，否则该命令不可执行。
+
+promotion 前 rollback 带精确 revision fence，且不删除数据。TypeScript 会把命中的
+file-shadow lineage 移入持久 quarantine archive；精确重试复用 archive receipt，revision
+漂移 fail closed，legacy Todo/task-lease source 全程保持 canonical。之后可以从 legacy
+source 重新 bootstrap 新 shadow，而无需恢复或信任退役 lineage。
+
+只读 `qualify` action 把单点 inspection 提升为 typed 持续 parity 报告。它采用覆盖式
+策略：调用方指定至少需要多少个不同的已提交 operation，以及必须覆盖哪些 Todo/lease
+mutation kind。TypeScript 会扫描完整且有界的 lineage，校验 bootstrap、每条
+event/receipt/projection identity，以及当前 legacy/file head digest，并返回
+`qualified`、`insufficient_evidence` 或 `drifted`。replay 不增加 operation 计数，缺少
+覆盖会让 gate 失败，所有结果仍明确声明 `decision_read_from_shadow=false`。
+
+结构 parity 不等于消费语义 parity。因此，可 promotion 的 projection 还必须携带一个
+版本化 Todo read-model receipt，其中包含精确字段合同、记录数和 canonical record
+digest。TypeScript 会在 qualification、promotion 以及每次 provider-first collection
+read 时，对 deterministic provider records 校验该 receipt；schema 缺失、digest 过期、
+字段合同被截断、记录数不符或顺序不稳定都会 fail closed。provider-first mutation 必须
+在同一原子 head 更新中重算 receipt。新增 Todo 消费字段属于合同变更，必须重新
+qualification，不能宽松 fallback。
+
+任何真实 Goal promotion 前，还必须在同一个 revision 上分别让 legacy source 与
+provider round-trip 经过既有消费 pipeline。语义矩阵至少覆盖：user/agent role；open、
+done、blocked、deferred；优先级与排序；claim、exclusion、bound-agent、global-gate
+过滤；resume condition；successor/continuation；continuous monitor 的 cadence、due、
+watch-only 与 material generation；note、evidence、completion、archival；以及 Markdown
+文件不可用后的 provider-only read。任一差异都阻止 promotion，并保持 legacy authority。
+synthetic stub 可作为单元测试，但不能替代真实复杂 Goal qualification。真实 Goal 内容
+只保留在本机；公开证据只包含脱敏 coverage、计数、精确 revision 标识与 digest。
+
+下一个只读 seam 会演练未来 read flip 所需的 provider 读取形态，但不授予它 authority：
+
+```bash
+loopx coordination-shadow read-candidate \
+  --goal-id <goal-id> \
+  --todo-id <todo-id>
+```
+
+TypeScript 会读取 file head，要求其 digest 与当前完整 legacy coordination projection
+一致，校验 Todo identity 唯一，再返回精确的紧凑 Todo、provider revision 与 cursor。
+provider 缺失、漂移、结构非法或 Todo 重复都会 fail closed。结果刻意保持
+`decision_read_from_shadow=false`：它只证明 parity 匹配的 provider 能回答一次精确
+Todo 读取，尚无 lifecycle 或 settlement 调用方消费这个答案。正式 promotion 仍必须
+把 provider-first read flip 与 legacy-writer fencing 作为同一个受审原子边界；flip 后
+回退 Markdown 会重新制造双权威，因此禁止。
+
+后续仍需完成 provider-first read flip，并 fence 全部 legacy coordination writer；这些
+仍是独立评审的本地 canonical promotion 的强制证据。因此 NoKV/PostgreSQL 远端 shadow
+仍属于 Stage 3，不能把这个默认关闭的 hook 当作 authority。
+
+下一块 Stage 2C 实现加入了 TypeScript cutover kernel，但尚未改变默认 runtime。
+同一个纯 reducer 从一次 Todo/lease mutation 派生 projection、event 与 receipt；显式
+promotion 必须同时验证 qualified shadow 的精确 provider revision、projection digest，
+以及独立持久化、绑定到同一 revision 的 legacy-writer fence。该 fence 提供共享的
+fail-closed write-check hook；promotion 可按 operation receipt 重放，provider-first read
+与 mutation 也绝不回退到 Markdown。在 Python Todo/task-lease 入口真正调用这个 hook
+并选择 promoted mode 之前，这些仍只是切换机械结构，不代表生产权威源已经翻转。
+后续必须接齐所有 legacy writer、显式配置与 rollback，并证明默认 legacy 兼容性，
+才能启用本地 promotion。
+
+第一块生产 fencing 集成现在已经收口了上述工作中的写入侧：所有 Python Todo mutation
+都会在持有现有 active-state mutation lock 时检查 TypeScript 权威拥有的 durable fence；
+原生 TypeScript task-lease 的 acquire / renew / transfer / release 也会在持有 lease lock
+时检查同一个 fence。fence 不存在时保持零 runtime 调用的默认兼容路径；fence 存在、
+不可读或不合法时一律 fail closed。后续 promotion orchestrator 必须先取得这两把 legacy
+lock，再 engage fence，从而保证不存在某次 legacy write 已通过检查、却在 cutover 后才
+提交。provider-first CLI 路由和持锁 promotion operation 仍是下一切片；在它们落地前，
+本集成选择阻断 split-brain 写入，而不会静默回退。
+
+Todo collection-read 切片只在 durable fence 已存在时把 `loopx todo list` 路由到
+`FileAuthorityStore`。它与 legacy 路径复用同一套过滤、排序、resume 和 summary
+pipeline；Markdown 缺失时仍可执行 provider-only read，并在响应中携带 authority
+receipt。provider 缺失、损坏、协议漂移或 Todo read-model 语义漂移都会 fail closed；
+cutover 后禁止回退 Markdown。
 
 完成续接（continuation）的持久化读回
 （`durable_completion.py`：`read_persisted_todo_record` /
@@ -1081,6 +1275,66 @@ visible governance 台账中属 coverage-only。该接受允许内聚的 referen
 围栏、authorization publisher、provider binding、projection 翻转、rollback 与
 retention 决策，不能用一个会制造第二 writer 的诊断 CLI 代替。本状态节声明的是已
 证明的合同，不是已 ship 的生产能力。
+
+#### Stage ladder 端到端证据（2026-09-03）
+
+本分支上存在一条增量式端到端 "stage ladder"：它通过真实的
+`python -m loopx.cli` 逐行演练本 RFC 每个已完成阶段的声明，并按行给出可机器
+判定的结论：`loopx/control_plane/testing/authority_e2e_ladder.py`（行注册表、
+runner、`loopx_shared_goal_authority_e2e_report_v0` JSON 报告、退出策略与隐私
+扫描）、`loopx/control_plane/testing/authority_e2e_fixtures.py`（goal 工作区、
+CLI runner、observation-lock 窗口、候选回读）、只读 TypeScript 探针
+`tests/control_plane_ts/authority_store_readback_probe.ts`、pytest 投影
+`tests/control_plane/test_shared_goal_authority_e2e.py`，以及入口
+`examples/shared-goal-authority-e2e/ladder.py`。
+
+按阶段，本增量实现：
+
+- Stage 0：`s0.file_matrix_twelve_rows` 运行保留的 live matrix 脚本，要求 file
+  provider 上恰好十二个共享场景行全为 true；`s0.nokv_live_matrix` 要求 live
+  NoKV 栈上同样的行加 `restored_lineage_fails_closed` 全为 true，且 file/NoKV
+  逐行结果一致。
+- Stage 1：`s1.cli_document_decodes_through_ts_store` 通过产品 CLI 写入三次
+  observation（`todo add`、`task-lease acquire`、`todo update`），再经
+  `FileAuthorityStore` 的 `loadAuthority`、分页 `scanCommitted` 与
+  `readReceipt` 回读：cursor 为 `3`、三个 operation id 按序一致、首条 receipt
+  可找到。
+- Stage 2A：`s2a.nokv_live_qualification` 对一个已存在的 workbench 以新铸的
+  tenant/goal 运行已合并的 live 资格探针
+  （`examples/nokv-authority-store/live-qualification.ts --execute-live`），要求
+  `ok=true`、单节点 store conformance 范围、每项 check 通过、NoKV SDK `0.11.0`
+  / API `1`，且不宣称晋升或可用性。
+- Stage 2B：`s2b.postgresql_conformance_live` 在 node TAP reporter 下运行
+  PostgreSQL 集成测试文件，要求至少九个 pass、零 fail、零 skip。
+- Stage 2C 观察基础：七个 `s2c1.*` 行移植本地 shadow CLI E2E 与迁移断言，并钉住单一
+  lineage 保证。
+  configure 往返先预览、再开启、回读、最后关闭 observer；每个 writer family
+  （handoff-mode、todo add/update/complete/supersede/capture-followups/
+  archive-completed、task-lease acquire/renew/transfer）都以
+  `primary_writeback_preserved`、`provider_to_local_writes=false`、
+  `candidate_read_for_decision=false` 完成 capture，而幂等 re-acquire 不产生
+  observation；default-off goal 保持隔离；候选失败不推翻主写；POSIX SIGKILL
+  落在崩溃间隙时只丢失该次 observation；`--runtime-root` 与 `common_runtime_root`
+  不同时，todo add、task-lease acquire、todo update、follow-up 捕获与带 lease 的
+  complete 仍落入同一个 store identity，registry root 既不产生候选 lineage 也不
+  产生 lease 状态；`migrate-state` 在不携带 legacy 字节的前提下建立新 lineage。
+
+Live 行按环境门控（`LOOPX_TEST_POSTGRES_URL`；`NOKV_COORDINATION_LIVE=1` 加
+`NOKV_*` 栈变量；`LOOPX_NOKV_AUTHORITY_LIVE=1` 加 `LOOPX_NOKV_AUTHORITY_*` 输入）。
+没有栈时它们报告 `unverified`，除非传入 `--allow-unverified`，否则 ladder 以非零
+退出；unverified 行永不计为 green。pending 行同样是未兑现的义务：选中它而不传
+`--allow-pending` 就非零退出，所以一份零执行的报告不可能显示为 green。
+报告绑定 LoopX commit、工作树是否 dirty、探针 digest 与经哈希的连接事实；其隐私
+扫描会把任何临时根目录、home 目录、连接 URL 或配置路径的泄露改写为
+`fail/privacy_violation`；仅出现在 bindings 块的泄露会被抹除并同样判定为失败，
+`summary.privacy_violations` 阻止 green 退出，任何开关都不能放宽。
+
+交付边界：test-only。没有任何生产入口构造任何 store；ladder 不新增产品路径，
+只经保留的 TypeScript store 读取候选。Stage 2C parity 后半段
+（`s2c2.*`：outbox 条目、幂等 drain、drain 前与 drain 中的 SIGKILL、带 pending
+条目的 rollback、parity 相等与分歧、迁移 seed-and-drain、增长
+度量）以 pending 行声明，而非宣称已完成。本小节记录的是上述阶段的可执行证据；
+它不晋升任何 provider，也不完成 Stage 2C promotion。
 
 ### P0：合同与 deterministic proof
 
@@ -1234,8 +1488,11 @@ hard_lease` 语义、只允许静止态切换的 `loopx handoff-mode show|set`�
 `handoff_gate_overridden` 标记的委托授权门；上面的 user gate 自动铸钥匙作为后续
 补充落地。`legacy` 仍是默认值，分叉洞按设计保留。门禁落地后发现的两扇侧门随本次
 修订一并关上：`supersede` 与 `complete` 过同一道租约栅栏；强制重建状态
-（`bootstrap --force`）保留已声明的模式而不是把它重置回 `legacy`。下一阶段，即
-第 11 节协调合同后面的 file-backed provider shadow，尚未开始。
+（`bootstrap --force`）保留已声明的模式而不是把它重置回 `legacy`。此后 Stage 2
+provider 合同与 file backend 已落地，第一个 Stage 2C 提交后 runtime shadow 也已在
+显式、默认关闭的配置后实现。本地 canonical promotion 尚未开始：runtime 仍不从
+shadow 读取决策，上述 migration、rollback、parity、read flip 与 legacy-writer fencing
+门禁仍然开放。
 
 ### 与分阶段交付的关系
 

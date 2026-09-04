@@ -77,6 +77,7 @@ import {
   writeSchedulerState,
 } from "./scheduler/state_store.ts";
 import { buildVisionCheckpoint } from "./goals/vision_checkpoint.ts";
+import { projectSharedGoalAlignment } from "./goals/shared_goal_alignment.ts";
 import {
   evaluateDeliveryRoute,
 } from "./turn_driver/delivery_continuity.ts";
@@ -97,7 +98,26 @@ import {
   executeTaskLeaseAcquire,
 } from "./work_items/task_lease_acquire.ts";
 import { executeTaskLeaseLifecycle } from "./work_items/task_lease_lifecycle.ts";
+import { recordLocalAuthorityShadow } from "./coordination/local_authority_shadow.ts";
 import { evaluateTaskLeaseLifecycleDecision } from "./work_items/task_lease_lifecycle_decision.ts";
+import {
+  bootstrapCoordinationRuntimeShadow,
+  commitCoordinationRuntimeShadow,
+  inspectCoordinationRuntimeShadow,
+  qualifyCoordinationRuntimeShadow,
+  readCoordinationRuntimeShadowTodoCandidate,
+  rollbackCoordinationRuntimeShadow,
+} from "./coordination/runtime_shadow.ts";
+import {
+  mutateLocalCoordinationAuthority,
+  listLocalCoordinationTodos,
+  promoteLocalCoordinationAuthority,
+  readLocalCoordinationTodo,
+} from "./coordination/local_authority_runtime.ts";
+import {
+  checkLegacyCoordinationWriteAllowed,
+  engageLegacyCoordinationWriterFence,
+} from "./coordination/legacy_writer_fence.ts";
 import {
   projectTodoPlanningInventory,
   projectTodoPlanningInventoryDetail,
@@ -341,6 +361,7 @@ export function createEffectRuntimeHandlers(
     ["work_item.planning_inventory.detail", projectTodoPlanningInventoryDetail],
     ["work_item.refresh_recommendation.resolve", resolveRefreshRecommendation],
     ["goal.vision_checkpoint.evaluate", buildVisionCheckpoint],
+    ["goal.shared_goal_alignment.project", projectSharedGoalAlignment],
     ["agent.delivery_workspace.evaluate", evaluateDeliveryWorkspace],
     [
       "quota.delivery_workspace_causality.evaluate",
@@ -354,8 +375,30 @@ export function createEffectRuntimeHandlers(
     ["task_lease.acquire.native", executeTaskLeaseAcquire],
     ["task_lease.lifecycle.decide", evaluateTaskLeaseLifecycleDecision],
     ["task_lease.lifecycle.native", executeTaskLeaseLifecycle],
+    ["coordination.runtime_shadow.bootstrap", bootstrapCoordinationRuntimeShadow],
+    ["coordination.runtime_shadow.commit", commitCoordinationRuntimeShadow],
+    ["coordination.runtime_shadow.inspect", inspectCoordinationRuntimeShadow],
+    ["coordination.runtime_shadow.qualify", qualifyCoordinationRuntimeShadow],
+    [
+      "coordination.runtime_shadow.todo_read_candidate",
+      readCoordinationRuntimeShadowTodoCandidate,
+    ],
+    ["coordination.runtime_shadow.rollback", rollbackCoordinationRuntimeShadow],
+    ["coordination.local_authority.promote", promoteLocalCoordinationAuthority],
+    ["coordination.local_authority.mutate", mutateLocalCoordinationAuthority],
+    ["coordination.local_authority.todo_read", readLocalCoordinationTodo],
+    ["coordination.local_authority.todo_list", listLocalCoordinationTodos],
+    [
+      "coordination.local_authority.legacy_writer_fence.engage",
+      engageLegacyCoordinationWriterFence,
+    ],
+    [
+      "coordination.local_authority.legacy_write_check",
+      checkLegacyCoordinationWriteAllowed,
+    ],
     ["task_lease.write_scopes.overlap", evaluateTaskLeaseWriteScopesOverlap],
     ["quota.monitor_poll.commit", evaluateQuotaMonitorPollCommit],
+    ["coordination.local_authority_shadow.record", recordLocalAuthorityShadow],
     [
       "effect.program_from_ordered_steps",
       (params) => effectProgramFromOrderedSteps(

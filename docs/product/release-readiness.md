@@ -525,6 +525,12 @@ path, and canary route rather than as a user-facing release baseline.
   Pi task-lease facade; it also strengthens Lark inbox routing and catch-up,
   typed Todo/quota/scheduler settlement, repository delivery admission, and
   runtime startup recovery.
+- `v0.5.4` on 2026-09-03: typed control-plane and governed-workflow release at
+  the matching `v0.5.4` tag. LoopX moves more Todo, task-lease, quota,
+  scheduler, Vision, and replan transactions behind TypeScript owners;
+  advances staged file, PostgreSQL, and NoKV shared-authority providers;
+  completes the periodic-report lifecycle; makes the DSH plugin one-step ready; and adds
+  public-safe benchmark study projection without granting upload authority.
 
 When a new public release is promoted, add it here only after the matching tag,
 release note, stable ref, update path, and focused release canary agree.
