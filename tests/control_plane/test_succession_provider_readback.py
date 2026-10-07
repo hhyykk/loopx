@@ -13,7 +13,9 @@ from loopx.chat_manager_details import read_manager_goal_details
 from loopx.control_plane.coordination.local_authority import read_canonical_todos_if_promoted
 from loopx.control_plane.todos.machine_section_projection import render_canonical_todo_sections
 from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+from loopx.control_plane.todos.goal_todo_projection import filtered_todo_summary
 from loopx.todos import list_goal_todos
+from loopx.control_plane.todos.todo_summary import compact_todo_group
 
 
 def fixture_projection():
@@ -53,13 +55,17 @@ def test_real_cli_historical_route_advisory_preserves_old_source_and_provider(tm
         state.unlink()
     source = state.read_bytes() if state.exists() else None
     before = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id='goal-a')
+    inventory = cli(registry)
+    handoff_gates = inventory['agent_todos']['handoff_gates']
     for todo_id, expected in [('todo_legacy', True), ('todo_ordinary', False), ('todo_closed', False)]:
         result = cli(registry, '--todo-id', todo_id)
-        summary = result['agent_todos']
-        handoff = summary['handoff_gates'][0]
+        assert result['matched'] is True
+        assert result['todo']['todo_id'] == todo_id
+        assert result['relations']['unblocks_todo_id'] == 'todo_work'
+        handoff = next(gate for gate in handoff_gates if gate['todo_id'] == todo_id)
         assert (handoff.get('route_continuation_replan_required') is True) is expected
         assert handoff['gate_state'] == ('cleared_no_followup' if todo_id == 'todo_closed' else 'blocking')
-        assert 'terminal_closure_proof' not in summary or todo_id == 'todo_closed'
+        assert 'terminal_closure_proof' not in inventory['agent_todos']
         assert result['todo']['excluded_agents'] == ['agent-b']
     assert read_canonical_todos_if_promoted(runtime_root=runtime, goal_id='goal-a') == before
     assert (state.read_bytes() if state.exists() else None) == source
@@ -86,13 +92,35 @@ def test_real_cli_graph_selection_history_and_read_only_manager(tmp_path, monkey
         state.unlink()  # Promoted readback must not rely on or regenerate Markdown.
     state_before = state.read_bytes() if state.exists() else None
     before = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id='goal-a')
+    inventory = cli(registry)
+    summary = inventory['agent_todos']
+    full_source = list_goal_todos(registry_path=registry, goal_id='goal-a')
+    source_rows = full_source['todos']
+    agent_source_rows = [row for row in source_rows if row.get('role') == 'agent']
+    source_summary = compact_todo_group(agent_source_rows, source_section='Agent Todo', role='agent',
+        resume_source_items=source_rows, item_limit=None)
+    assert summary['total_count'] == len(agent_source_rows)
+    assert summary['completed_without_successor_count'] == source_summary['completed_without_successor_count']
+    assert 'terminal_closure_proof' not in summary
     for name, gap in [('inferred_source', 0), ('missing_source', 1), ('self_source', 1), ('handoff_source', 0)]:
         result = cli(registry, '--todo-id', cases[name], '--limit', '1')
-        summary = result['agent_todos']
-        assert summary.get('completed_without_successor_count', 0) == gap
-        assert 'terminal_closure_proof' not in summary
+        assert result['matched'] is True
+        assert result['todo']['todo_id'] == cases[name]
+        assert 'agent_todos' not in result and 'todos' not in result and 'user_todos' not in result
+        selected = filtered_todo_summary(source_summary, role='agent', todo_id=cases[name])
+        assert selected.get('completed_without_successor_count', 0) == gap
+        assert 'terminal_closure_proof' not in selected
+        if name == 'inferred_source':
+            assert result['relations']['completion_continuation'] == 'successor'
+        elif name == 'missing_source':
+            assert result['relations']['successor_todo_ids'] == ['todo_missing_continuation']
+        elif name == 'self_source':
+            assert result['relations']['successor_todo_ids'] == [cases[name]]
+        elif name == 'handoff_source':
+            assert result['relations']['successor_todo_ids'] == [cases['explicit_target']]
         if name == 'handoff_source':
-            assert summary['handoff_gates'][0]['gate_state'] == 'cleared_with_successor'
+            handoff = next(gate for gate in summary['handoff_gates'] if gate['todo_id'] == cases[name])
+            assert handoff['gate_state'] == 'cleared_with_successor'
     details = read_manager_goal_details(registry, runtime, 'goal-a', owner_scope=True, limit=3)
     assert details['status'] == 'read'
     assert details['coverage']['active'] > details['coverage']['included']
@@ -127,15 +155,18 @@ def test_large_goal_reuses_complete_succession_without_exceeding_rpc_budget(tmp_
     }]}))
     initialize_canonical_authority(runtime, 'goal-a', projection, state_path=state, provider=provider)
     before = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id='goal-a')
-    result = cli(registry)
-    summary = result['agent_todos']
+    inventory = cli(registry)
+    summary = inventory['agent_todos']
     assert summary['total_count'] == 5000
     assert summary['done_count'] == 4999
     assert summary['open_count'] == 1
     assert summary.get('completed_without_successor_count', 0) == 0
     assert 'terminal_closure_proof' not in summary
-    selected = cli(registry, '--todo-id', 'todo_capacity_00000', '--limit', '1')['agent_todos']
-    assert selected.get('completed_without_successor_count', 0) == 0
+    selected = cli(registry, '--todo-id', 'todo_capacity_00000', '--limit', '1')
+    assert selected['matched'] is True
+    assert selected['todo']['todo_id'] == 'todo_capacity_00000'
+    assert selected['todo']['status'] == 'done'
+    assert 'agent_todos' not in selected and 'todos' not in selected and 'user_todos' not in selected
     assert 'terminal_closure_proof' not in selected
     after = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id='goal-a')
     assert after == before
