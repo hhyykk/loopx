@@ -192,7 +192,7 @@ def _open_todo_leases(
                 lease = read_lease(
                     task_lease_path(runtime_root=runtime_root, goal_id=goal_id, todo_id=todo_id)
                 )
-            except (TaskLeaseError, OSError, UnicodeError):
+            except (TaskLeaseError, OSError):
                 # Keep the affected claimant uncertain without hiding healthy peers.
                 unreadable_todo_ids.add(todo_id)
                 continue
