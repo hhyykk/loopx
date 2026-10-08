@@ -69,10 +69,13 @@ def _index(runtime: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-@pytest.mark.parametrize("provider", ["file", "sqlite"])
+@pytest.mark.parametrize(
+    ("provider", "host_kind"),
+    [("file", "generic-cli"), ("sqlite", "generic-cli"), ("file", "dsh")],
+)
 @pytest.mark.parametrize("mode", ["standard", "dispatch_failure", "response_loss", "off"])
 def test_turn_milestone_intent_is_replay_stable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, mode: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, host_kind: str, mode: str,
 ) -> None:
     project, runtime, registry = _fixture(tmp_path, monkeypatch, provider)
     base = ["--registry", str(registry), "--runtime-root", str(runtime), "--format", "json"]
@@ -95,34 +98,63 @@ def test_turn_milestone_intent_is_replay_stable(
 
     workspace = project / "isolated-host-workspace"
     workspace.mkdir()
-    host = tmp_path / "turn_replan_host.py"
-    host.write_text(
-        "import json, pathlib, sys\n"
-        "request = json.load(sys.stdin)\n"
-        "counter = pathlib.Path('host-count.txt')\n"
-        "counter.write_text(str(int(counter.read_text()) + 1 if counter.exists() else 1))\n"
-        "pathlib.Path('validated-artifact.txt').write_text('validated')\n"
-        "vision = {'schema_version':'goal_vision_replan_contract_v0','state':'active',"
-        "'vision_patch':{'vision_summary':'Continue the next bounded fixture check.',"
-        "'acceptance_summary':'Validate the next fixture outcome independently.'},"
-        "'path_delta':{'schema_version':'goal_path_delta_v0','outcome':'replan',"
-        "'prior_assumption':'The prior fixture stage remained open.',"
-        "'observed_reality':'The prior stage passed its local validation.',"
-        "'evidence_refs':['fixture:validated-closed-stage'],"
-        "'changed':['Advance the next bounded fixture check.']}}\n"
-        "json.dump({'schema_version':'loopx_turn_result_v0','turn_key':request['turn_key'],"
-        "'result_kind':'replan_required','completed_phases':['host_execute','typed_result'],"
-        "'classification':'fixture_replan_successor','recommended_action':'Continue the validated successor stage.',"
-        "'next_action':'Validate the next bounded fixture check.','delivery_batch_scale':'implementation',"
-        "'delivery_outcome':'outcome_progress','path_delta_mode':'material_replan',"
-        "'agent_vision_json':json.dumps(vision),'summary':'The prior stage closed and an active successor was authored.'},sys.stdout)\n",
-        encoding="utf-8",
-    )
+    vision = {
+        "schema_version": "goal_vision_replan_contract_v0", "state": "active",
+        "vision_patch": {
+            "vision_summary": "Continue the next bounded fixture check.",
+            "acceptance_summary": "Validate the next fixture outcome independently.",
+        },
+        "path_delta": {
+            "schema_version": "goal_path_delta_v0", "outcome": "replan",
+            "prior_assumption": "The prior fixture stage remained open.",
+            "observed_reality": "The prior stage passed its local validation.",
+            "evidence_refs": ["fixture:validated-closed-stage"],
+            "changed": ["Advance the next bounded fixture check."],
+        },
+    }
+    candidate = {
+        "result_kind": "replan_required",
+        "classification": "fixture_replan_successor",
+        "recommended_action": "Continue the validated successor stage.",
+        "next_action": "Validate the next bounded fixture check.",
+        "delivery_batch_scale": "implementation",
+        "delivery_outcome": "outcome_progress",
+        "path_delta_mode": "material_replan",
+        "agent_vision_json": json.dumps(vision),
+        "summary": "The prior stage closed and an active successor was authored.",
+    }
+    host_runner = tmp_path / ("turn_replan_dsh_runner.py" if host_kind == "dsh" else "turn_replan_host.py")
+    if host_kind == "dsh":
+        host_runner.write_text(
+            "import json\nfrom pathlib import Path\n"
+            f"counter = Path({str(workspace / 'host-count.txt')!r})\n"
+            "def run_dsh_turn(*, prompt, session_id, workspace, session_root, provider, model, "
+            "reasoning_effort, max_tokens, cordis, runtime_bin, request_timeout_seconds):\n"
+            "    counter.write_text(str(int(counter.read_text()) + 1 if counter.exists() else 1))\n"
+            "    Path(workspace, 'validated-artifact.txt').write_text('validated')\n"
+            f"    return json.dumps({candidate!r})\n",
+            encoding="utf-8",
+        )
+    else:
+        host_runner.write_text(
+            "import json, pathlib, sys\n"
+            "request = json.load(sys.stdin)\n"
+            "counter = pathlib.Path('host-count.txt')\n"
+            "counter.write_text(str(int(counter.read_text()) + 1 if counter.exists() else 1))\n"
+            "pathlib.Path('validated-artifact.txt').write_text('validated')\n"
+            "json.dump({'schema_version':'loopx_turn_result_v0','turn_key':request['turn_key'],"
+            "'completed_phases':['host_execute','typed_result'],**" + repr(candidate) + "},sys.stdout)\n",
+            encoding="utf-8",
+        )
     validator = 'import pathlib; raise SystemExit(0 if pathlib.Path("validated-artifact.txt").read_text() == "validated" else 7)'
+    host_args = (
+        ["--host", "dsh", "--dsh-runner", str(host_runner)]
+        if host_kind == "dsh"
+        else ["--host", "generic-cli", "--host-adapter-command-json", json.dumps([sys.executable, str(host_runner)])]
+    )
     args = [
-        *base, "turn", "run-once", "--host", "generic-cli", "--goal-id", GOAL_ID,
+        *base, "turn", "run-once", *host_args, "--goal-id", GOAL_ID,
         "--agent-id", AGENT_ID, "--project", str(workspace),
-        "--host-adapter-command-json", json.dumps([sys.executable, str(host)]),
         "--validation-command-json", json.dumps([sys.executable, "-c", validator]),
         "--execution-mode", "isolated-headless", "--scan-root", str(project),
         "--no-global-sync", "--execute",
@@ -163,7 +195,6 @@ def test_turn_milestone_intent_is_replay_stable(
     assert first["effects"]["quota_spent"]
     assert (workspace / "host-count.txt").read_text(encoding="utf-8") == "1"
     if mode == "standard":
-        # On main this proves the primary Turn committed before exposing the missing hook.
         assert "post_writeback_hooks" in first
     rows = _index(runtime)
     original = next(row for row in rows if row.get("classification") == "fixture_replan_successor")
