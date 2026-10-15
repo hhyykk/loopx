@@ -1675,6 +1675,14 @@ only the reduction call. Python translates the result into the legacy CLI shape.
 It does not call a series of TypeScript leaf helpers or retain parallel enums
 and reducers.
 
+Explicit `turn run-once --resume-turn-key` now loads the original journal plan
+before fresh selection. It retains actor/Goal-lifetime admission, the existing
+TypeScript recovery decision and execution path, and current checks for any
+remaining effects. It no longer constructs and discards a fresh decision,
+TurnEnvelope or Turn-start context/sync/recall sequence. New Turns keep their
+shared fresh decision owner. This removes redundant Python composition from
+recovery; it does not retire the Python CLI or complete the remaining cutovers.
+
 The same PR must delete the Python semantic path it replaces. A new TypeScript
 module is not migration progress by itself: the payoff is fewer semantic
 owners, fewer cross-runtime round trips, and a facade with a credible deletion

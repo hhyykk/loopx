@@ -1124,6 +1124,12 @@ TypeScript 完成最终 reduction 并返回 typed result。没有待执行 provi
 只需一次 reduction。Python 只把结果投影为旧 CLI shape，不再串行调用一组
 TypeScript leaf helper，也不保留平行的 enum 和 reducer。
 
+显式 `turn run-once --resume-turn-key` 现在先加载原 journal plan，再进入原恢复路径，
+保留 actor／Goal 生命周期准入、既有 TypeScript 恢复判定，以及剩余效果的当前校验。
+它不再构造并丢弃 fresh decision、TurnEnvelope 或新一轮 Turn-start 的上下文、同步与
+recall。新 Turn 仍使用共享的 fresh decision owner。本批删除恢复中的冗余 Python
+编排，不代表 Python CLI 已退役，也不代表其余 cutover 已完成。
+
 同一 PR 必须删除被它替代的 Python 语义路径。仅新增 TypeScript module 不等于取得
 迁移进展；真正的兑现是语义 owner 更少、跨 runtime round trip 更少，并且 facade
 有可信的删除条件。
