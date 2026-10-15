@@ -254,6 +254,30 @@ The section exists only when the server's
 contracts retain the baseline UI and export. The existing snapshot export and
 status Markdown include the enabled readback without command bodies or raw logs.
 
+When an enabled Goal-wide contract has no active advancement work left, an
+`unverified`, `partial`, `failed` or `stale` result remains a verification gap.
+Quota and Turn planning retain all configured criterion IDs and require replan;
+local Todo completion, `no_followup` and a vision ACK cannot replace the missing
+verification or derive `terminal_no_followup`. Inspect the contract and run the
+checks above from its delivery workspace. Repair unmet work or record a concrete
+blocker when necessary. Full current verification clears the gap; a later
+contract or work revision can reopen it. Reading or polling never runs checks
+automatically. `selected_work` contracts keep their local coverage, and absent
+or disabled governance retains its previous behavior. This is a necessary
+configured-contract check, not proof of whole-Goal success or model adherence.
+The gap fingerprint binds Goal/instance, contract/work basis and verification
+facts. Repeating identical results under a new operation ID is not new progress.
+
+已启用 Goal 全局验收合同、且当前推进工作耗尽时，未验证、局部通过、失败或过期结果
+仍保留验收缺口。quota 与 Turn planning 保留全部 criterion ID 并要求重规划；局部
+Todo 完成、`no_followup` 或 vision ACK 不能代替验证，也不能推出 `terminal_no_followup`。
+应从交付工作区 inspect 并运行上面的检查；必要时修复未满足的工作或记录具体阻塞。
+当前完整验证通过后才解除缺口，合同或工作修订可使缺口重开。读取或轮询不会自动执行
+检查。`selected_work` 仍只管局部工作，停用／未配置时保持原行为。这项必要检查不证明
+整个 Goal 已成功，也不证明模型长期不偏离目标。
+缺口指纹绑定 Goal／实例、合同／工作基线与验证事实；仅更换 operation ID 重复相同
+结果不算新进展。
+
 | Server state | Readback meaning |
 | --- | --- |
 | Task `ready` | Owner confirmed the current task association; artifact checks are separate |

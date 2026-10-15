@@ -349,12 +349,25 @@ Todo readers retain their existing authority and scope. A selected-work
 acceptance document cannot replace whole-Goal intent. Shared host adapters
 preserve selected context. Default heartbeat generation → guard → source
 readback must be tested alongside envelope transport; one route cannot qualify
-the other. This does not
-implement the full requirement ledger, a global closeout gate, automatic proof
-of required-read execution, or model adherence. Those remain with R1/R4/R5 and
-S11; this RFC does not silently enable a new acceptance policy. The next complete
-slice should map existing structured criteria through a work switch and restart,
-reject dropped coverage, and invalidate stale evidence under the same owner.
+the other.
+
+For an enabled Goal-wide acceptance contract, the existing TS owner now retains
+a canonical verification gap when active advancement work is exhausted but full
+current verification has not passed. The gap keeps every configured criterion
+ID and its current contract/work basis. Quota selects replan; TurnEnvelope retains
+the contract and replan packet. A Todo-bound Host still blocks an empty selection;
+the gap grants no new execution authority. Neither a vision ACK nor local `no_followup` can clear it or trigger
+terminal automation shutdown. Full current verification clears this necessary
+condition. Freshness uses the existing contract/work bindings, without a new
+artifact freshness oracle. Contract revisions invalidate old success; historical receipts remain
+unchanged. Explicit `selected_work` contracts keep their local scope, and
+disabled/absent governance keeps its previous behavior.
+
+This does not implement the full requirement ledger, a complete Goal-lifecycle
+closeout gate, automatic proof of required-read execution, or model adherence.
+Those remain with R1/R4/R5 and S11. Coverage is limited to the owner's declared
+contract; it does not prove that all natural-language requirements were captured
+or that a model follows them over a long run.
 
 ### 3.8 Invalid evidence and affected consumers
 
