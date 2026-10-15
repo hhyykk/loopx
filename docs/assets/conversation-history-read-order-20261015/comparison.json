@@ -1,0 +1,92 @@
+{
+  "kind": "Functional regression comparison; synthetic fixtures, no raw logs",
+  "baseline_commit": "ad863559af7a7cd6e10aa62137bbf69dd877fb3f",
+  "pr_base_commit": "8f19e614ac2143589458a7f3f31e9c75c413efe3",
+  "candidate_commit": "81a00101e47aa702ff79f102422f4c57f6bef48f",
+  "source_identity": "The history owner did not change upstream between the baseline and PR base; recorded regression was repeated on the rebased candidate.",
+  "ordering_scenarios": [
+    {
+      "scenario": "late-backfill",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "scenario": "failed-backfill",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "scenario": "backfill-during-refresh",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "scenario": "refresh-after-backfill",
+      "baseline": "PASS",
+      "candidate": "PASS"
+    },
+    {
+      "scenario": "overlapping-refreshes",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "scenario": "scope-switch",
+      "baseline": "PASS",
+      "candidate": "PASS"
+    },
+    {
+      "scenario": "scope-return",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "scenario": "retry-progress",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    }
+  ],
+  "totals": {
+    "baseline_pass": 2,
+    "baseline_fail": 6,
+    "candidate_pass": 8,
+    "candidate_fail": 0
+  },
+  "packaged_app": {
+    "baseline": "A late 503 reopens a history warning after recovery.",
+    "candidate": "The recovered warning stays hidden; current and historical messages, draft and sending remain available; no new model Turn is started.",
+    "viewports": [
+      {
+        "width": 1512,
+        "height": 982
+      },
+      {
+        "width": 390,
+        "height": 844
+      }
+    ]
+  },
+  "real_backend": {
+    "result": "passed",
+    "scope": "Packaged UI with real isolated Python Chat HTTP server and ChatSessionStore; late result revisions, read failure/recovery, quiet reads, no duplicates, stable store hashes and zero model Turns.",
+    "cleanup": "Route callbacks are awaited before closing the browser; successful assertions are followed by successful command exit."
+  },
+  "build": "Dashboard and packaged Chat build plus source verification passed on candidate.",
+  "test_commands": [
+    "cd apps/presentation/dashboard && npm run smoke:conversation-history-order",
+    "LOOPX_PERSONAL_WORKSPACE_PACKAGED=1 LOOPX_PERSONAL_WORKSPACE_SCENARIO=conversation-history-recovery LOOPX_PLAYWRIGHT_PACKAGE=\"$PWD/apps/presentation/dashboard/node_modules/playwright\" node examples/personal-workspace-browser-smoke.mjs",
+    "cd apps/presentation/dashboard && npm run smoke:conversation-returns-packaged"
+  ],
+  "prerequisites": "Node.js 22.22.3+, Python 3.11+, installed repository Node dependencies and Playwright Chromium.",
+  "fixture_sources": [
+    "examples/status.example.json",
+    "examples/personal-workspace-browser/fixture.mjs",
+    "apps/presentation/dashboard/smoke/conversation-history-http-fixture.py"
+  ],
+  "limits": [
+    "Controlled HTTP ordering and synthetic states; not production incident rates",
+    "No live provider/model lifecycle, production-load, Windows desktop or full CI qualification",
+    "smoke:conversation-history had a separate fixture expectation failure on the earlier baseline; this PR does not claim a full-suite pass."
+  ],
+  "deployment_performed": false
+}
