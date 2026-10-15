@@ -20,18 +20,23 @@ def acceptance_gaps_from_held_goal_binding(
     *,
     agent_id: str | None,
 ) -> list[dict[str, Any]]:
-    """Route missing or stale acceptance through this agent's replan lane.
+    """Retain native verification gaps and route scoped association holds.
 
     This is a read-only trigger, not an acceptance rebind. Other runnable work
     remains selectable; the frontier rule schedules a replan only when no
     advancement Todo can be selected for this agent.
     """
 
-    if not agent_id or not isinstance(agent_todo_summary, dict):
+    if not isinstance(agent_todo_summary, dict):
         return []
     contract = agent_todo_summary.get("goal_acceptance_contract")
     if not isinstance(contract, dict) or contract.get("enabled") is not True:
         return []
+    verification_gap = contract.get("verification_gap")
+    gaps = ([{**verification_gap, "agent_id": agent_id}]
+            if isinstance(verification_gap, dict) else [])
+    if not agent_id:
+        return gaps
     held_states = {
         task.get("todo_id"): task.get("state")
         for task in contract.get("tasks", [])
@@ -39,7 +44,6 @@ def acceptance_gaps_from_held_goal_binding(
         and task.get("state") in {"stale", "unbound"}
         and task.get("applicable") is True
     }
-    gaps: list[dict[str, Any]] = []
     for item in source_items or []:
         if (
             not isinstance(item, dict)

@@ -482,10 +482,31 @@ export function projectGoalAcceptance(head: JsonObject, goalId: string): JsonObj
     else status = "accepted";
   }
   if (held.length) status = "held";
+  // Empty work is not evidence for the remaining Goal-wide criteria. A local
+  // contract still governs only its declared work, never unrelated closeout.
+  const verificationGap = state.document.scope?.kind !== "selected_work" && status !== "accepted" &&
+    ![...todos.values()].some(acceptanceApplies) ? {
+      kind: "vision_acceptance_gap", source: "goal_acceptance_contract",
+      canonical_verification_required: true,
+      criterion_ids: state.document.criteria.map(criterion => criterion.id),
+      frontier_revision: canonicalAuthoritySha256({goal_id: goalId,
+        goal_ref: authority.kind === "exact" ? authority.lifecycle.goal_ref : null,
+        revision: state.revision, digest: state.digest,
+        work_digest: goalAcceptanceWorkDigest(head, goalId, state.document.scope), status,
+        verification: receipt === null ? null : {contract_revision: receipt.contract_revision,
+          contract_digest: receipt.contract_digest, work_digest: receipt.work_digest,
+          todo_id: receipt.todo_id, results: receipt.results}}),
+      replan_trigger_summary: `Goal-wide acceptance remains ${status} after the advancement frontier closed.`,
+      acceptance_summary: "Retain every declared Goal criterion until current full-contract verification passes.",
+      resolution_hint: "Inspect the current Goal acceptance contract and run its configured checks with " +
+        "goal-acceptance verify from the delivery workspace. Repair unmet work or record a concrete blocker " +
+        "when needed. A vision or no-followup note cannot replace canonical verification.",
+    } : null;
   return {...exactProjection, ...(state.document.scope === undefined ? {} : {scope: state.document.scope}),
     enabled: true, revision: state.revision, digest: state.digest, objective: state.document.objective,
     non_goals: state.document.non_goals, criteria: state.document.criteria.map(({id, description}) => ({id, description})),
     tasks, held_todo_ids: held.map(task => task.todo_id), status,
+    ...(verificationGap === null ? {} : {verification_gap: verificationGap}),
     verification: receipt ? {operation_id: receipt.operation_id, contract_revision: receipt.contract_revision,
       contract_digest: receipt.contract_digest, todo_id: receipt.todo_id, results: receipt.results} : null};
 }

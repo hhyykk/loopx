@@ -112,9 +112,17 @@ def _terminal_todo_source_contract(
         "user_todos": user_status,
         "agent_todos": agent_status,
     }
+    contract = (
+        agent_todo_summary.get("goal_acceptance_contract")
+        if isinstance(agent_todo_summary, dict) else None
+    )
+    verification_gap = (
+        contract.get("verification_gap") if isinstance(contract, dict) else None
+    )
     return (
         source_completeness,
-        user_status == agent_status == "valid" and (user_intent or agent_intent),
+        user_status == agent_status == "valid" and (user_intent or agent_intent)
+        and not isinstance(verification_gap, dict),
     )
 
 

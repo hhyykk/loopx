@@ -1195,6 +1195,9 @@ def derive_goal_frontier_replan_obligation_from_summaries(
             },
         )
     if replan_rule.rule is GoalFrontierReplanRule.VISION_ACCEPTANCE_GAP:
+        verification_required = any(
+            gap.get("canonical_verification_required") is True for gap in compact_acceptance_gaps
+        )
         acceptance_held = any(
             gap.get("kind") in GOAL_ACCEPTANCE_HOLD_TRIGGERS for gap in compact_acceptance_gaps
         )
@@ -1226,6 +1229,8 @@ def derive_goal_frontier_replan_obligation_from_summaries(
                             "completed_todo_ids",
                             "vision_todo_ids",
                             "frontier_revision",
+                            "criterion_ids",
+                            "canonical_verification_required",
                             "reason_code",
                             "component_checks",
                             "resolution_hint",
@@ -1236,13 +1241,15 @@ def derive_goal_frontier_replan_obligation_from_summaries(
                 for gap in compact_acceptance_gaps[:3]
             ],
             guidance_actions=(
+                ["use_replan_context", "create_successor", "record_evidence_gap"]
+                if verification_required else
                 ["inspect_acceptance_binding", "select_eligible_successor", "record_evidence_gap"]
                 if acceptance_held else
                 ["create_successor", "update_agent_vision", "record_evidence_gap", "record_no_followup"]
             ),
             # Another unbound advancement Todo cannot repair this admission
             # hold. Keep authoring suggestions aligned with the typed exits.
-            todo_actions=[] if acceptance_held else [
+            todo_actions=[] if acceptance_held or verification_required else [
                 {
                     "action": "add",
                     "role": "agent",

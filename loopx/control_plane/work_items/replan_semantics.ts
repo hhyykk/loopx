@@ -328,7 +328,10 @@ function acknowledgeVisionEvidence(request: JsonObject): JsonObject {
     return timestamp(gap.generated_at ?? (gap.kind === "vision_outcome_checkpoint_required" &&
       gap.source === "recent_completed_advancement_todo" ? gap.completed_at : null));
   });
-  return {acknowledged: ack.recorded === true && delta.accepted === true &&
+  // Only the acceptance owner can clear its current verification gap.
+  const verificationRequired = request.acceptance_gaps.some(value =>
+    object(value).canonical_verification_required === true);
+  return {acknowledged: !verificationRequired && ack.recorded === true && delta.accepted === true &&
     strings(delta.outcomes).some(outcome => VISION_OUTCOMES.some(known => known === outcome)) &&
     acknowledgedAt !== null &&
     gaps.length > 0 && gaps.every(time => time !== null && time <= acknowledgedAt)};
