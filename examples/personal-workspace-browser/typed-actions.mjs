@@ -1728,13 +1728,20 @@ export const typedActionsScenario = {
         ["resume_failed", null, "需检查", "恢复失败", "0/1"],
         ["stale", null, "已完成", "已完成", "1/1"],
       ]) {
+        await page.getByRole("button", { name: /关闭详情/ }).press("Escape");
         Object.assign(page.__loopxRuntime.sessions.get(authoritativeSessionId), {
           status, active_turn_id: activeTurnId,
         });
-        await authoritativeRun.locator(".personal-row-status").filter({ hasText: rowStatus }).waitFor({ state: "visible", timeout: 8_000 });
-        await authoritativeRecord.locator("header strong").filter({ hasText: recordStatus }).first().waitFor({ state: "visible", timeout: 8_000 });
+        const currentStatus = authoritativeRun.locator(".personal-row-status").filter({ hasText: rowStatus });
+        await currentStatus.waitFor({ state: "attached", timeout: 8_000 });
+        if (!(await currentStatus.isVisible())) await page.locator(".personal-activity-summary > summary").click();
+        await currentStatus.waitFor({ state: "visible" });
+        await authoritativeRun.click();
+        await page.locator(".personal-session-summary > small").filter({ hasText: recordStatus }).waitFor({ state: "visible", timeout: 8_000 });
         await page.getByLabel("执行 Session").getByText(progress, { exact: true }).waitFor({ state: "visible" });
+        await authoritativeRecord.locator("header strong").filter({ hasText: "已完成" }).first().waitFor({ state: "visible" });
         await page.getByText("权威 Session 已完成只读分析，并返回可核验结果。", { exact: true }).waitFor({ state: "visible" });
+        await page.screenshot({ path: resolve(outputDir, `session-current-state-${status}.png`), fullPage: false, animations: "disabled" });
       }
       await page.getByRole("tab", { name: "详情与操作" }).click();
       const correction = page.getByLabel("输入纠偏信息");
