@@ -1,0 +1,282 @@
+{
+  "kind": "aggregate synthetic comparison; no raw logs or per-round traces",
+  "measurement_date": "2026-10-15",
+  "baseline_commit": "3593cf17dada74b807719ba4fdbbb1738fa0a56c",
+  "measured_combined_candidate_commit": "2867fd56c3051e897091a6dd4eaecd131c386cf5",
+  "post_measurement_test_fix_commit": "a702fb98e3b00eed685a033f7a1d3dd9ae7ecb80",
+  "candidate_contains": [
+    "unchanged-task-session polling reuse",
+    "current task Session status over historical answers"
+  ],
+  "dataset": {
+    "task_sessions": 20,
+    "messages_per_session": 40,
+    "payload_characters_per_message": 512,
+    "sha256": "3de3c40e14c8177111c2ec614ce124d600c471d180d96e788eada96758315924"
+  },
+  "execution": {
+    "paired_orders": [
+      [
+        "baseline",
+        "candidate"
+      ],
+      [
+        "candidate",
+        "baseline"
+      ],
+      [
+        "baseline",
+        "candidate"
+      ]
+    ],
+    "timed_trials": 6,
+    "timed_rounds": 54,
+    "quiet_samples_per_arm": 15,
+    "active_samples_per_arm": 9,
+    "cold_samples_per_arm": 3,
+    "backend": "same pinned production Python Chat HTTP server and real disposable ChatSessionStore for both frontend builds",
+    "browser": "Chromium 145.0.7632.6",
+    "backend_node": "v22.22.3",
+    "python": "3.11.6",
+    "browser_harness_node": "v25.5.0",
+    "poll_interval_ms": 2000,
+    "bytes": "HTTP Content-Length response body bytes; excludes headers and unrelated UI requests",
+    "latency": "last task-discovery requestfinished event minus index request event, browser cold hydration measured separately; local warmed backend",
+    "no_live_model_execution": true,
+    "real_server_rejects_post": true,
+    "unexpected_posts": 0,
+    "pilots_included": false,
+    "session_json_content_unchanged_after_reads": true
+  },
+  "phases": {
+    "cold": {
+      "baseline": {
+        "samples": 3,
+        "requests": {
+          "median": 21,
+          "min": 21,
+          "max": 21
+        },
+        "details": {
+          "median": 20,
+          "min": 20,
+          "max": 20
+        },
+        "bytes": {
+          "median": 567590,
+          "min": 567590,
+          "max": 567590
+        },
+        "completion_ms": {
+          "median": 886.5151350000006,
+          "min": 867.513145999983,
+          "max": 911.4291019999946
+        }
+      },
+      "candidate": {
+        "samples": 3,
+        "requests": {
+          "median": 21,
+          "min": 21,
+          "max": 21
+        },
+        "details": {
+          "median": 20,
+          "min": 20,
+          "max": 20
+        },
+        "bytes": {
+          "median": 567590,
+          "min": 567590,
+          "max": 567590
+        },
+        "completion_ms": {
+          "median": 805.9710120000018,
+          "min": 693.5526890000037,
+          "max": 898.5232160000014
+        }
+      },
+      "reduction_percent": {
+        "requests": 0.0,
+        "bytes": 0.0,
+        "completion_ms": 9.085476357941557
+      }
+    },
+    "quiet": {
+      "baseline": {
+        "samples": 15,
+        "requests": {
+          "median": 21,
+          "min": 21,
+          "max": 21
+        },
+        "details": {
+          "median": 20,
+          "min": 20,
+          "max": 20
+        },
+        "bytes": {
+          "median": 567590,
+          "min": 567590,
+          "max": 567590
+        },
+        "completion_ms": {
+          "median": 458.6730099999986,
+          "min": 358.41596499999287,
+          "max": 559.6342130000012
+        }
+      },
+      "candidate": {
+        "samples": 15,
+        "requests": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "details": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "bytes": {
+          "median": 12710,
+          "min": 12710,
+          "max": 12710
+        },
+        "completion_ms": {
+          "median": 6.7036539999971865,
+          "min": 5.217264999984764,
+          "max": 12.167280000008759
+        }
+      },
+      "reduction_percent": {
+        "requests": 95.23809523809523,
+        "bytes": 97.76070755298718,
+        "completion_ms": 98.53846774197653
+      }
+    },
+    "active": {
+      "baseline": {
+        "samples": 9,
+        "requests": {
+          "median": 21,
+          "min": 21,
+          "max": 21
+        },
+        "details": {
+          "median": 20,
+          "min": 20,
+          "max": 20
+        },
+        "bytes": {
+          "median": 567851,
+          "min": 567851,
+          "max": 567851
+        },
+        "completion_ms": {
+          "median": 458.1609499999904,
+          "min": 433.7727699999996,
+          "max": 575.0451969999995
+        }
+      },
+      "candidate": {
+        "samples": 9,
+        "requests": {
+          "median": 2,
+          "min": 2,
+          "max": 2
+        },
+        "details": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "bytes": {
+          "median": 40715,
+          "min": 40715,
+          "max": 40715
+        },
+        "completion_ms": {
+          "median": 25.802272000000812,
+          "min": 23.004415000003064,
+          "max": 33.06346100001247
+        }
+      },
+      "reduction_percent": {
+        "requests": 90.47619047619048,
+        "bytes": 92.82998533065893,
+        "completion_ms": 94.36829524646276
+      }
+    }
+  },
+  "correctness": {
+    "baseline": {
+      "trials": 3,
+      "active_status_correct": 0,
+      "failed_status_correct": 0,
+      "history_retained": 3,
+      "fault_result_retained": 3,
+      "completion": {
+        "visible": 3,
+        "median_ms": 2895.6940250000043,
+        "min_ms": 2862.6349219999975,
+        "max_ms": 2926.5902810000043
+      },
+      "late": {
+        "visible": 3,
+        "median_ms": 2321.7563359999986,
+        "min_ms": 2316.6394200000213,
+        "max_ms": 2356.3899009999877
+      },
+      "recovered": {
+        "visible": 3,
+        "median_ms": 4946.904477000004,
+        "min_ms": 4936.182409000001,
+        "max_ms": 4980.870240999997
+      }
+    },
+    "candidate": {
+      "trials": 3,
+      "active_status_correct": 3,
+      "failed_status_correct": 3,
+      "history_retained": 3,
+      "fault_result_retained": 3,
+      "completion": {
+        "visible": 3,
+        "median_ms": 1829.5839870000054,
+        "min_ms": 1815.5903629999957,
+        "max_ms": 2321.036114000017
+      },
+      "late": {
+        "visible": 3,
+        "median_ms": 2316.065149999995,
+        "min_ms": 1810.3702920000069,
+        "max_ms": 2317.446332000007
+      },
+      "recovered": {
+        "visible": 3,
+        "median_ms": 3822.901098999995,
+        "min_ms": 3818.1401389999664,
+        "max_ms": 4329.919351999997
+      }
+    }
+  },
+  "limits": [
+    "Combined-candidate comparison, not isolated per-PR timing or a measurement on the later rebased PR heads",
+    "Synthetic data and controlled state transitions, no live model lifecycle or production load qualification",
+    "Local warmed backend, task-discovery request completion only, no server CPU or model speed claim",
+    "Initial hydration still reads all sessions; three samples per arm do not establish a stable startup speedup",
+    "Existing smoke:conversation-history fails identically in pinned baseline and candidate; no full-suite pass claim",
+    "Original analysis harness and raw traces remain local; this branch publishes public-safe aggregate results and fixture screenshots only"
+  ],
+  "fixture_sources": [
+    "examples/status.example.json",
+    "examples/personal-workspace-browser/fixture.mjs"
+  ],
+  "screenshots": {
+    "before-active.png": "Baseline incorrectly labels active task completed",
+    "after-active.png": "Combined candidate labels active task running",
+    "after-session-busy.png": "Synthetic fixture: current Session running and progress 0/1, historical answer retained",
+    "after-resume-failed.png": "Synthetic fixture: current resume failure and progress 0/1, historical answer retained"
+  }
+}
