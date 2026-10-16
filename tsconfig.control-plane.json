@@ -108,6 +108,7 @@
     "tests/control_plane_ts/vision_wait_coverage.test.ts",
     "tests/control_plane_ts/shared_goal_alignment.test.ts",
     "tests/control_plane_ts/replan_history.test.ts",
+    "tests/control_plane_ts/progress_delta.test.ts",
     "tests/control_plane_ts/goal_amendment_proposal.test.ts",
     "tests/control_plane_ts/goal_instance_identity.test.ts",
     "tests/control_plane_ts/chat_session_lifecycle.test.ts",
