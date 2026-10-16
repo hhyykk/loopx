@@ -2,6 +2,7 @@ from __future__ import annotations
 from ..quota.blocked_transition_notice import blocked_priority_fallback_owner_reason
 from ..quota.effective_action import EffectiveAction
 from ..effect_runtime import effect_runtime_result
+import json
 import shlex
 import typing
 from collections.abc import Collection, Mapping
@@ -1100,7 +1101,7 @@ def _interaction_reads_and_arbitration(
     replan = payload.get("replan_action_packet") or {}
     selected = payload.get("selected_todo") or {}
     orchestration = payload.get("task_orchestration_contract") or {}
-    result = effect_runtime_result("work_item.interaction_reads.project", {
+    projection_params = {
         "arbitration_facts": _scheduler_arbitration_facts(contract, agent_scope_frontier_actions),
         "required_reads": [dict(item) for item in reads if isinstance(item, dict) and item.get("command")]
             if isinstance(reads, list) else [],
@@ -1118,7 +1119,16 @@ def _interaction_reads_and_arbitration(
         "command_prefix": selection.render_cli_command_prefix(
             runtime_root=runtime_root or payload.get("runtime_root"),
             registry_path=registry_path or payload.get("registry")),
-    }, large_local_snapshot=True)
+    }
+    # With at most three generated reads and shell-quote expansion, replies fit
+    # 16B + 8 KiB for B ASCII JSON bytes; 64 KiB inputs stay below the 2 MiB frame cap.
+    try:
+        large_local_snapshot = len(json.dumps(projection_params, ensure_ascii=True, separators=(",", ":")).encode()) > 64 * 1024
+    except (TypeError, ValueError, RecursionError, OverflowError):
+        large_local_snapshot = True
+    result = effect_runtime_result(
+        "work_item.interaction_reads.project", projection_params, large_local_snapshot=large_local_snapshot,
+    )
     projected = result.get("required_reads")
     if not isinstance(projected, list) or any(
         not isinstance(item, dict) or not item.get("command") for item in projected
