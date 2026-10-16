@@ -42,7 +42,7 @@ def read_delegation_inventory(service: Delegations, *, limit: int = 20,
                 raise
 
     keys = heapq.nsmallest(query["limit"] + 1, addresses())
-    items = []
+    observations = []
     for key in keys[:query["limit"]]:
         record = {"record_id": key, "operation_id": None}
         try:
@@ -54,20 +54,9 @@ def read_delegation_inventory(service: Delegations, *, limit: int = 20,
                 raise ValueError("delegation record identity mismatch")
             record["operation_id"] = operation_id
             observed = service.read(operation_id)
-            item = effect_runtime_result("collaboration.delegation.inventory_item",
-                                          {"record": record, "observation": observed})
         except (OSError, ValueError, KeyError, TypeError, EffectRuntimeRemoteError):
-            # A corrupt/stale branch must not hide healthy siblings or be called accepted.
-            item = effect_runtime_result("collaboration.delegation.inventory_item",
-                                          {"record": record, "observation": None})
-        items.append(item)
-    more = len(keys) > query["limit"]
-    return {
-        "schema_version": "loopx_delegation_inventory_v0",
-        "items": items, "has_more": more,
-        "next_cursor": keys[query["limit"] - 1] if more else None,
-        "page_readback_complete": all(item["status"] != "unavailable" for item in items),
-        "note": "Live requester-scoped page, not a snapshot or proof that the whole Goal is complete. "
-                "Read original operations for full results; resume only when recovery is required. "
-                "Restart paging to discover work added before the cursor. Listing starts no work.",
-    }
+            observed = None
+        observations.append({"record": record, "observation": observed})
+    return effect_runtime_result("collaboration.delegation.inventory_page", {
+        "query": query, "record_ids": keys, "observations": observations,
+    }, large_local_snapshot=True)

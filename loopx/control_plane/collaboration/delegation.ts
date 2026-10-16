@@ -1,7 +1,7 @@
 /** Explicit local execution bindings. Registration/messages alone grant no launch.
  * These are host observations; canonical task/Turn/acceptance remain authoritative. */
 import type {JsonObject} from "../effect_program.ts";
-import {requireJsonObject} from "../runtime_decode.ts";
+import {requireJsonObject, requireStringArray} from "../runtime_decode.ts";
 import {EffectRuntimeRequestError} from "../effect_runtime_errors.ts";
 import {canonicalAuthoritySha256} from "../coordination/authority_store_codec.ts";
 import {acceptanceValidationEffects, goalAcceptanceTodoDigest, type AcceptanceCompletionRequirements} from "../goals/acceptance_contract.ts";
@@ -412,6 +412,43 @@ export function delegationInventoryItem(params: JsonObject): JsonObject {
     });
   }
   return result;
+}
+
+function inventoryPageItem(raw: unknown, recordId: string): JsonObject {
+  const entry = requireJsonObject(raw, "delegation page observation");
+  const record = requireJsonObject(entry.record, "delegation inventory record");
+  requireThat(record.record_id === recordId, "delegation inventory page identity mismatch");
+  try {
+    return delegationInventoryItem({record, observation: entry.observation});
+  } catch (error) {
+    // A malformed current observation cannot hide healthy siblings or imply acceptance.
+    if (error instanceof EffectRuntimeRequestError || error instanceof TypeError)
+      return delegationInventoryItem({record, observation: null});
+    throw error;
+  }
+}
+
+/** The lookahead address proves another page exists; its operation is not read. */
+export function delegationInventoryPage(params: JsonObject): JsonObject {
+  const query = delegationInventoryQuery(requireJsonObject(params.query, "delegation inventory query"));
+  const limit = Number(query.limit);
+  const recordIds = requireStringArray(params.record_ids, "delegation inventory addresses");
+  requireThat(recordIds.length <= limit + 1 && recordIds.every((id, index) =>
+    BARE_SHA256_PATTERN.test(id) && (query.cursor === null || id > String(query.cursor))
+    && (index === 0 || id > recordIds[index - 1]!)), "invalid delegation inventory page addresses");
+  const observations = params.observations;
+  requireThat(Array.isArray(observations) && observations.length === Math.min(limit, recordIds.length),
+    "delegation inventory page observations must match its addresses");
+  const items = observations.map((entry, index) => inventoryPageItem(entry, recordIds[index]!));
+  const more = recordIds.length > limit;
+  return {
+    schema_version: "loopx_delegation_inventory_v0", items, has_more: more,
+    next_cursor: more ? recordIds[limit - 1]! : null,
+    page_readback_complete: items.every(item => item.status !== "unavailable"),
+    note: "Live requester-scoped page, not a snapshot or proof that the whole Goal is complete. "
+      + "Read original operations for full results; resume only when recovery is required. "
+      + "Restart paging to discover work added before the cursor. Listing starts no work.",
+  };
 }
 
 export function transitionDelegationObservation(params: JsonObject): JsonObject {
