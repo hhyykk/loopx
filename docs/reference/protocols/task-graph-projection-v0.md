@@ -213,10 +213,13 @@ added to status hot paths.
 - Edges use the relation mapping in the table above. `enforcement` reuses the
   `planning_relations` catalog (`typed_lifecycle`, `typed_condition`,
   `lineage_only`), so a reader can tell a lifecycle link from lineage.
-- The TS effect `work_item.task_graph.goal_topology` owns admission, edges and
-  `depth` (the longest recorded prerequisite path). Admission is deterministic:
+- The TS effect `work_item.task_graph.goal_topology` composes the map's node
+  kinds, metadata visibility, edges, limits and `depth` (the longest recorded
+  prerequisite path). Python retains shared source/text/state/identity codecs;
+  owner labels are sanitized only after admission. Admission is deterministic:
   unfinished work first, then direct completed prerequisites of unfinished
-  work, then remaining history, up to `node_limit` (at most 200).
+  work, then remaining history, up to the public map's 120-node limit. The
+  reusable internal topology lens accepts limits up to 200.
 - `depends_on` edges order the map. Lineage (`continues`, `supersedes`)
   carries no ordering obligation: it adds depth only where it agrees with the
   dependency order. A follow-up recorded opposite to a dependency, such as a
