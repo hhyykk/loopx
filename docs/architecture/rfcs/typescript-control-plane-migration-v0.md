@@ -734,8 +734,10 @@ qualify that guidance seam; avoided model retries and sustained cost remain open
 The replan obligation outcome policy now lives in
 `work_items/replan_semantics.ts`: required-outcome selection, vision-path and
 terminal consistency matching, and the matching refresh input projection share
-one owner. Python retains progress normalization/novelty and persistence adapters,
-but no longer duplicates obligation-to-outcome matching. This is a bounded rule
+one owner. `work_items/progress_delta.ts` now derives semantic dimensions,
+terminal coverage and evidence/blocker novelty inside that same qualification
+request. Python retains shared observation/fingerprint normalization, history
+codecs and persistence adapters; its delta and terminal-coverage rules are removed. This is a bounded rule
 convergence, not a settlement-writer or store migration. Existing outcome
 characterization precedes the move; the intentional correction is executable
 authoring for all vision triggers, with real bound CLI closeout/readback and
@@ -744,9 +746,13 @@ remain in their existing owners; no new capability, provider or setting is added
 
 Known blocker qualification also consumes the host-projected coverage ledger.
 Changing a Turn/work-item binding or refreshing evidence cannot make the same
-blocker a new replan outcome. Python normalizes the observations and reports
-identity reuse; the TypeScript outcome owner rejects that claim for every
-replan source while retaining independently evidenced vision paths. This
+blocker a new replan outcome. Python normalizes the observations; TypeScript
+compares the complete normalized window and rejects identity reuse for every
+replan source while retaining independently evidenced vision paths. Expanded
+qualification inputs use the existing private snapshot transport without
+truncating old claims. The qualify request count and input-error order remain
+unchanged. Shared codecs retire with refresh writers, replan history/context
+readers, external review and Explore evidence consumers. This
 corrects false advancement admission; it does not add a blocked-wait settlement
 route or certify Goal completion.
 
