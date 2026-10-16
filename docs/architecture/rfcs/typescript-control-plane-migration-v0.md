@@ -1536,6 +1536,26 @@ and receipt identity remain intact. This corrects misleading CLI JSON readback
 for peer-scoped gates; it does not migrate the remaining route or primary-action
 builders, reserve recommendations, or complete T3/D1–D3.
 
+**Base quota admission composition.** `quota/run_decision.ts` now owns the
+ordered capability, workspace, automation, replan, terminal, inbox and coordinator
+overlays that produce the base run decision. The Python classifier and its two
+action helpers are retired; the existing public adapter makes one coarse native
+request. Goal terminal evidence and peer-scope facts retain their existing owners
+as a transition. Their exit requires migrating the shared Goal source projection
+and all its callers together. The Python public function, dataclass and diagnostic
+codec retire when CLI/Host callers use the typed kernel directly. The target is
+TypeScript ownership throughout, with no Python rule fallback.
+The adapter transports bounded facts and diagnostic strings, then applies the
+typed quota patch without round-tripping source numbers or metadata. Receipt-bound
+overlays, later route/action builders and effect authority retain their owners.
+The existing effective-action vocabulary and generated TS binding are reused;
+its canonical Python enum remains until a separate contract-owner cutover.
+The TypeScript producer witness executes the real typed classifier against shared guard fixtures and rejects a
+changed rule or an enum-only substitute. This delivers the implementation and
+semantic parity for one base-admission consumer. Full-CLI performance acceptance
+is held for owner review after a p95 regression; whole-Goal migration and
+provider/default qualification remain open.
+
 **Long-history transport boundary.** Replan history still has one TS decision
 owner. Small requests retain the inline codec; larger complete fact snapshots
 travel through a private, digest-bound local file reference. The same reducer

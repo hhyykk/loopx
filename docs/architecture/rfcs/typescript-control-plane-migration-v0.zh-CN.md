@@ -1027,6 +1027,21 @@ T3/D1 reader，未完成全部 Todo writer、retention/compaction 或 promotion�
 
 **Scoped gate 动作回读。** 最终 quota 包在选择、能力、workspace、回执及通知决策之后，通过 TS quota 规则投影 scoped User gate/action override。可选 `selected_action` 只在 interaction 允许交付时取最终选中 Todo 的文字；待选择、修复和已结算包省略该字段。准入诊断与回执身份保留。这修正 peer gate 场景的 CLI JSON 误导，不代表剩余 route／primary-action builder 已迁移、推荐已成为预留，或 T3/D1–D3 已完成。
 
+**基础配额准入组合。** `quota/run_decision.ts` 现在统一按顺序组合能力、workspace、
+automation、replan、终态、inbox 和协调者覆盖规则，生成基础运行决定。Python 分类器
+及其两个动作 helper 已退役；原有公共适配器只发一次粗粒度 native 请求。Goal 终态
+证据和 peer 作用域事实暂由既有 owner 提供；共享 Goal 来源投影与所有调用方一起
+迁移后退役。CLI/Host 调用方直接使用类型化内核后，Python 公共函数、dataclass
+及诊断 codec 退役。最终实现全部由 TypeScript 持有，不设 Python 规则回退。
+适配器传递有界事实及诊断字符串，再应用
+类型化配额补丁，不让来源数值或元数据经历 JSON 往返转换。回执绑定覆盖、后续
+route/action builder 和 effect 权限保留各自 owner。沿用既有 effective-action
+词表及生成的 TS binding；canonical Python enum 等独立契约 owner 切换后退役。
+TS 生产者验证器通过共享 guard fixture 执行真实 TS 分类器，并拒绝规则变更或
+仅枚举 owner 的替代结果。这交付一个基础准入消费者的实现及语义一致性；完整 CLI
+出现 p95 回退，性能验收保留 owner 复核门禁。整 Goal 迁移及 provider／默认配置
+资格仍待完成。
+
 **长历史传输边界。** Replan 历史仍由一个 TS owner 决策。小请求保留 inline
 codec；较大的完整事实快照通过私有临时文件和摘要绑定的引用传递。同一 reducer
 校验全部记录、agent 作用域内的 ACK 及重试身份；RPC 预算和展示窗口都不允许截断
