@@ -212,28 +212,6 @@ def align_autonomous_replan_guidance_with_acceptance_policy(
     return aligned
 
 
-def autonomous_replan_decision_allowed(
-    *,
-    replan_obligation: dict[str, Any] | None,
-    plan_ok: bool,
-    workspace_blocked: bool,
-    automation_prompt_upgrade_required: bool,
-    agent_id: str | None = None,
-    registered_agent_ids: list[str] | None = None,
-) -> bool:
-    return bool(
-        autonomous_replan_is_required(replan_obligation)
-        and autonomous_replan_scope_decision(
-            replan_obligation,
-            agent_id=agent_id,
-            registered_agent_ids=registered_agent_ids,
-        ).get("applies")
-        and plan_ok
-        and not workspace_blocked
-        and not automation_prompt_upgrade_required
-    )
-
-
 def _normalize_replan_agent_id(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
