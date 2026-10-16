@@ -26,6 +26,14 @@ R1–R3 的 TS 消费者包括 App 产品路径，不只 CLI 结算。
 首个 App 结果不需要第二份 inbox 存储、逐字段 RPC 或全量重写。
 这里是 T0–T4 的产品消费计划，不新增 provider promotion，也不声称迁移完成。
 
+请求者范围内的委派清单现在由 `collaboration/delegation.ts` 一次组装整页读回。
+Python 保留有界地址扫描、请求者注册检查和实时 `Delegations.read` IO，
+包括 canonical 验收与产物检查。TS 校验页内顺序和逐项观察，选择下一游标并报告
+完整性。逐项投影 RPC 与 Python 页级决定已退役：查询准入和整页投影每页共两次
+请求；provider 读取与验证调用仍保留。超过内联传输预算的完整页复用既有私有
+快照传输。CLI、MCP 与 Goal Chat 保持原有实时分页契约。异步生命周期切换和
+接收方采用资格仍需单独验收。
+
 
 <a id="当前交付边界2026-10-02"></a>
 

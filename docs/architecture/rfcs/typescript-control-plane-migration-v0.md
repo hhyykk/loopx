@@ -28,6 +28,17 @@ identity. No second inbox store, per-field bridge expansion or full rewrite is
 required for the first App outcome. These are planned product consumers of
 T0–T4, not additional provider promotion or completed migration claims.
 
+Requester-scoped delegation inventory now composes page readback in
+`collaboration/delegation.ts`. Python retains bounded address scanning, requester
+registration and fresh `Delegations.read` IO, including canonical acceptance and
+artifact checks. TypeScript validates page order and item observations, selects
+the next cursor and reports completeness. The per-item projection RPC and Python
+page decisions are retired: query admission and final page projection use two
+requests per page; provider reads and validation calls remain. The existing
+private snapshot transport carries complete pages above the inline wire budget.
+CLI, MCP and Goal Chat keep their existing live-page contract. Async lifecycle
+cutover and receiver-adoption qualification remain separate.
+
 
 <a id="current-delivery-frontier-2026-10-02"></a>
 
