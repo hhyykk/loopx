@@ -1708,12 +1708,12 @@ def unadmitted_action_selection(payload: dict[str, Any]) -> bool:
 
 
 def _build_interaction_contract_projection(
-    payload: dict[str, Any],
+    payload: dict[str, object],
     *,
     agent_scope_frontier_actions: Collection[str],
-    available_capabilities: Any = None,
+    available_capabilities: object = None,
     scheduler_execution_context: (
-        Mapping[str, Any] | SchedulerExecutionContextResolution | None
+        Mapping[str, object] | SchedulerExecutionContextResolution | None
     ) = None,
     turn_instance_id: str | None = None,
     runtime_root: str | None = None,
