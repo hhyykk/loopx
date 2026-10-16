@@ -47,7 +47,7 @@ function decodeObservation(value: unknown): Observation {
     throw new EffectRuntimeRequestError("fingerprint must be a normalized progress digest");
   }
   identifier(source, "work_item_id");
-  return {
+  const observation = {
     result: requireStringLiteral(source.result_class, PROGRESS_RESULT_CLASSES, "result_class"),
     fingerprint, surface_id: identifier(source, "surface_id"),
     hypothesis_id: identifier(source, "hypothesis_id"), probe_kind: identifier(source, "probe_kind"),
@@ -56,6 +56,11 @@ function decodeObservation(value: unknown): Observation {
       ? requireBoolean(source.coverage_complete, "coverage_complete") : undefined,
     evidence: evidenceIdentifiers(source),
   };
+  if (!["work_item_id", "surface_id", "hypothesis_id", "probe_kind", "blocker_id",
+    "coverage_scope_id", "evidence_ids", "coverage_complete"].some(field => Object.hasOwn(source, field))) {
+    throw new EffectRuntimeRequestError("progress observation requires a stable work, coverage or evidence field");
+  }
+  return observation;
 }
 
 function newTerminalCoverage(current: Observation, prior: Observation | null): boolean {

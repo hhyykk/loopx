@@ -163,3 +163,18 @@ for (const [label, evidence] of [
       progress_source: source(current, baseline)}), /evidence_ids/);
   });
 }
+
+test("fresh Vision cannot bypass missing attribution, while a false coverage flag remains compatible", () => {
+  const carrier = {schema_version: "typed_progress_observation_v0", result_class: "unchanged",
+    fingerprint: "0000000000000001"};
+  const qualify = (current: JsonObject) => projectReplanWriteback({operation: "qualify",
+    obligation: {triggers: [{kind: "external_progress_review_drift"}]}, progress_source: source(current),
+    agent_vision: {vision_patch: {acceptance_summary: "Retain the evidenced path"},
+      path_delta: {outcome: "continue", evidence_refs: ["evidence-path"]}}});
+  for (const current of [carrier, {...carrier, unknown_identity: "todo-progress"}]) {
+    assert.throws(() => qualify(current), /stable work, coverage or evidence field/);
+  }
+  const compatible = qualify({...carrier, coverage_complete: false});
+  assert.equal(compatible.accepted, true);
+  assert.deepEqual(compatible.satisfying_outcomes, ["fresh_vision_path_outcome"]);
+});
