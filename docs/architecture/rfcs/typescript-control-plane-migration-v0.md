@@ -1415,9 +1415,13 @@ checks and disposition selection use one native owner. Quota consumes the
 private `{required_reads, arbitration}` result without adding public contract
 fields. The Python selector and standalone consistency RPC are removed. Later
 cooldown and recovery builds retain the dict API and discard unused arbitration;
-they do not replace the scheduler hint's earlier decision. Replies use the existing
-private response sink; requests spool only above the inline frame bound. The
-2 MiB wire and 64 MiB snapshot limits stay unchanged. Python retains scalar/Mapping codecs,
+they do not replace the scheduler hint's earlier decision. Complete fact packets
+up to 64 KiB of compact ASCII JSON use inline transport. Passthrough reads,
+at most three generated reads, shell quoting and bounded diagnostics keep the
+reply within `16B + 8 KiB`, where B is the complete compact ASCII JSON byte
+count. This stays below 2 MiB for `B <= 64 KiB`. Larger facts use the existing
+private snapshot path without truncation. The 2 MiB wire and 64 MiB
+snapshot limits stay unchanged. Python retains scalar/Mapping codecs,
 the Enum/dataclass result adapter, scheduler cadence and Host IO until those
 consumers migrate. This does not close whole-scheduler or installed adoption.
 
