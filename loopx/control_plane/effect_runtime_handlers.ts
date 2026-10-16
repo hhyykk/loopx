@@ -347,7 +347,7 @@ export function createEffectRuntimeHandlers(
     ["work_item.planning_horizon.project", lazyHandler(() => import("./work_items/planning_horizon.ts"), ({projectQuotaPlanningHorizon}) => projectQuotaPlanningHorizon)],
     ["todo.context.page", lazyHandler(() => import("./todos/context_projection.ts"), ({projectTodoContextPage}) => projectTodoContextPage)],
     ["work_item.task_graph.topology", lazyHandler(() => import("./work_items/task_graph.ts"), ({projectTaskGraphTopology}) => projectTaskGraphTopology)],
-    ["work_item.task_graph.goal_topology", lazyHandler(() => import("./work_items/task_graph.ts"), ({projectGoalTaskGraphTopology}) => projectGoalTaskGraphTopology)],
+    ["work_item.task_graph.goal_topology", lazyHandler(() => import("./work_items/task_graph.ts"), ({projectGoalTaskMap}) => projectGoalTaskMap)],
     ["work_item.planning_inventory.project", lazyHandler(() => import("./work_items/planning_inventory.ts"), ({projectTodoPlanningInventory}) => projectTodoPlanningInventory)],
     ["work_item.planning_inventory.detail", lazyHandler(() => import("./work_items/planning_inventory.ts"), ({projectTodoPlanningInventoryDetail}) => projectTodoPlanningInventoryDetail)],
     ["work_item.refresh_recommendation.resolve", lazyHandler(() => import("./work_items/refresh_recommendation.ts"), ({resolveRefreshRecommendation}) => resolveRefreshRecommendation)],

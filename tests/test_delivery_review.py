@@ -9,9 +9,18 @@ from pathlib import Path
 import pytest
 
 from loopx.chat_server import ChatHTTPServer, ChatRequestHandler
+from loopx.control_plane.coordination.local_authority import read_canonical_todos_if_promoted
+from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+from loopx.control_plane.effect_runtime import restart_effect_runtime
 from loopx.control_plane.runtime.public_safety import validate_public_safe_value
+from loopx.control_plane.todos.active_state_todo_parser import parse_todo_source
+from loopx.control_plane.todos.todo_summary import canonical_todo_read_record, structured_todo_item
 from loopx.state_refresh import refresh_state_run
 from loopx.status import collect_status
+from tests.control_plane.canonical_authority_fixture import (
+    initialize_canonical_authority,
+    isolate_sqlite_runtime,
+)
 
 
 def make_project(root: Path) -> tuple[Path, Path]:
@@ -108,6 +117,92 @@ def test_real_http_review_matches_cli_sources_without_canonical_writes(workspace
     assert any("todo_design" in node["refs"].get("todo_ids", []) for node in review["graph"]["nodes"])
     validate_public_safe_value(review)
     assert (registry.read_bytes(), state.read_bytes()) == before
+
+
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
+@pytest.mark.parametrize("display", ["current", "missing"])
+def test_canonical_http_goal_map_survives_repeated_reads_and_runtime_restart(
+    workspace, tmp_path, monkeypatch, provider, display,
+):
+    server, registry, runtime = workspace
+    isolate_sqlite_runtime(tmp_path, monkeypatch)
+    state = registry.parent / "ACTIVE_GOAL_STATE.md"
+    registry_before, source = registry.read_bytes(), state.read_bytes()
+    groups, _, _ = parse_todo_source(source.decode("utf-8"))
+    records = [canonical_todo_read_record(structured_todo_item(
+        item, role=role, source_section=item["source_section"],
+    )) for role, rows in groups.items() for item in rows]
+    # This independently specified map covers every source Todo, including the
+    # third gate omitted from the bounded attention graph.
+    expected_nodes = [
+        {"node_id": node_id, "kind": kind, "title": title, "state": status,
+         "depth": depth, "refs": {"todo_ids": [todo_id]},
+         **({"owner_agent": owner} if owner else {})}
+        for todo_id, node_id, kind, title, status, depth, owner in [
+            ("todo_review", "node_gate_todo_review_32e2a5", "gate",
+             "Review the release candidate", "open", 0, None),
+            ("todo_support", "node_gate_todo_support_0bc755", "gate",
+             "Confirm support coverage", "open", 0, None),
+            ("todo_publish", "node_gate_todo_publish_6b56a7", "gate",
+             "Approve the publication boundary", "open", 0, None),
+            ("todo_integrate", "node_todo_todo_integrate_c547fe", "deliverable",
+             "Integrate the verified release package", "open", 1, "builder"),
+            ("todo_design", "node_todo_todo_design_2ab147", "deliverable",
+             "Specify the release acceptance criteria", "done", 0, "reviewer"),
+        ]
+    ]
+    expected = {
+        "schema_version": "goal_task_map_v0", "mode": "read_only", "goal_id": "release-demo",
+        "limits": {"node_limit": 120, "emitted_node_count": 5, "omitted_node_count": 0,
+                   "source_truncated": False, "missing_endpoint_count": 0,
+                   "cycle_edge_count": 0, "topology_complete": True},
+        "nodes": sorted(expected_nodes, key=lambda node: node["node_id"]),
+        "edges": [
+            {"edge_id": "edge_successor_node_todo_todo_integrate_c547fe_node_todo_to_87b417_87b417",
+             "from_node_id": "node_todo_todo_integrate_c547fe", "to_node_id": "node_todo_todo_design_2ab147",
+             "relation": "continues", "enforcement": "lineage_only",
+             "reason": "Work continues predecessor lineage; this is not a completion prerequisite."},
+            {"edge_id": "edge_unblocks_node_todo_todo_integrate_c547fe_node_todo_to_87b417_87b417",
+             "from_node_id": "node_todo_todo_integrate_c547fe", "to_node_id": "node_todo_todo_design_2ab147",
+             "relation": "depends_on", "enforcement": "typed_lifecycle",
+             "reason": "Work has a typed lifecycle dependency on the linked unblocking Todo."},
+        ],
+    }
+    try:
+        initialized = initialize_canonical_authority(
+            runtime, "release-demo", build_todo_runtime_shadow_projection(
+                goal_id="release-demo", todos=records,
+            ), state_path=state, provider=provider,
+        )
+        before = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id="release-demo")
+        assert before is not None
+        assert before["source_authority"] == f"{provider}_v0"
+        assert before["provider_revision"] == initialized["provider_revision"]
+        assert len(before["todos"]) == 5
+        if display == "missing":
+            state.unlink()
+        previous_map = None
+        for restart in (False, False, True):
+            if restart:
+                assert restart_effect_runtime(wait_for_exit=True)["status"] == "stopped"
+            status, review = get(server)
+            assert status == 200
+            goal_map = review["goal_map"]
+            assert goal_map is not None
+            assert {**goal_map,
+                    "nodes": sorted(goal_map["nodes"], key=lambda node: node["node_id"]),
+                    "edges": sorted(goal_map["edges"], key=lambda edge: edge["edge_id"])} == expected
+            if previous_map is not None:
+                assert goal_map == previous_map
+            previous_map = goal_map
+            validate_public_safe_value(review)
+            after = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id="release-demo")
+            assert after is not None
+            assert (after["provider_revision"], after["todos"]) == (before["provider_revision"], before["todos"])
+            assert registry.read_bytes() == registry_before
+            assert (state.read_bytes() if state.exists() else None) == (source if display == "current" else None)
+    finally:
+        restart_effect_runtime(wait_for_exit=True)
 
 
 def test_review_is_cold_and_missing_observations_stay_unknown(workspace, monkeypatch):

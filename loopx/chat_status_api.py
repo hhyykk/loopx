@@ -24,6 +24,7 @@ from .control_plane.effect_runtime import (
     EffectRuntimePermanentIOError,
     EffectRuntimeRemoteError,
     EffectRuntimeStartupError,
+    effect_runtime_request_scope,
 )
 from .control_plane.runtime.public_safety import (
     public_safe_compact_text,
@@ -159,7 +160,8 @@ class ChatStatusRequestMixin(ExtensionPresentationRequestMixin):
         raise NotImplementedError
 
     def _delivery_review(self) -> None:
-        self._status(delivery_review=True)
+        with effect_runtime_request_scope():
+            self._status(delivery_review=True)
 
     def _status(self, *, delivery_review: bool = False) -> None:
         query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
