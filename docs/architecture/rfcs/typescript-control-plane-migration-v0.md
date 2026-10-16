@@ -1409,6 +1409,18 @@ eligible fallback recommendation cannot hide a blocked task's real capability ch
 explicit selection. Success re-enters the same Turn; failure still allows explicit fallback
 selection. A committed receipt's Todo remains bound.
 
+Scheduler arbitration now composes with required-read projection in
+`work_items/interaction_contract.ts`. Structural diagnostics, shared consistency
+checks and disposition selection use one native owner. Quota consumes the
+private `{required_reads, arbitration}` result without adding public contract
+fields. The Python selector and standalone consistency RPC are removed. Later
+cooldown and recovery builds retain the dict API and discard unused arbitration;
+they do not replace the scheduler hint's earlier decision. Replies use the existing
+private response sink; requests spool only above the inline frame bound. The
+2 MiB wire and 64 MiB snapshot limits stay unchanged. Python retains scalar/Mapping codecs,
+the Enum/dataclass result adapter, scheduler cadence and Host IO until those
+consumers migrate. This does not close whole-scheduler or installed adoption.
+
 `agents/capability_memory.ts` now owns host-local runtime declarations, validation,
 atomic merge and idempotent persistence through the existing mutation lock and durable
 JSON writer. `capability_gate.ts` owns Goal/Agent/invocation precedence and local
