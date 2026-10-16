@@ -674,6 +674,16 @@ the source continues from the original packet and deadline. Optional capture
 failure records a missed point, never a later replacement or a new model/eval budget.
 A barrier that cannot be released remains an explicit controller recovery problem.
 
+The explicitly enabled full controller capture hooks now share a 90-second window for complete
+native/research preparation, stability checks and live-source capture (previously
+30 seconds). Both hooks cap it by the original trial phase; the controller keeps
+that same absolute deadline. After releasing the source, it may spend up to 30
+more seconds sealing its immutable exports, also within the original phase. This
+allowance changes neither the trial budget nor cooldown, completeness or retry
+rules. A missed point remains missed; direct controller commands retain their
+caller-supplied timeout, and other capture declarations keep their 30-second
+window. Capture remains off unless explicitly enabled.
+
 A real native CLI/worker plus isolated Docker/native-HTTP qualification covers the
 mid-wake path, complete canonical context, conserved evaluator opportunity and
 original source continuation. It uses a deterministic local model and synthetic
@@ -897,6 +907,12 @@ worker 保留原 guard，controller 暂停全部容器写入者，核对仍有�
 文件 witness，再封存原生评测机会、incumbent 及剩余预算。源变化、过期或失去
 交接会拒绝；可恢复的捕获失败不取消原研究，也不得改用稍后的状态。解除暂停后，
 源会话继续使用原 packet 和 deadline。
+显式开启的两处完整 controller 捕获 hook 共用 90 秒窗口（原为 30 秒），覆盖完整原生/研究上下文
+准备、一致性复核与 live-source 捕获，并受原试验 phase 截止时间约束。controller
+沿用同一个绝对截止时间；解除暂停后，只能在原 phase 内再用至多 30 秒封存静态副本。
+这不增加试验预算、冷却或机会，不改变完整性及首次尝试规则；丢失的点仍不能补记，
+直接 controller 命令仍受调用者给定的 timeout 约束，其他捕获声明保持 30 秒窗口。
+未显式开启时仍不捕获。
 自动 supervisor 的准备截止时间仍约束暂停、文件导出及原生捕获。成功解除暂停后，
 controller 只对自己持有的静态导出副本继续校验、封存，使用已捕获的原 Host phase
 截止时间；该截止时间同时传给类型化产物 owner，过期不能发布。源可以继续工作，
