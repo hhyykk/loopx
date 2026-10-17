@@ -21,6 +21,7 @@ from ..control_plane.agents.capability_gate import (
     runtime_capabilities_for_cli_projection,
 )
 from ..control_plane.capability_hooks import PostWritebackHookRegistration
+from ..control_plane.effect_runtime import effect_runtime_request_scope
 from ..control_plane.goals.goal_vision_policy import (
     GOAL_VISION_ADVANCEMENT_POLICY_CHOICES,
 )
@@ -420,6 +421,7 @@ def register_refresh_state_command(
     )
 
 
+@effect_runtime_request_scope()
 def handle_refresh_state_command(
     args: argparse.Namespace,
     *,
