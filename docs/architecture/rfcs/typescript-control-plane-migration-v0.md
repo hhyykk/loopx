@@ -42,6 +42,8 @@ The same page reduction now seals actual directory/operation read times through
 the existing `projection_envelope.ts` owner. Completeness is scoped to
 `requester_page`; unreadable operations alert, while shown/available counts
 disclose remaining pages. Replay preserves the original observation time.
+Each page reuses the existing executable-revision request scope; operation
+records remain live reads, and the next page resolves the current code again.
 
 
 <a id="current-delivery-frontier-2026-10-02"></a>

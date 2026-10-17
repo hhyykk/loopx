@@ -538,7 +538,10 @@ class Delegations:
     def operations(self, *, limit: int = 20, cursor: str | None = None) -> dict:
         from .control_plane.collaboration.delegation_inventory import read_delegation_inventory
 
-        return read_delegation_inventory(self, limit=limit, cursor=cursor)
+        # One page uses one executable revision; records are still read live,
+        # and the next page resolves its own current revision.
+        with effect_runtime_request_scope():
+            return read_delegation_inventory(self, limit=limit, cursor=cursor)
 
     def inspect(self, binding_id: str) -> dict:
         """Observe the real Turn preflight; never create a request or run a host."""
