@@ -1861,6 +1861,8 @@ def register_delegation_tools(server, delegations: Delegations) -> None:
 
         Accepted items are rechecked; unavailable requires reconciliation, not duplicate
         dispatch. Read the original operation for full artifacts. Listing starts no work.
+        Read projection_envelope before claiming current or complete state: its scope
+        is this requester page, and alerts and omitted operations must be disclosed.
         """
         return delegations.operations(limit=limit, cursor=cursor)
 

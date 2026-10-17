@@ -23,6 +23,16 @@ Python-owned projections do so through `loopx/control_plane/projection_envelope_
 | `loopx global-gates` | `global_gates` | `global` |
 | `loopx global-todos` | `global_todos` | `global` |
 | `loopx global-risks` | `global_risks` | `global` |
+| Delegation operations (CLI, MCP, Goal Chat) | `delegation_inventory` | `requester_page` |
+
+The delegation inventory seals directory and operation read facts in its existing
+native page reduction. A complete `requester_page` certifies only the requested
+page: `has_more`, `next_cursor` and the shown/available counts disclose the
+remaining requester inventory, not whole-Goal completion. Unavailable operations
+remain visible and count as omissions with unreadable-source alerts. A missing
+journal is a freshly observed empty inventory; a denied directory read still
+fails rather than returning an apparently complete empty page. No cache or
+cross-page snapshot is introduced; restart paging to discover earlier additions.
 
 Other read models adopt the envelope in the order listed in the RFC; until
 then they carry no freshness guarantee and consumer rule 1 below applies.

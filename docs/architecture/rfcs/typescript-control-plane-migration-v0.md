@@ -38,6 +38,10 @@ requests per page; provider reads and validation calls remain. The existing
 private snapshot transport carries complete pages above the inline wire budget.
 CLI, MCP and Goal Chat keep their existing live-page contract. Async lifecycle
 cutover and receiver-adoption qualification remain separate.
+The same page reduction now seals actual directory/operation read times through
+the existing `projection_envelope.ts` owner. Completeness is scoped to
+`requester_page`; unreadable operations alert, while shown/available counts
+disclose remaining pages. Replay preserves the original observation time.
 
 
 <a id="current-delivery-frontier-2026-10-02"></a>

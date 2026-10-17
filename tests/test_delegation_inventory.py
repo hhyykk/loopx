@@ -12,6 +12,56 @@ from test_local_delegation import brief, service as delegation_service
 service = delegation_service
 
 
+def test_cli_inventory_discloses_page_scope_and_unreadable_operations(service, monkeypatch):
+    from test_delegation_cli import cli
+
+    root, runner = service
+    monkeypatch.setattr(runner, "_spawn", lambda _: None)
+    for name in ["first", "second", "third", "fourth", "fifth"]:
+        runner.start("analysis", name, brief())
+    before = {path.name: path.read_bytes() for path in runner.path("inventory").parent.glob("*.json")}
+
+    status, page = cli(runner, "operations", "--limit", "2")
+    assert status == 0 and page["has_more"]
+    envelope = page["projection_envelope"]
+    assert envelope["fresh"] and envelope["complete"] and not envelope["alert"]
+    assert envelope["coverage"]["scope"] == "requester_page"
+    assert envelope["coverage"]["shown_count"] == 2
+    assert envelope["coverage"]["available_count"] == 5
+    assert envelope["coverage"]["truncated"]  # Complete page is not the whole inventory.
+    # Lock-holder diagnostics change on reads; the operation records must not.
+    assert {path.name: path.read_bytes() for path in runner.path("inventory").parent.glob("*.json")} == before
+
+    runner.path(page["items"][0]["operation_id"]).write_text("{")
+    status, damaged = cli(runner, "operations", "--limit", "2")
+    assert status == 0 and len(damaged["items"]) == 2
+    assert not damaged["page_readback_complete"]
+    envelope = damaged["projection_envelope"]
+    assert not envelope["fresh"] and not envelope["complete"] and envelope["alert"]
+    assert envelope["alert_reasons"] == ["incomplete_coverage", "unreadable_sources"]
+    assert envelope["coverage"]["omitted"] == [{"reason": "unavailable_operations", "count": 1, "refs": []}]
+    assert not (root / "host-started").exists()
+
+
+def test_inventory_source_read_times_survive_assembly_and_replay(service, monkeypatch):
+    _, runner = service
+    monkeypatch.setattr(runner, "_spawn", lambda _: None)
+    runner.start("analysis", "slow-read", brief())
+    times = iter(["2026-10-01T10:00:00Z", "2026-10-01T10:00:01Z", "2026-10-01T10:06:00Z"])
+    monkeypatch.setattr(delegation_inventory, "now_utc_iso", lambda: next(times))
+    envelope = runner.operations()["projection_envelope"]
+    assert not envelope["fresh"] and envelope["complete"]
+    assert envelope["alert_reasons"] == ["stale_sources"]
+    assert [row["last_read_at"] for row in envelope["sources"]] == [
+        "2026-10-01T10:00:00Z", "2026-10-01T10:00:01Z"]
+    replay = effect_runtime_result("projection.envelope.seal", {
+        "schema_version": "loopx_projection_envelope_serve_request_v0", "envelope": envelope,
+        "served_at": "2026-10-01T10:07:00Z"})
+    assert replay["observed_at"] == envelope["observed_at"]
+    assert replay["served_at"] == "2026-10-01T10:07:00Z"
+    assert not replay["fresh"] and replay["age_seconds"] == 60
+
+
 def test_pages_find_all_original_operations_without_dispatch(service, monkeypatch):
     root, runner = service
     starts = []
@@ -118,7 +168,10 @@ def test_full_page_preserves_accepted_references_above_inline_transport_budget(s
         },
     } for index, record_id in enumerate(record_ids)]
     request = {"query": {"limit": 50, "cursor": None}, "record_ids": record_ids,
-               "observations": observations}
+               "observations": observations,
+               "read_facts": {"observed_at": "2026-10-01T10:00:02Z",
+                              "directory_read_at": "2026-10-01T10:00:00Z",
+                              "operations_read_at": "2026-10-01T10:00:01Z", "available_count": 50}}
     assert len(json.dumps(request).encode()) > 2 * 1024 * 1024
 
     page = effect_runtime_result("collaboration.delegation.inventory_page", request,
