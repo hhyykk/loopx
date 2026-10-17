@@ -1001,6 +1001,11 @@ def _start_runtime(*, fingerprint: str, info_path: Path) -> dict[str, Any]:
                     stderr=startup_stderr,
                     start_new_session=os.name != "nt",
                     close_fds=True,
+                    # The host outlives the command that started it. On Windows
+                    # a live child whose working directory is the caller's
+                    # directory keeps that directory (and its ancestors) from
+                    # being renamed or removed, so the host must not inherit it.
+                    cwd=tempfile.gettempdir(),
                 )
             except PermissionError as exc:
                 raise EffectRuntimeHostPermissionError() from exc

@@ -375,11 +375,23 @@ token／重试成本、source-mode 修复和常规短上下文／replan 完整�
 
 Replan 的义务结果规则现收敛到 `work_items/replan_semantics.ts`：接受结果选择、
 vision path／terminal 一致性校验与对应 refresh 输入投影共用同一 owner。
-Python 保留 progress 归一化／新颖性与持久化适配，不再重复义务匹配规则。
+`work_items/progress_delta.ts` 现在在同一资格请求内推导语义维度、终态覆盖及
+证据／blocker 新颖性；删除 Python 的 delta 与终态覆盖规则。Python 保留共享的
+observation／fingerprint 归一化、历史 codec 和持久化适配。TS 对完整的归一化窗口
+比较身份复用；更大的资格输入复用既有私有快照传输，不截断旧声明。更换 Turn／
+work-item 或刷新证据不能让旧 blocker 成为新结果，独立的 Vision 证据路径仍可使用。
+资格请求次数与输入错误顺序不变。共享 codec 随 refresh writer、replan history／
+context reader、external review 与 Explore evidence 消费者一起迁移后退役。
 这是有界规则收敛，不是 settlement writer 或存储迁移。先刻画既有接受语义，
 再修正所有 vision trigger 的可执行写入投影，并验证真实绑定 CLI 闭环、回读及
 资格范围错配反例。Checkpoint 恢复与 in-flight 规则仍由既有边界负责，
 不新增 capability、provider 或设置。
+
+有限的 refresh／checkpoint CLI 与独立 replan 资格判断复用既有 managed-runtime
+request scope。它只固定代码版本；source／provider 读取、canonical 写入、错误顺序与
+Turn 回执仍实时执行，保持原语义。晋升同时要求完整 File／SQLite CLI 资格与原生请求
+测量；减少指纹扫描本身不能证明收益。既往尾部失败、相同代码的 A/A 波动与当前资格
+分别保留在 PR 验证记录中。
 
 交付历史边界将 `classification`、`health_check` 与 `recommended_action` 视为
 叙述文本。它们不能生成或解除 follow-through obligation，不能证明 outcome，也

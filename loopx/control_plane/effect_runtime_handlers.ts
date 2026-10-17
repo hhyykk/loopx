@@ -785,7 +785,7 @@ export function createEffectRuntimeHandlers(
     ["work_item.context.plan", lazyHandler(() => import("./work_items/interaction_contract.ts"), ({planInteractionWorkContext}) => planInteractionWorkContext)],
     ["work_item.context.project", lazyHandler(() => import("./work_items/interaction_contract.ts"), ({projectInteractionWorkContext}) => projectInteractionWorkContext)],
     ["work_item.replan_settlement.project", lazyHandler(() => import("./work_items/replan_settlement.ts"), ({projectReplanSettlementContract}) => projectReplanSettlementContract)],
-    ["work_item.replan_semantics.project", lazyHandler(() => import("./work_items/replan_semantics.ts"), ({projectReplanSemantics}) => projectReplanSemantics)],
+    ["work_item.replan_semantics.project", lazyHandler(() => import("./work_items/replan_semantics.ts"), ({projectReplanWriteback}) => projectReplanWriteback)],
     ["work_item.replan_context.project", lazyHandler(() => import("./work_items/replan_context.ts"), ({projectReplanContext}) => projectReplanContext)],
     ["work_item.replan_context.project_snapshot", lazyHandler(() => import("./work_items/replan_context.ts"), ({projectReplanContextSnapshot}) => projectReplanContextSnapshot)],
     ["explore.configuration.resolve", lazyHandler(() => import("./capabilities/explore_configuration.ts"), ({resolveExploreConfiguration}) => resolveExploreConfiguration)],
