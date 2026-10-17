@@ -522,6 +522,14 @@ readers, external review and Explore evidence consumers. This
 corrects false advancement admission; it does not add a blocked-wait settlement
 route or certify Goal completion.
 
+The finite refresh/checkpoint CLI and standalone replan qualification reuse the
+existing managed-runtime request scope. It pins only the code revision: source
+and provider reads, canonical writes, error ordering and Turn receipts remain
+live and unchanged. Complete File/SQLite CLI qualification is required alongside
+the native request measurements; fewer fingerprint scans alone are not payoff
+evidence. Keep earlier tail failures and same-code A/A variability separate from
+the current qualification in the PR validation record.
+
 Replan decision context now follows the same boundary: `work_items/replan_context.ts`
 owns scoping, chronology, repetition reduction, result/route diversity and bounded
 coverage projection. Its Python codec reads the existing Goal and compact index,

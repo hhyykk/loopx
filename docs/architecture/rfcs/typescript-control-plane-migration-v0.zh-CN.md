@@ -387,6 +387,12 @@ context reader、external review 与 Explore evidence 消费者一起迁移后�
 资格范围错配反例。Checkpoint 恢复与 in-flight 规则仍由既有边界负责，
 不新增 capability、provider 或设置。
 
+有限的 refresh／checkpoint CLI 与独立 replan 资格判断复用既有 managed-runtime
+request scope。它只固定代码版本；source／provider 读取、canonical 写入、错误顺序与
+Turn 回执仍实时执行，保持原语义。晋升同时要求完整 File／SQLite CLI 资格与原生请求
+测量；减少指纹扫描本身不能证明收益。既往尾部失败、相同代码的 A/A 波动与当前资格
+分别保留在 PR 验证记录中。
+
 交付历史边界将 `classification`、`health_check` 与 `recommended_action` 视为
 叙述文本。它们不能生成或解除 follow-through obligation，不能证明 outcome，也
 不能判定交付规模。例如，`unblocked after dependency update` 不构成 blocker
