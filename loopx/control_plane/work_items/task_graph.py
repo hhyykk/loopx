@@ -977,6 +977,7 @@ def build_goal_task_map(
     todo_done_for_status: Callable[[str], bool],
     todo_status_open: str,
     monitor_task_class: str,
+    source_read_at: str | None = None,
 ) -> dict[str, Any]:
     """Adapt shared source/identity codecs to the native Goal-map composer."""
 
@@ -1002,6 +1003,8 @@ def build_goal_task_map(
     request = {
         "schema_version": "goal_task_map_request_v0", "goal_id": goal_id,
         "items": rows, "source_truncated": source_truncated,
+        "read_facts": {"observed_at": now_utc_iso(), "source_read_at": source_read_at,
+                       "source_count": len(todos)},
     }
     # Reserve framing bytes while keeping ordinary maps on the inline transport.
     use_snapshot = len(json.dumps(request, separators=(",", ":")).encode()) > MAX_REQUEST_BYTES - 4096

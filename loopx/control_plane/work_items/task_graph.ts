@@ -4,6 +4,7 @@ import { requireBoolean, requireInteger, requireJsonObject, requireNonEmptyStrin
   requireStringArray } from "../runtime_decode.ts";
 import { projectRelations, todoRef, type PlanningInventoryRelation,
   type PlanningRelationSource } from "./planning_relations.ts";
+import { PROJECTION_ENVELOPE_SEAL_REQUEST, sealProjectionEnvelope } from "../projection_envelope.ts";
 
 export const TASK_GRAPH_TOPOLOGY_REQUEST = "task_graph_topology_request_v0";
 export const TASK_GRAPH_TOPOLOGY_RESULT = "task_graph_topology_result_v0";
@@ -244,11 +245,29 @@ export function projectGoalTaskMap(value: unknown): JsonObject {
   const nodes = entries.map(entry => goalMapNode(byId.get(entry.todo_id)!, entry.depth));
   const indices = new Map(entries.map((entry, index) => [entry.todo_id, index]));
   const edges = topology.edges as GraphEdge[];
+  const facts = requireJsonObject(request.read_facts, "goal map read facts");
+  const sourceCount = requireInteger(facts.source_count, "goal map source_count");
+  if (sourceCount < rows.length) throw new EffectRuntimeRequestError("goal map source count is incomplete");
+  const limits = topology.completeness as JsonObject;
+  const omitted = [
+    {reason: "unrenderable_todos", count: sourceCount - rows.length},
+    {reason: "map_node_limit", count: Number(limits.omitted_node_count)},
+    {reason: "unresolved_map_relations", count: Number(limits.missing_endpoint_count) + Number(limits.cycle_edge_count)},
+  ].filter(value => value.count > 0);
+  const envelope = sealProjectionEnvelope({
+    schema_version: PROJECTION_ENVELOPE_SEAL_REQUEST, projection: "goal_task_map",
+    observed_at: facts.observed_at,
+    sources: [{source_id: "goal_todos", read_status: facts.source_read_at == null ? "not_read" : "read",
+      last_read_at: facts.source_read_at, item_count: sourceCount}],
+    coverage: {scope: "goal_task_map", expected_count: sourceTruncated ? null : sourceCount,
+      included_count: nodes.length, omitted, shown_count: nodes.length, available_count: sourceCount},
+  });
   return {
     schema_version: GOAL_TASK_MAP_RESULT,
     projection: {
       schema_version: "goal_task_map_v0", mode: "read_only", goal_id: request.goal_id,
       limits: topology.completeness, nodes,
+      projection_envelope: envelope,
       edges: edges.map(edge => ({ relation: edge.relation, enforcement: edge.enforcement, reason: edge.reason })),
     },
     node_identity_prefixes: nodes.map(node => node.kind === "gate" ? "node_gate" : "node_todo"),
