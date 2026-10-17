@@ -24,10 +24,10 @@ Changelog = "https://github.com/loopx-project/loopx/releases"
 
 [project.optional-dependencies]
 ego-source-reader = [
-  "mcp==1.28.1",
+  "mcp==1.30.0",
 ]
 public-source-reader = [
-  "mcp==1.28.1",
+  "mcp==1.30.0",
   "resvg-py==0.5.0",
   "defusedxml==0.7.1",
   "pillow>=11,<13",
@@ -42,7 +42,7 @@ test = [
   "defusedxml==0.7.1",
   "pillow>=11,<13",
   "jsonschema>=4.23,<5",
-  "mcp==1.28.1",
+  "mcp==1.30.0",
   "pyyaml>=6,<7",
   "types-jsonschema>=4.23,<5",
   "pytest>=9.0.3,<10",
@@ -121,6 +121,14 @@ include = ["loopx*"]
 "share/loopx/skills/loopx-project" = [
   "skills/loopx-project/SKILL.md",
   "skills/loopx-project/.loopx-skill-scope",
+]
+"share/loopx/skills/loopx-project/references" = [
+  "skills/loopx-project/references/start-and-connect.md",
+  "skills/loopx-project/references/installation-and-diagnosis.md",
+  "skills/loopx-project/references/autonomous-execution.md",
+  "skills/loopx-project/references/heartbeat-hosts.md",
+  "skills/loopx-project/references/handoff-and-feedback.md",
+  "skills/loopx-project/references/materials-explore-quality.md",
 ]
 "share/loopx/skills/loopx-project/agents" = [
   "skills/loopx-project/agents/openai.yaml",

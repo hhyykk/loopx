@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { goalCreateRequest } from "./goal-create-request.ts";
+import { goalCreateRequest, goalCreationAgentId } from "./goal-create-request.ts";
 import { localizedCapabilityFieldCopy } from "./capability-localization.ts";
 import { taskSessionStatus } from "./goal-activity.ts";
 import "./monitor-readback.test.mjs";
 
 const source = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
+const projectionAgent = { agentId: "status-only", adapterKind: "status_projection", available: true, label: "Status" };
+const missingAgent = { agentId: "codex", available: false, label: "Codex" };
+const availableAgent = { agentId: "claude", available: true, label: "Claude" };
+assert.equal(goalCreationAgentId("status-only", [missingAgent, projectionAgent]), "codex", "Creation diagnoses the real missing executor, never the read-only snapshot");
+assert.equal(goalCreationAgentId("status-only", [missingAgent, availableAgent, projectionAgent]), "claude", "Creation can use the discovered available executor");
+assert.equal(goalCreationAgentId("codex", [missingAgent, availableAgent, projectionAgent]), "codex", "An explicit unavailable executor remains selected for its own gate");
+assert.equal(goalCreationAgentId("custom", [missingAgent, projectionAgent]), "custom", "An unknown explicit identity is left for backend eligibility");
+assert.equal(goalCreationAgentId("status-only", [projectionAgent]), "status-only", "An empty executor catalog cannot manufacture an executor");
 const answerText = source("./answer-text.ts");
 const model = source("./personal-workspace-model.ts");
 const activity = source("./goal-activity.ts");
@@ -50,7 +58,8 @@ for (const operation of ["reassign", "block"]) {
 assert.match(drawer, /previewTodoTransition\(selection\.item, "defer"/, "Todo defer collects a resume condition before preview");
 assert.match(drawer, /resume_when:\s*resumeWhen/, "Todo defer sends its explicit resume condition");
 assert.doesNotMatch(drawer + page, /owner_resume/, "Personal Workspace never emits the unsupported owner_resume sentinel");
-assert.match(drawer, /previewTodoTransition\(selection\.item, "complete"/, "Todo complete is the primary drawer action");
+assert.match(drawer, /\["blocked", "deferred"\]\.includes\(selection\.item\.status/, "Paused Todos offer resume through the existing primary action");
+assert.match(drawer, /className="personal-primary-action" onClick=\{\(\) => void previewTodoTransition\(selection\.item, todoAwaitingResume \? "resume" : "complete"/, "The primary Todo action resumes paused work and completes open work through typed preview");
 assert.match(drawer, /actionKind: "todo\.create"/, "Todo successor uses the canonical create action");
 
 for (const field of ["evidence", "explanation"]) {
@@ -449,7 +458,7 @@ assert.match(machineSettings, /const configured = Boolean\(/, "Only configured c
 assert.match(machineSettings, /periodicReportActivationDescription/, "Machine periodic reports explain stage-triggered automatic delivery");
 assert.match(i18n, /Enabled means automatic delivery at validated stage boundaries/, "English machine settings name automatic stage delivery");
 assert.match(i18n, /开启后将在已验证的阶段节点自动投递/, "Chinese machine settings name automatic stage delivery");
-assert.match(machineSettings, /localizedCapabilityFieldCopy\(locale\)/, "Machine capability fields follow the selected locale");
+assert.match(machineSettings, /localizedCapabilityFieldCopy\(locale,\s*selected\.capability_id\)/, "Machine capability fields follow the selected locale");
 assert.match(goalCapabilitySettings, /localizedCapabilityFieldCopy\(locale,\s*localizedSelected\.capability_id\)/,
   "Goal fields use the selected locale and capability-specific vocabulary");
 assert.deepEqual(localizedCapabilityFieldCopy("en", "explore_harness").mode.options,
@@ -600,6 +609,19 @@ for (const key of ["home.firstGoal.title", "home.firstGoal.lead", "home.firstGoa
   assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
 }
 
+// Runtime readiness: the service's own reason fields drive the copy; the
+// read-only status projection and the loading placeholder never count as a
+// runtime; a re-check reads the catalog again and nothing is installed.
+const runtimeReadiness = source("./runtime-readiness.ts");
+assert.match(runtimeReadiness, /if \(agents\.length === 0\) return \{ kind: "detecting" \};/, "An empty catalog is detecting, not absence");
+assert.match(page, /agent\.adapterKind !== "status_projection" && agent\.source !== "detecting"/, "Readiness ignores the status projection and the loading placeholder");
+assert.match(dashboard, /onRecheckRuntimes: \(\) => setCapabilityRevision\(\(revision\) => revision \+ 1\)/, "Re-check re-reads the capabilities catalog");
+assert.match(dashboard, /source: "detecting",/, "The placeholder row is typed as detecting");
+assert.doesNotMatch(dashboard, /statusLabel: "正在检测"|"可用" : "需要配置"|当前 Goal 写入前验证/, "Agent status labels are localized");
+for (const key of ["readiness.noneTitle", "readiness.missingExecutable", "readiness.missingEnvironment", "readiness.selectedUnavailable", "readiness.recheck", "agent.statusDetecting"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}
+
 // Needs-you desktop notifications: a per-browser opt-in. Off by default, the
 // page neither asks for permission nor re-reads the workspace in the background.
 const attentionNotifications = source("./attention-notifications.ts");
@@ -679,3 +701,13 @@ for (const route of ["./views/frontstage-developer-page", "./views/benchmark-stu
 assert.equal((page.match(/<Suspense fallback=\{<p className="personal-lazy-loading" role="status">/g) ?? []).length, 1, "The lazy settings site shows a loading status");
 
 console.log("personal workspace drawer contract smoke passed");
+
+// An unavailable first Agent: the service refuses the creation preview with a
+// typed gate (kind, agent, catalog reason) and the page tells the owner in
+// their language, never with the protocol sentence; nothing is written.
+assert.match(page, /const agentGate = gateKind === "agent_unavailable"/, "The page maps the typed Agent gate to owner-language copy");
+assert.match(page, /reasonCode === "executable_not_found"[\s\S]*?reasonCode === "api_key_not_set"[\s\S]*?rawGate\.registered === false/, "The reason follows the catalog's own fields");
+assert.match(source("./context-drawer.tsx"), /selection\.item\.gate\?\.kind === "agent_unavailable" \? selection\.item\.title/, "The drawer shows the Agent gate's own title, not host confirmation");
+for (const key of ["proposal.agentGate.title", "proposal.agentGate.summary", "proposal.agentGate.reason.executable_not_found", "proposal.agentGate.reason.api_key_not_set", "proposal.agentGate.reason.unregistered", "proposal.agentGate.reason.unavailable", "proposal.agentGate.nextAction", "proposal.agentGate.impact"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}

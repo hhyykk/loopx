@@ -84,7 +84,21 @@ def capability_configuration_editor(
     # same values instead of restating them: a form cannot submit an executor or
     # effort the owning namespace would reject.
     steward_endpoints, steward_efforts = _steward_executor_editor_options()
+    from .native_chat.machine_defaults import codex_profile_options
     definitions: dict[str, dict[str, Any]] = {
+        "codex_chat": {
+            "supported_scopes": ["machine"], "writable_scopes": ["machine"],
+            "fields": [
+                _field("codex_profile", "Codex configuration profile", "select", nullable=True,
+                       options=codex_profile_options(), description="Existing native account/configuration home; credentials are not copied."),
+                _field("model", "Conversation model", "text", nullable=True,
+                       description="For example gpt-6.1-sol. Blank inherits this Codex profile's default."),
+                _field("reasoning_effort", "Reasoning effort", "select", nullable=True,
+                       options=list(steward_efforts)),
+                _field("service_tier", "Service tier", "text", nullable=True,
+                       description="For example fast. This is independent of the model and reasoning effort; the native provider validates support."),
+            ],
+        },
         "goal_capability_organization": {
             "supported_scopes": ["goal"], "writable_scopes": ["goal"],
             "fields": [
@@ -115,6 +129,8 @@ def capability_configuration_editor(
                 _field("count", "Review interval", "number", minimum=1,
                        maximum=MAX_EFFECTIVE_TURN_REPLAN_THRESHOLD, required=True,
                        description="Effective Turns: 1–6; completed Todos: 1–5. Effective Turns require accepted work settlement. Retries and observation-only polls do not count."),
+                _field("planning_horizon_goal", "Show Goal in planning horizon", "boolean",
+                       description="Default off. Include the full original Goal and acceptance before choosing work; replan Goal reading, stride and execution authority are unchanged."),
                 _field("stride_strategy", "Stride strategy", "select",
                        options=list(stride_strategy_options()),
                        description="Off retains ordinary review. Evidence-conditioned v1 independently reviews work-slice size, route changes and validation scope; fresh Vision path reviews require a structured proposal, without automatic execution."),
@@ -618,7 +634,8 @@ def _attach_effective_configuration(entry: dict[str, Any]) -> None:
     if (
         entry["capability_id"] == "todo_replan_cadence"
         and goal_override is not None
-        and set(goal_override) == {"stride_strategy"}
+        and bool(goal_override)
+        and set(goal_override) <= {"stride_strategy", "planning_horizon_goal"}
     ):
         from .todo_replan_cadence.machine_defaults import (
             cadence_configuration_value,
@@ -633,8 +650,7 @@ def _attach_effective_configuration(entry: dict[str, Any]) -> None:
             else default_replan_cadence_configuration()
         )
         goal_override = {
-            "count_unit": inherited_cadence["count_unit"],
-            "count": inherited_cadence["count"],
+            **inherited_cadence,
             **goal_override,
         }
         entry["effective_value_policy"] = "goal_stride_over_live_review_cadence"

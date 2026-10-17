@@ -54,6 +54,8 @@ function lazyHandler<Module>(
 
 export interface EffectRuntimeHandlerContext {
   fingerprint: string;
+  /** Physical publication path observed by the managed server, not its caller. */
+  readonly infoPath?: string;
   requestShutdown: () => void;
 }
 
@@ -248,7 +250,8 @@ export function createEffectRuntimeHandlers(
   return new Map<string, EffectRuntimeHandler>([
     [
       "runtime.ping",
-      () => ({ ready: true, pid: process.pid, fingerprint: context.fingerprint }),
+      () => ({ ready: true, pid: process.pid, fingerprint: context.fingerprint,
+        ...(context.infoPath === undefined ? {} : {info_path: context.infoPath}) }),
     ],
     [
       "runtime.shutdown",
@@ -281,6 +284,9 @@ export function createEffectRuntimeHandlers(
     ["todo.user_completion.plan", lazyHandler(() => import("./todos/user_completion.ts"), ({evaluateUserCompletion}) => evaluateUserCompletion)],
     ["agent.capability_gate.evaluate", lazyHandler(() => import("./agents/capability_gate.ts"), ({evaluateCapabilityGate}) => evaluateCapabilityGate)],
     ["agent.capability_memory", lazyHandler(() => import("./agents/capability_memory.ts"), ({agentCapabilityMemory}) => agentCapabilityMemory)],
+    ["benchmark.trajectory.codex-usage", lazyHandler(() => import("./capabilities/trajectory_codex_usage.ts"), ({summarizeTrajectoryCodexUsage}) => summarizeTrajectoryCodexUsage)],
+    ["benchmark.trajectory.prepare", lazyHandler(() => import("./capabilities/trajectory_assessment.ts"), ({prepareTrajectoryAssessment}) => prepareTrajectoryAssessment)],
+    ["benchmark.trajectory.qualify", lazyHandler(() => import("./capabilities/trajectory_assessment.ts"), ({qualifyTrajectoryAssessment}) => qualifyTrajectoryAssessment)],
     ["agent.preferences", lazyHandler(() => import("./capabilities/agent_preferences.ts"), ({agentPreferences}) => agentPreferences)],
     ["todo.archive.capture_dependencies", lazyHandler(() => Promise.all([import("./todos/archive_capture.ts"), import("./coordination/source_transfer.ts")]), ([{captureArchivedTodoDependencies}, {withCoordinationSourceTransfer}]) => withCoordinationSourceTransfer("todo.archive.capture_dependencies", captureArchivedTodoDependencies))],
     ["agent.supervisor.plan_append", lazyHandler(() => import("./agents/supervisor_event_append.ts"), ({planSupervisorEventAppend}) => planSupervisorEventAppend)],
@@ -347,7 +353,7 @@ export function createEffectRuntimeHandlers(
     ["work_item.planning_horizon.project", lazyHandler(() => import("./work_items/planning_horizon.ts"), ({projectQuotaPlanningHorizon}) => projectQuotaPlanningHorizon)],
     ["todo.context.page", lazyHandler(() => import("./todos/context_projection.ts"), ({projectTodoContextPage}) => projectTodoContextPage)],
     ["work_item.task_graph.topology", lazyHandler(() => import("./work_items/task_graph.ts"), ({projectTaskGraphTopology}) => projectTaskGraphTopology)],
-    ["work_item.task_graph.goal_topology", lazyHandler(() => import("./work_items/task_graph.ts"), ({projectGoalTaskGraphTopology}) => projectGoalTaskGraphTopology)],
+    ["work_item.task_graph.goal_topology", lazyHandler(() => import("./work_items/task_graph.ts"), ({projectGoalTaskMap}) => projectGoalTaskMap)],
     ["work_item.planning_inventory.project", lazyHandler(() => import("./work_items/planning_inventory.ts"), ({projectTodoPlanningInventory}) => projectTodoPlanningInventory)],
     ["work_item.planning_inventory.detail", lazyHandler(() => import("./work_items/planning_inventory.ts"), ({projectTodoPlanningInventoryDetail}) => projectTodoPlanningInventoryDetail)],
     ["work_item.refresh_recommendation.resolve", lazyHandler(() => import("./work_items/refresh_recommendation.ts"), ({resolveRefreshRecommendation}) => resolveRefreshRecommendation)],
@@ -420,6 +426,7 @@ export function createEffectRuntimeHandlers(
     ["state.recovery.manifest.verify", lazyHandler(() => import("./state_recovery.ts"), ({verifyStateRecoveryManifest}) => verifyStateRecoveryManifest)],
     ["state.recovery.audit.readback", lazyHandler(() => import("./state_recovery.ts"), ({verifySavedStateRecoveryAudit}) => verifySavedStateRecoveryAudit)],
     ["coordination.sqlite_backup.snapshot", lazyHandler(() => import("./coordination/sqlite_backup.ts"), ({snapshotSqliteBackup}) => snapshotSqliteBackup)],
+    ["coordination.authority_backup.capture", lazyHandler(() => import("./coordination/authority_backup.ts"), ({captureAuthorityBackup}) => captureAuthorityBackup)],
     ["coordination.local_authority.new_goal_storage", lazyHandler(() => import("./coordination/local_authority_defaults.ts"), ({manageNewGoalStorage}) => manageNewGoalStorage)],
     ["coordination.local_authority.promotion_review", lazyHandler(() => Promise.all([import("./coordination/local_authority_runtime.ts"), import("./coordination/source_transfer.ts")]), ([{reviewLocalCoordinationAuthorityPromotion}, {withCoordinationSourceTransfer}]) => withCoordinationSourceTransfer("coordination.local_authority.promotion_review", reviewLocalCoordinationAuthorityPromotion))],
     ["coordination.local_authority.promotion_reviewed", lazyHandler(() => import("./coordination/local_authority_runtime.ts"), ({executeReviewedCoordinationPromotion}) => executeReviewedCoordinationPromotion)],
@@ -457,6 +464,10 @@ export function createEffectRuntimeHandlers(
     ["presentation.decision_notice.project", lazyHandler(() => import("./presentation/decision_notice.ts"), ({projectDecisionNotice}) => projectDecisionNotice)],
     ["presentation.decision_notice.validate_references", lazyHandler(() => import("./presentation/decision_notice.ts"), ({validateDecisionNoticeReferences}) => validateDecisionNoticeReferences)],
     ["presentation.goal_attention.project", lazyHandler(() => import("./presentation/goal_attention.ts"), ({projectGoalAttention}) => projectGoalAttention)],
+  ["presentation.owner_attention.plan", lazyHandler(() => import("./presentation/owner_attention.ts"), ({planOwnerAttention}) => planOwnerAttention)],
+  ["presentation.owner_attention.observe", lazyHandler(() => import("./presentation/owner_attention.ts"), ({observeOwnerAttention}) => observeOwnerAttention)],
+  ["presentation.owner_attention.health", lazyHandler(() => import("./presentation/owner_attention.ts"), ({ownerAttentionHealth}) => ownerAttentionHealth)],
+  ["presentation.owner_attention.references", lazyHandler(() => import("./presentation/owner_attention.ts"), ({ownerAttentionReferences}) => ownerAttentionReferences)],
     ["presentation.goal_attention.bound", lazyHandler(() => import("./presentation/goal_attention.ts"), ({boundGoalAttention}) => boundGoalAttention)],
     ["presentation.goal_attention.reconcile", lazyHandler(() => import("./presentation/goal_attention.ts"), ({reconcileGoalAttention}) => reconcileGoalAttention)],
     ["presentation.action_review_plan.compile", lazyHandler(() => import("./presentation/action_review_plan.ts"), ({compileActionReviewPlan}) => (params) =>
@@ -639,6 +650,8 @@ export function createEffectRuntimeHandlers(
     ["collaboration.request.amendment_readback", lazyHandler(() => import("./collaboration/request_control.ts"), ({requestAmendmentReadback}) => requestAmendmentReadback)],
     ["goal.amendment.request_receipt", lazyHandler(() => import("./goals/goal_amendment_authority.ts"), ({projectRequestAmendmentReceipt}) => projectRequestAmendmentReceipt)],
     ["collaboration.inbox.inspect_receipts", lazyHandler(() => import("./collaboration/inbox_receipts.ts"), ({inspectCollaborationInboxReceipts}) => inspectCollaborationInboxReceipts)],
+    ["collaboration.inbox.turn_items", lazyHandler(() => import("./collaboration/turn_context.ts"), ({projectDelegationTurnItems}) => projectDelegationTurnItems)],
+    ["collaboration.inbox.turn_context", lazyHandler(() => import("./collaboration/turn_context.ts"), ({projectDelegationTurnContext}) => projectDelegationTurnContext)],
     ["collaboration.inbox.receiver_followthrough", lazyHandler(() => import("./collaboration/inbox_receipts.ts"), ({projectReceiverFollowthrough}) => projectReceiverFollowthrough)],
     ["collaboration.result.plan_publication", lazyHandler(() => import("./collaboration/result_publication.ts"), ({planCollaborationResult}) => planCollaborationResult)],
     ["collaboration.result.attachment_refs", lazyHandler(() => import("./collaboration/result_publication.ts"), ({resultAttachmentRefs}) => resultAttachmentRefs)],

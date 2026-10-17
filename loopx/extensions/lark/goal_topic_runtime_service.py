@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
 import logging
 from pathlib import Path
 import threading
+import time
 from typing import Any
 
 from ...chat_manager import MANAGER_AGENT_OBJECTIVE
@@ -54,6 +56,7 @@ class LarkGoalTopicRuntimeService:
         self._workers: dict[str, ProfileWorker] = {}
         self._health: dict[str, dict[str, Any]] = {}
         self._closed = threading.Event()
+        self._delivery_wakeup = threading.Event()
         self._startup_thread: threading.Thread | None = None
         self._delivery_thread: threading.Thread | None = None
 
@@ -82,8 +85,24 @@ class LarkGoalTopicRuntimeService:
             return
         pending: dict[Path, Future[int]] = {}
         attempted: dict[Path, int] = {}
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="loopx-lark-private-reply") as pool:
+        attention: Future[int] | None = None
+        attention_due = 0.0
+        wakeup_scope = getattr(self.runtime_controller, "turn_release_wakeup", None)
+        # Older/custom controllers retain polling. One local hint wakes the
+        # existing scanner; it is neither a queue nor a delivery receipt.
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="loopx-lark-private-reply") as pool, \
+                (wakeup_scope(self._delivery_wakeup) if callable(wakeup_scope) else nullcontext()):
             while not self._closed.is_set():
+                # Clear BEFORE scanning: an arrival during the scan must also
+                # wake the following wait, rather than disappear in that gap.
+                self._delivery_wakeup.clear()
+                if attention is not None and attention.done():
+                    try:
+                        attention.result()
+                    except Exception:
+                        logging.getLogger(__name__).warning("Owner notification reconciliation is pending")
+                    attention = None
+                    attention_due = time.monotonic() + 30
                 for path, future in list(pending.items()):
                     if not future.done():
                         continue
@@ -95,16 +114,31 @@ class LarkGoalTopicRuntimeService:
                 try:
                     paths = transport.pending_delivery_paths()
                     attempted = {path: count for path, count in attempted.items() if path in paths}
+                    owner_attention = getattr(transport, "owner_attention", None)
+                    attention_ready = (owner_attention is not None and attention is None
+                        and time.monotonic() >= attention_due and owner_attention.has_enabled())
                     for path in sorted(paths, key=lambda path: attempted.get(path, 0)):
-                        if len(pending) >= 4 or self._closed.is_set():
+                        if len(pending) + int(attention is not None or attention_ready) >= 4 or self._closed.is_set():
                             break
                         if path in pending:
                             continue
                         pending[path] = pool.submit(transport.reconcile_request, path)
                         attempted[path] = attempted.get(path, 0) + 1
+                    if attention_ready and len(pending) < 4 and not self._closed.is_set():
+                        attention = pool.submit(owner_attention.reconcile)
                 except Exception:
                     logging.getLogger(__name__).warning("Private Chat delivery discovery is pending")
-                self._closed.wait(1)
+                self._delivery_wakeup.wait(1)
+
+    def _admit_private(self, profile: str, event: dict[str, Any]) -> dict[str, Any]:
+        if self._closed.is_set():
+            raise RuntimeError("Lark conversation service is closed")
+        result = self.private_conversations.admit(profile, event, defer_background_stop=True)
+        # Admission owns persistence and authorization. Only after it returns
+        # may the existing reply worker look for its durable work; duplicates
+        # and denied inputs still cannot manufacture a pending journal entry.
+        self._delivery_wakeup.set()
+        return result
 
     def _refresh_on_start(self) -> None:
         while not self._closed.is_set():
@@ -296,7 +330,8 @@ class LarkGoalTopicRuntimeService:
                             stop=stop,
                             runtime_root=self.runtime_root,
                             answer=answer,
-                            private_admitter=(self.private_conversations.admit if self.private_conversations is not None else None),
+                            private_admitter=(self._admit_private
+                                if self.private_conversations is not None else None),
                             proposal_deliverer=deliver_proposals,
                             review_callback_handler=(
                                 handle_review_callback
@@ -469,6 +504,7 @@ class LarkGoalTopicRuntimeService:
 
     def close(self) -> None:
         self._closed.set()
+        self._delivery_wakeup.set()
         with self._lock:
             workers = list(self._workers.values())
             self._workers.clear()

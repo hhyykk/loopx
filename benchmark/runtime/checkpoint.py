@@ -20,6 +20,7 @@ from loopx.control_plane.quota.settlement import read_heartbeat_settlement
 from loopx.hosts.research_checkpoint import (
     _participant_id, native_binding_participant, research_participants, verify_research_participants,
 )
+from .checkpoint_handoff import CHECKPOINT_CAPTURE_SECONDS
 
 
 def normalize_checkpoint_request_path(value: str) -> str:
@@ -108,7 +109,7 @@ def _prior_replan_guard_seen(env: dict[str, str], current: Path, obligation_id: 
         prior = effect_runtime_result("runtime.checkpoint_artifacts", {
             "action": "select_replan", "quota": guard, "goal_id": env["LOOPX_GOAL_ID"],
             "agent_id": env["LOOPX_AGENT_ID"], "turn_instance_id": path.parent.name,
-        })
+        }, large_local_snapshot=True)
         if prior["capture"] and prior["obligation_id"] == obligation_id:
             return True
     return False
@@ -160,7 +161,7 @@ def capture_before_replan(env: dict[str, str], receipt: dict[str, Any], body: st
         intent = effect_runtime_result("runtime.checkpoint_artifacts", {
             "action": "select_replan", "quota": guard, "goal_id": env["LOOPX_GOAL_ID"],
             "agent_id": env["LOOPX_AGENT_ID"], "turn_instance_id": receipt["turn_id"],
-        })
+        }, large_local_snapshot=True)
         from .checkpoint_continuation import restored_capture_gate
         restore_gate = restored_capture_gate(env, intent.get("obligation_id"),
             full_history=not request.get("native_session", False))
@@ -198,7 +199,7 @@ def capture_before_replan(env: dict[str, str], receipt: dict[str, Any], body: st
                     raise ValueError("existing replan point has a different declaration")
                 verified = effect_runtime_result("runtime.checkpoint_artifacts", {
                     "action": "verify", "root": str(destination), "expected_sha256": manifest["sha256"],
-                })
+                }, large_local_snapshot=True)
                 receipt["checkpoint"].update(reason="replan_already_captured", destination=str(destination), **verified)
             else:
                 # A failed first capture is a missed point. Once its model is
@@ -246,7 +247,8 @@ def capture_after_wake(env: dict[str, str], receipt: dict[str, Any], *,
     started = time.monotonic()
     try:
         phase_deadline = env.get("LOOPX_PHASE_DEADLINE_EPOCH")
-        deadline = time.time() + 30
+        window = CHECKPOINT_CAPTURE_SECONDS if supplied_request and supplied_request[0].get("controller_handoff") else 30
+        deadline = time.time() + window
         if phase_deadline is not None:
             original_deadline = float(phase_deadline)
             if not math.isfinite(original_deadline):
@@ -358,7 +360,7 @@ def capture_after_wake(env: dict[str, str], receipt: dict[str, Any], *,
             probe = effect_runtime_result("runtime.checkpoint_artifacts", {
                 "action": "probe", "components": components,
                 "deadline_epoch_ms": deadline * 1000,
-            }, timeout=max(.1, deadline - time.time()), retry_safe=False)
+            }, timeout=max(.1, deadline - time.time()), retry_safe=False, large_local_snapshot=True)
             if request.get("native_session"):
                 # Native readback precedes the byte witness. A completed later Turn
                 # in that gap must not be sealed under the earlier cursor. Re-read
@@ -400,7 +402,7 @@ def capture_after_wake(env: dict[str, str], receipt: dict[str, Any], *,
                 "components": components, "point_metadata": metadata,
                 "expected_source_sha256": probe["source_sha256"],
                 "deadline_epoch_ms": deadline * 1000,
-            }, timeout=max(.1, deadline - time.time()), retry_safe=False)
+            }, timeout=max(.1, deadline - time.time()), retry_safe=False, large_local_snapshot=True)
             receipt["checkpoint"] = {"captured": True, "destination": str(destination), **captured}
     except Exception as error:
         # Capture failure is explicit but cannot rewrite an already settled work
@@ -413,7 +415,7 @@ def capture_after_wake(env: dict[str, str], receipt: dict[str, Any], *,
 @contextmanager
 def held_quota_decision(listener, capture_root: Path, *, goal_id: str, agent_id: str,
                         turn_instance_id: str | None, native_process=None, interrupt_timeout: float = 10,
-                        interrupt_when=None, deadline: float | None = None):
+                        interrupt_when=None, deadline: float | None = None, accepted_channel=None):
     """Host-side counterpart of the explicit quota pre-output transport.
 
     The existing typed owner decides whether this exact packet admits a fresh
@@ -434,19 +436,24 @@ def held_quota_decision(listener, capture_root: Path, *, goal_id: str, agent_id:
     Without native_process this is output ordering only; a slow capture can
     outlive the native tool's yield interval and does not stop inference.
     """
-    if not capture_root.is_absolute() or capture_root.resolve(strict=True) != capture_root:
-        raise ValueError("decision capture root must be a physical absolute directory")
     def remaining():
         limit = 120 if deadline is None else min(120, deadline - time.monotonic())
         if limit <= 0:
             raise TimeoutError("original wake budget expired during decision handoff")
         return limit
 
-    channel, _ = listener.accept()
+    channel = accepted_channel
+    if channel is None:
+        channel, _ = listener.accept()
     with channel:
         channel.settimeout(remaining())
         with channel.makefile("rb") as stream:
             line = stream.readline(4097)
+        # Consume the bounded request before checking Host prerequisites. A
+        # refused root must close this channel so the same source can recover;
+        # leaving it queued would keep the caller's listener always readable.
+        if not capture_root.is_absolute() or capture_root.resolve(strict=True) != capture_root:
+            raise ValueError("decision capture root must be a physical absolute directory")
         message = json.loads(line)
         if (not isinstance(message, dict) or set(message) != {"path", "sha256"} or
                 not isinstance(message["path"], str) or not isinstance(message["sha256"], str)):
@@ -478,7 +485,7 @@ def held_quota_decision(listener, capture_root: Path, *, goal_id: str, agent_id:
                 "action": "select_replan", "quota": quota, "goal_id": goal_id,
                 "agent_id": agent_id, "turn_instance_id": (turn_instance_id if turn_instance_id is not None
                     else (quota.get("heartbeat_receipt") or {}).get("turn_instance_id")),
-            }, timeout=remaining())
+            }, timeout=remaining(), large_local_snapshot=True)
         if not failed_readback and native_process is not None and interrupt_when is not None and interrupt_when(intent):
             from .worker import interrupt_checkpoint_process
 

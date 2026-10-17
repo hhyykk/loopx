@@ -7,6 +7,7 @@ import type { GoalAcceptanceObservation } from "../../data/goal-acceptance-obser
 import type { AttentionDetails } from "./attention-details";
 import type { WorkspaceLoadError, WorkspaceReadScope } from "../../data/workspace-progressive-status";
 import type { TodoItem } from "../../data/status";
+import type { TodoUpdateSourceBasis } from "../../data/action-source-basis";
 import { goalWorkKind, type GoalHostThreadActivity, type WorkspaceGoalExecution } from "./goal-activity";
 import { receiptRetryReadback } from "./monitor-readback";
 import type { DigestAttentionSummary } from "../../../../../../loopx/control_plane/presentation/goal_workspace_digest.js";
@@ -317,6 +318,8 @@ export type WorkspaceSchedule = {
 };
 
 export type WorkspaceActionPreview = {
+  /** Exact Todo target from the stored action, used only for display joins. */
+  todoId?: string;
   reviewPlan?: ActionReviewPlan;
   actionKind:
     | "goal.create"
@@ -350,6 +353,8 @@ export type WorkspaceActionPreview = {
   // See proposal-recency.ts.
   createdAt?: string;
   previewId: string;
+  /** False for a refused preview held only in this page; no stored action exists to read back. */
+  persisted?: boolean;
   regeneratedFrom?: string | null;
   primaryLabel?: string;
   errorMessage?: string;
@@ -483,6 +488,10 @@ export type WorkspaceAgentOption = {
   agentId: string;
   available: boolean;
   capability?: string;
+  /** Service-reported readiness for an unavailable runtime; see runtime-readiness.ts. */
+  unavailableReason?: string | null;
+  executable?: string | null;
+  environmentVariable?: string | null;
   interrupt?: boolean;
   label: string;
   location?: string;
@@ -501,7 +510,7 @@ export type WorkspaceDrawerSelection =
   | { item: WorkspaceRun; kind: "run" }
   | { item: WorkspaceOutput; kind: "output" }
   | { item: WorkspaceActionPreview; kind: "proposal" }
-  | { goalId?: string; kind: "settings"; tab?: "appearance" | "capabilities" | "language" | "lark" | "machine" | "steward" }
+  | { goalId?: string; kind: "settings"; tab?: "appearance" | "capabilities" | "language" | "lark" | "machine" | "steward" | "conversation" }
   | {
       item: WorkspaceSchedule;
       kind: "schedule";
@@ -524,6 +533,7 @@ export type WorkspaceGoalArchiveLoadState =
   | { phase: "error"; error: string };
 
 export type PersonalWorkspaceCallbacks = {
+  onSaveTodoRequirements?: (todo: WorkspaceTodo, text: string, basis: TodoUpdateSourceBasis, retry?: WorkspaceActionPreview) => Promise<WorkspaceActionPreview>;
   onApplyProposal?: (proposal: WorkspaceActionPreview) => void | Promise<void>;
   onApplyAttention?: (attention: WorkspaceAttention) => void;
   onCancelProposal?: (proposal: WorkspaceActionPreview) => void;
@@ -539,6 +549,7 @@ export type PersonalWorkspaceCallbacks = {
   onCancelConversationPreparation?: (contextId: string) => void;
   onInterruptConversationTurn?: (contextId: string, turnId: string) => Promise<void>;
   onSteerConversationTurn?: (contextId: string, turnId: string, message: string, ingressId: string) => Promise<void>;
+  onQueueConversationTurn?: (contextId: string, sessionId: string, message: string, ingressId: string, attachments?: WorkspaceImageAttachment[]) => Promise<void>;
   onOpenGoal?: (goalId: string) => void | Promise<void>;
   onOpenGoalView?: (tab: WorkspaceGoalTab) => void;
   onOpenRunSession?: (run: WorkspaceRun) => void | Promise<void>;
@@ -569,6 +580,8 @@ export type PersonalWorkspaceCallbacks = {
   onReconcileStatus?: (options?: { invalidateGoalIds?: string[] }) => void | Promise<void>;
   /** Full refresh by default; error recovery can explicitly read missing Goals only. */
   onRefresh?: (scope?: WorkspaceReadScope) => void | WorkspaceRefreshResult | Promise<void | WorkspaceRefreshResult>;
+  /** Re-read the Chat service's runtime catalog after the owner repaired something. */
+  onRecheckRuntimes?: () => void;
   /** Re-read the workspace without a loading state; used by background freshness such as notifications. */
   onBackgroundRefresh?: () => void | Promise<void>;
   onRetryGoalArchive?: () => void | Promise<void>;
@@ -589,6 +602,7 @@ export type PersonalWorkspaceCallbacks = {
     settings?: LoopXModeSettings) => void;
   onSelectAgent?: (agentId: string) => void;
   onSelectAgentModel?: (agentId: string, modelId: string) => void;
+  onSelectAgentReasoningEffort?: (agentId: string, effort: string) => void;
   onSelectChannel?: (channel: WorkspaceChannel) => void;
   onSelectGoal?: (goalId: string | null, view: WorkspaceGoalTab) => void;
   onSelectTodo?: (todoId: string | null) => void;

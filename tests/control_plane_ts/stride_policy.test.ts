@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {normalizeStrideDecision, strideControlContract, stridePlanningGuidance} from "../../loopx/control_plane/work_items/stride_policy.ts";
+import {normalizeStrideDecision, strideControlContract, stridePlanningGuidance, strideReviewMismatch} from "../../loopx/control_plane/work_items/stride_policy.ts";
 import {buildVisionCheckpoint, VISION_REFRESH_REQUEST_SCHEMA} from "../../loopx/control_plane/goals/vision_checkpoint.ts";
 import {projectReplanSemantics} from "../../loopx/control_plane/work_items/replan_semantics.ts";
 
@@ -20,6 +20,39 @@ const packet = {schema_version: "goal_vision_replan_contract_v0", agent_id: "age
 const request = {schema_version: VISION_REFRESH_REQUEST_SCHEMA, phase: "prepare", goal_id: "goal-a",
   agent_id: "agent-a", merge_patch: false, existing_agent_vision: null,
   require_path_delta_for_durable_change: false, agent_vision_packet: packet};
+
+test("previous-outcome claims need subsequent evidence; old comparison evidence remains usable", () => {
+  const previous = "replan-decision-" + "b".repeat(24);
+  const context = {evidence: [{evidence_ref: "evidence:before"}, {evidence_ref: "evidence:after"}],
+    decision_followthrough: {previous_decision: {evidence_ref: previous},
+      observations: [{evidence_ref: "evidence:after"}]}};
+  const review = {reference_decision_ref: previous, adoption: "executed", information_gain: "new_evidence",
+    goal_gain: "flat", evidence_refs: ["evidence:before"], lesson: "The complete comparison did not improve the objective."};
+  const decision = {...proposal, previous_review: review};
+  assert.match(String(strideReviewMismatch(decision, context)), /subsequent/);
+  assert.equal(strideReviewMismatch({...decision, previous_review: {...review,
+    evidence_refs: ["evidence:before", "evidence:after"]}}, context), null);
+  assert.equal(strideReviewMismatch({...decision, previous_review: {...review,
+    adoption: "unknown", information_gain: "unknown", goal_gain: "unknown", evidence_refs: []}}, context), null);
+});
+
+test("another Todo's activity cannot establish execution or benefit of the declared experiment", () => {
+  const previous = "replan-decision-" + "b".repeat(24);
+  const context = {decision_followthrough: {previous_decision: {evidence_ref: previous},
+    observations: [{evidence_ref: "evidence:other"}, {evidence_ref: "evidence:experiment"}],
+    planned_work: [{todo_id: "todo-experiment", current: {status: "done"},
+      observation_refs: ["evidence:experiment"]}]}};
+  const review = {reference_decision_ref: previous, adoption: "executed", information_gain: "new_evidence",
+    goal_gain: "improved", evidence_refs: ["evidence:other"], lesson: "An unrelated task completed."};
+  assert.match(String(strideReviewMismatch({...proposal, previous_review: review}, context)), /declared work/);
+  assert.equal(strideReviewMismatch({...proposal, previous_review: {...review,
+    adoption: "not_executed", goal_gain: "unknown"}}, context), null);
+  // Negative experiments may complete; neither a score threshold nor success is required.
+  assert.equal(strideReviewMismatch({...proposal, previous_review: {...review,
+    goal_gain: "regressed", evidence_refs: ["evidence:experiment"]}}, context), null);
+  assert.equal(strideReviewMismatch({...proposal, previous_review: {...review,
+    adoption: "unknown", information_gain: "unknown", goal_gain: "unknown", evidence_refs: []}}, context), null);
+});
 
 test("Explore review keeps bare lowercase digest revisions and unavailable null distinct", () => {
   const explore = {disposition: "deferred", considered_refs: [], reason: "Scoped later."};
@@ -58,6 +91,8 @@ test("goal-value questions are enabled review input, not persisted decisions or 
   assert.deepEqual(Object.keys(contract.decision_value_review as object),
     ["work_slice", "route_distance", "validation_scope"]);
   const validation = (contract.decision_value_review as Record<string, string>).validation_scope;
+  const work = (contract.decision_value_review as Record<string, string>).work_slice;
+  const route = (contract.decision_value_review as Record<string, string>).route_distance;
   // These clauses are Agent-consumed behavior, not machine classification of
   // a failed check. Keep both decision value and the authority boundary visible.
   assert.match(validation, /identify its source and protected goal/);
@@ -69,6 +104,13 @@ test("goal-value questions are enabled review input, not persisted decisions or 
   assert.match(validation, /readiness for an authorized informative evaluation/);
   assert.match(validation, /evidence sufficient to replace the incumbent/);
   assert.match(validation, /budget, feedback and permission limits/);
+  assert.match(work, /first deliverable.*later gain/);
+  assert.match(work, /recovering an avoidable initial quality deficit/);
+  assert.match(route, /retained best artifact/);
+  assert.match(route, /subsequent work actually implements/);
+  assert.match(validation, /artifact version, input conditions/);
+  assert.match(validation, /feedback became available/);
+  assert.match(validation, /not proof of restoration or continued execution/);
   // All existing legal choices remain valid without answering a new field.
   for (const action of ["grow", "switch", "verify"]) {
     const decision = normalizeStrideDecision({...proposal, action})[0]!;

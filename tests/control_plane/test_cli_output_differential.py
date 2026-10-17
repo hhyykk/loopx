@@ -66,6 +66,11 @@ def _receipt(*rows: dict[str, object]) -> dict[str, object]:
     ("start_goal_guided_command_pack_detail", "markdown", "complete_todo_readback", (436, 2, 0)),
     ("quota_should_run", "json", "vision_cli_authoring", (3049, 94, 1807)),
     ("loopx_turn_plan", "json", "vision_cli_authoring", (237, 0, 237)),
+    ("start_goal_guided", "json", "first_delivery_guidance", (2340, 0, 2340)),
+    ("bootstrap_command_pack", "json", "first_delivery_guidance", (2340, 0, 2340)),
+    ("bootstrap_command_pack", "markdown", "first_delivery_guidance", (578, 0, 0)),
+    ("start_goal_guided_command_pack_detail", "json", "first_delivery_guidance", (3496, 0, 3496)),
+    ("bootstrap_command_pack_message_only", "markdown", "first_delivery_guidance", (578, 0, 0)),
 ])
 def test_authoring_growth_is_bounded_one_time_and_surface_scoped(
     surface, output_format, feature, growth,
@@ -107,6 +112,9 @@ def test_authoring_growth_is_bounded_one_time_and_surface_scoped(
     ("heartbeat_prompt_compact", "markdown", ["stop"], 215),
     ("heartbeat_prompt_brief", "markdown", ["stop"], 163),
     ("heartbeat_prompt_thin", "json", ["stop"], 154),
+    ("heartbeat_prompt_thin", "json", ["authorized_delivery"], 405),
+    ("heartbeat_prompt_thin", "markdown", ["authorized_delivery"], 405),
+    ("heartbeat_prompt_brief", "json", ["authorized_delivery"], 280),
 ])
 def test_continuation_growth_requires_observed_transition_and_bounds(surface, fmt, clauses, growth):
     from loopx.control_plane.testing.cli_output_differential import _compare_row
@@ -1416,3 +1424,55 @@ def test_settlement_v5_migration_does_not_waive_output_growth(previous):
     assert not compare_cli_output_receipts(
         _receipt(candidate), _receipt({**candidate, "action_signature_sha256": "lost-identity"}),
     )["ok"]
+
+
+def test_first_delivery_growth_requires_every_reviewed_instruction():
+    from loopx.control_plane.testing.cli_output_semantics import authoring_input_observations
+
+    guidance = (
+        'Use the strongest feasible approach supported by current knowledge for the first '
+        'deliverable, including its necessary implementation and validation as a coherent '
+        'slice. Do not choose a deliberately weak placeholder merely to obtain earlier '
+        'feedback or declare progress. Compare first-result quality, latency and full cost; '
+        'neither immediate feedback nor indefinite preparation is the objective. Useful '
+        'diagnostic probes remain allowed under the existing acceptance, feedback and '
+        'authority limits; identify their purpose and do not substitute them for the requested'
+        ' deliverable.'
+    )
+    def structured(value):
+        return json.dumps({"planner": {"first_delivery_guidance": value}})
+
+    def rendered(value):
+        return "3. Todos: existing planning obligations. " + value
+
+    for render in [structured, rendered]:
+        assert authoring_input_observations(render(guidance))["first_delivery_guidance"]
+        for clause in ["strongest feasible approach", "current knowledge", "necessary implementation and validation",
+                       "coherent slice", "deliberately weak placeholder", "earlier feedback or declare progress",
+                       "first-result quality", "latency and full cost", "indefinite preparation",
+                       "Useful diagnostic probes", "acceptance, feedback and authority limits",
+                       "identify their purpose", "do not substitute them for the requested deliverable"]:
+            assert not authoring_input_observations(render(guidance.replace(clause, "")))["first_delivery_guidance"]
+    assert not authoring_input_observations(json.dumps({"note": guidance}))["first_delivery_guidance"]
+    assert not authoring_input_observations("note: " + guidance)["first_delivery_guidance"]
+
+
+def test_delivery_guidance_cost_observation_cannot_qualify_partial_or_repeated_change():
+    from loopx.control_plane.testing.cli_output_semantics import continuation_instruction_observations
+
+    old = "calls/writeback ≠ completion. Correct locally; obey projected replan/stop, never wake counts."
+    clauses = [
+        "Reuse existing authorization for the current action; ask only for missing necessary authority.",
+        "Continue through integration, negative cases and readback while feasible; preserve evidence and next action for recovery/resume.",
+        "Settle with current settlement_plan.ordered_steps, else next_cli_actions; preserve exact identities/effect ids and actual outcomes. Never reconstruct static refresh/spend; ambiguous effects need readback/recovery, not blind retry.",
+    ]
+    for render in (lambda value: value, lambda value: json.dumps({"task_body": value})):
+        before = continuation_instruction_observations(render(old))
+        after = continuation_instruction_observations(render(old + " " + " ".join(clauses)))
+        assert before["authorized_delivery_before"] and not before["authorized_delivery_after"]
+        assert after["authorized_delivery_after"] and not after["authorized_delivery_before"]
+        for removed in range(len(clauses)):
+            partial = continuation_instruction_observations(render(old + " " + " ".join(
+                clause for i, clause in enumerate(clauses) if i != removed)))
+            assert not partial["authorized_delivery_after"]
+            assert not partial["authorized_delivery_before"]

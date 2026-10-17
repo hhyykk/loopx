@@ -44,6 +44,29 @@ curl -fsS http://127.0.0.1:8767/status.json
 
 ---
 
+### 1.1 Agent 运行环境未就绪 / When no Agent runtime is ready
+
+![没有可用 Agent 运行环境时的管家总览](../assets/personal-workspace/runtime-readiness-none.png)
+
+LoopX 通过本机已安装的命令行工具驱动 Agent（Codex、Claude Code、Kiro CLI），或通过 API 密钥。
+如果这台机器上一个都没有就绪，管家总览会在顶部说明原因，逐项列出缺什么（未在 PATH 中找到的命令、
+未设置的环境变量），并提供「重新检查」和「安装指引」。安装并登录后点「重新检查」，页面重新读取
+服务的运行环境目录并回读结果；本页不会安装任何东西，也不授予任何权限。打开 Goal 对话时，如果选中的
+运行环境在本机不可用，输入框上方会给出同样的说明和重新检查。
+执行环境缺失不影响管家和 Goal 中的「仅查状态」：它保存原问题与状态回答，不启动 Agent。
+没有该选项的项目对话会明确拒绝未就绪的执行路线，并保留未发送的草稿。
+
+LoopX drives Agents through a command-line tool installed on this machine (Codex, Claude Code,
+Kiro CLI) or through an API key. When none is ready, the manager overview says so at the top,
+lists what each runtime needs (a command not found on PATH, an environment variable not set), and
+offers **Check again** and a **Setup guide** link. After installing and signing in, **Check again**
+re-reads the service's runtime catalog and reads the result back; the page installs nothing and
+grants nothing. In a Goal conversation, the same notice and re-check appear above the composer when
+the selected runtime is unavailable here.
+Missing execution runtimes do not disable **Status only** in manager and Goal conversations: it
+stores the original question and status answer without starting an Agent. A project conversation
+without that option refuses an unavailable execution route and retains the unsent draft.
+
 ## 🧭 2. 控制台核心架构
 
 ```mermaid
@@ -77,14 +100,23 @@ graph TD
 Goal 是什么、一个 **创建 Goal** 按钮（打开与侧边栏 `+` 相同的创建表单），以及三条示例
 请求。点选示例只会填入输入框，按发送前不会发出任何内容。状态来源自身的检查行（例如
 本机尚未建立注册表）折叠在「状态来源详情」里。只有状态来源真的不健康（例如注册表损坏）
-时才显示健康告警，并以可读句子描述问题，原始检查行同样折叠在「诊断信息」里。
+时才显示健康告警，并以可读句子描述问题，原始检查行同样折叠在「诊断信息」里。本机还没有可用的
+Agent（例如 Codex 未安装或未登录）时，「创建 Goal」的检查会直接告诉你是哪个 Agent、缺什么（命令
+或环境变量）以及下一步怎么做，不会写入任何内容，表单内容也会保留。
+可用的 Agent 也可能因工具能力、信任范围或远程工作区映射而拒绝创建。此时表单显示实际原因，
+不会把配置拒绝当成安装或登录问题。修复后可直接再次检查；未修改的内容及操作身份保持，
+修改内容则形成新请求。检查仍不创建 Goal，只有原来的确认动作才能创建。
 
 When no Goal exists yet, the overview shows a first-Goal state instead of empty lanes or a
 health banner: what a Goal is, a **Create a Goal** button (the same form as the sidebar `+`),
 and three example requests that only fill the composer. The status source's own check
 lines (such as "no registry yet on this machine") stay collapsed under "Status source
 details". A health banner appears only when the source is actually unhealthy, in plain
-sentences, with the raw check lines collapsed under "Diagnostics".
+sentences, with the raw check lines collapsed under "Diagnostics". When this machine has no usable Agent yet (Codex not installed or not signed in), the Goal creation review names that Agent, what is missing (the command or the environment variable) and the next step; nothing is written and the form keeps what you typed.
+An available Agent may still refuse creation because of tools, trust scope or a remote workspace
+mapping. The form shows the actual reason instead of an installation or sign-in instruction.
+Repair that configuration and review again: unchanged contents retain their request identity;
+editing them starts a new request. Review creates no Goal; the original confirmation is still required.
 
 ### 核心功能区
 1. **「你不在的时候」离线概览**：
