@@ -13,6 +13,20 @@ export async function runCodexAttached(browser) {
   await runConversation(browser, true);
 }
 
+async function scrollHistory(page, panel, direction) {
+  const transcript = panel.locator('.attached-conversation-messages');
+  await transcript.focus();
+  await page.keyboard.press(direction > 0 ? 'End' : 'Home');
+  await transcript.hover();
+  await page.mouse.wheel(0, direction * 600);
+}
+
+async function expandActivity(record) {
+  await record.waitFor({state:'attached'});
+  const group = record.locator('xpath=ancestor::details[contains(@class,"attached-record-group")]');
+  if (await group.count() && !await group.evaluate(node => node.open)) await group.locator(':scope > summary').click();
+}
+
 async function runConversation(browser, uncertain) {
   const fixturePath = resolve(repoRoot, 'examples/personal-workspace-browser/codex_attached_fixture.py');
   const python = testPythonCommand(`import runpy, sys\nsys.argv = [${JSON.stringify(fixturePath)}, ${JSON.stringify(uncertain ? '--uncertain' : '--confirmed')}]\nrunpy.run_path(${JSON.stringify(fixturePath)}, run_name="__main__")`, {repoRoot});
@@ -189,6 +203,58 @@ async function runConversation(browser, uncertain) {
     const inputCount = async () => (await (await page.request.get(new URL('/fixture/inputs',url).href)).json()).count;
     const composer = panel.getByRole('textbox', {name:'回复 worker',exact:true});
     const send = panel.getByRole('button', {name:'发送到原会话',exact:true});
+    if (!uncertain) {
+      const live = panel.getByLabel('原宿主实时记录',{exact:true});
+      await page.request.post(new URL('/fixture/live-start',url).href);
+      await live.getByText('原宿主实时草稿',{exact:true}).waitFor();
+      const activeMarks = panel.getByRole('img',{name:'原宿主执行中',exact:true});
+      assert.equal(await activeMarks.count(),2,'Only the observed current message and tool show activity');
+      assert.equal(await panel.getByText('正在发生 · 原宿主实时观察',{exact:true}).count(),0);
+      assert.equal(await live.getByText('正在执行 · verify_artifact',{exact:true}).count(),0);
+      await page.screenshot({path:resolve(outputDir,'attached-codex-live-desktop.png')});
+      await page.emulateMedia({reducedMotion:'reduce'});
+      assert.equal(await activeMarks.first().evaluate(node => getComputedStyle(node,'::after').animationName),'none','Reduced motion retains the glyph without movement');
+      await page.emulateMedia({reducedMotion:'no-preference'});
+      assert.equal(await panel.getByText('HIDDEN REASONING MUST NOT APPEAR',{exact:true}).count(),0);
+      await live.getByText('原宿主实时草稿',{exact:true}).click();
+      assert.equal(await activeMarks.count(),0,'Reading freezes both content and activity treatment');
+      await page.request.post(new URL('/fixture/live-update',url).href);
+      await panel.getByText('正在回看历史 · 有新活动',{exact:true}).waitFor();
+      assert.equal(await live.getByText('原宿主实时草稿',{exact:true}).count(),1,'History reading freezes live insertion too');
+      assert.equal(await live.getByText('原宿主实时草稿，已持续更新。',{exact:true}).count(),0);
+      await scrollHistory(page, panel, 1);
+      await live.getByText('原宿主实时草稿，已持续更新。',{exact:true}).waitFor();
+      assert.equal(await activeMarks.count(),2,'Returning to the tail restores the current observation');
+      assert.equal(await inputCount(),0,'Observation never submits native input');
+      await panel.getByRole('combobox',{name:'查看 Agent'}).selectOption('remote-worker');
+      await panel.getByText('来源：cursor。此宿主的工作记录与回复尚未接入。',{exact:true}).waitFor();
+      assert.equal(await live.count(),0,'Changing the Agent removes the old live records');
+      await page.waitForFunction(async () => (await (await fetch('/fixture/following')).json()).events.at(-1) === false);
+      await panel.getByRole('combobox',{name:'查看 Agent'}).selectOption('worker');
+      await live.getByText('原宿主实时草稿，已持续更新。',{exact:true}).waitFor();
+      assert.equal(await live.locator('article').count(),2,'A new baseline does not duplicate old live rows');
+      // The other tail-return path must publish the buffered projection too.
+      // Pin the subscription events so the newer draft can only come from the
+      // buffer: a fresh follow replays the host snapshot and would decide
+      // nothing about this path.
+      await live.getByText('原宿主实时草稿，已持续更新。',{exact:true}).click();
+      await page.request.post(new URL('/fixture/live-update',url).href);
+      await panel.getByText('正在回看历史 · 有新活动',{exact:true}).waitFor();
+      assert.equal(await live.getByText('原宿主实时草稿，已持续更新 2。',{exact:true}).count(),0,'History reading freezes the newer live draft');
+      const followEvents = async () => (await (await page.request.get(new URL('/fixture/following',url).href)).json()).events.length;
+      const followsBefore = await followEvents();
+      await scrollHistory(page, panel, 1);
+      await live.getByText('原宿主实时草稿，已持续更新 2。',{exact:true}).waitFor({timeout: 3000});
+      assert.equal(await followEvents(),followsBefore,'Returning to the tail publishes the buffer instead of waiting for a new subscription');
+      assert.equal(await live.getByText('原宿主实时草稿，已持续更新。',{exact:true}).count(),0,'Returning to the tail replaces the stale draft');
+      assert.equal(await inputCount(),0,'Observation never submits native input');
+      await page.request.post(new URL('/fixture/live-finish',url).href);
+      await page.waitForFunction(() => !document.querySelector('[aria-label="原宿主实时记录"]'));
+      assert.equal(await activeMarks.count(),0,'Completed work is never left animating');
+      await panel.locator('.attached-conversation-messages').getByText('原宿主实时草稿，已持续更新。',{exact:true}).waitFor();
+      await panel.getByText('原会话可回复',{exact:true}).waitFor();
+      assert.equal(await inputCount(),0);
+    }
     const sentOperations = [];
     page.on('request', request => {
       if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/chat/codex-attached') sentOperations.push(request.postDataJSON().operation_id);
@@ -353,6 +419,7 @@ async function runConversation(browser, uncertain) {
     await page.request.post(new URL('/fixture/work-records',url).href);
     await direct.getByText('工作结果已返回。',{exact:true}).waitFor();
     const toolResult = direct.locator('article[data-role="tool"]').filter({hasText:'工具结果'});
+    await expandActivity(toolResult);
     await toolResult.locator('summary').click();
     assert.equal(await toolResult.getByText('COMPLETE TOOL RESULT',{exact:false}).count(),0);
     await toolResult.getByRole('button',{name:'继续读取完整内容',exact:true}).click();
@@ -361,20 +428,20 @@ async function runConversation(browser, uncertain) {
     // Unicode detail offsets must count source characters, not JS UTF-16 units.
     assert.equal(await toolResult.locator('pre').textContent(),'Validation output\n' + '🧭验证结果\n'.repeat(6000) + 'COMPLETE TOOL RESULT');
     await toolResult.locator('summary').click();
+    await toolResult.locator('xpath=ancestor::details[contains(@class,"attached-record-group")]').locator(':scope > summary').click();
     await page.screenshot({path:resolve(outputDir,'attached-codex-work-timeline.png'),animations:'disabled'});
-    if (await direct.getByRole('button',{name:'回到最新',exact:true}).count()) {
-      await direct.getByRole('button',{name:'回到最新',exact:true}).click();
-      await direct.getByText('工作结果已返回。',{exact:true}).waitFor();
-    }
+    await scrollHistory(page, direct, 1);
+    await direct.getByText('工作结果已返回。',{exact:true}).waitFor();
+    assert.equal(await direct.getByRole('button',{name:/^(读取更早的消息|较新记录|回到最新)$/}).count(),0,'History needs no pagination controls');
     await page.request.post(new URL('/fixture/burst',url).href);
     await direct.getByText('Activity 329',{exact:true}).waitFor();
     assert.ok(await direct.locator('article').count() <= 300, 'The visible history is bounded without making older records unreachable');
-    await direct.getByRole('button',{name:'读取更早的消息',exact:true}).click();
+    await scrollHistory(page, direct, -1);
     await direct.getByText('Original request',{exact:true}).waitFor();
     assert.equal(await inputCount(),5, 'History and tool details never execute another input');
     await page.request.post(new URL('/fixture/append',url).href);
     await direct.getByText('正在回看历史 · 有新活动',{exact:true}).waitFor();
-    await direct.getByRole('button',{name:'较新记录',exact:true}).click();
+    await scrollHistory(page, direct, 1);
     await direct.getByText('Activity 329',{exact:true}).waitFor();
     // Following history remains continuous across multi-megabyte invisible metadata.
     await page.reload();
@@ -382,8 +449,14 @@ async function runConversation(browser, uncertain) {
     await page.request.post(new URL('/fixture/metadata-gap',url).href);
     await page.request.post(new URL('/fixture/tool-envelope',url).href);
     const envelope = direct.locator('article[data-role="tool"]').filter({hasText:'退出码 1'});
+    const foldedWarning = direct.locator('.attached-record-group > summary').filter({hasText:'1 条结果含非零退出码'});
+    await foldedWarning.waitFor();
+    assert.equal(await foldedWarning.locator('..').evaluate(node => node.open),false,
+      'A saved nonzero exit code remains visible before opening routine activity');
+    await expandActivity(envelope);
     await envelope.locator('summary').first().focus();
     await page.keyboard.press('Enter');
+    assert.equal(await envelope.locator('details').first().evaluate(node => node.open),true,'Keyboard expansion retains the original record');
     await envelope.getByText('Readable shell result\nSecond line',{exact:true}).waitFor();
     assert.equal(await envelope.locator('pre').first().textContent(),'Readable shell result\nSecond line');
     await envelope.getByText('原始记录字段',{exact:true}).click();
@@ -395,8 +468,8 @@ async function runConversation(browser, uncertain) {
     await page.request.post(new URL('/fixture/metadata-gap',url).href);
     await page.reload();
     await panel.getByRole('textbox',{name:'回复 worker',exact:true}).waitFor();
-    await panel.locator('article[data-role="tool"] summary').first().waitFor();
-    await panel.getByRole('button',{name:'读取更早的消息',exact:true}).click();
+    await panel.locator('.attached-record-group > summary').first().waitFor();
+    await scrollHistory(page, panel, -1);
     await panel.getByText('Activity 329',{exact:true}).waitFor();
     assert.equal(await send.isDisabled(),true, 'History readback must not infer idle from old events outside the observer window');
     // A pending invisible window must not keep scanning or reinsert the old
@@ -426,7 +499,68 @@ async function runConversation(browser, uncertain) {
     assert.equal(await panel.locator('article').count(),0);
     await page.unroute('**/api/chat/codex-attached?*',delayedWindow);
     await panel.getByRole('combobox',{name:'查看 Agent'}).selectOption('worker');
-    await panel.locator('article[data-role="tool"] summary').first().waitFor();
+    await panel.locator('.attached-record-group > summary').first().waitFor();
+    // A long, tool-heavy turn remains a conversation, not 400 default rows.
+    // The real source cursor must cross the page boundary without moving the
+    // compact work summary the reader is looking at.
+    await page.request.post(new URL('/fixture/tool-heavy',url).href);
+    const longDialogue = panel.locator('article[data-role="assistant"]').filter({hasText:'LONG DIALOGUE END'});
+    await longDialogue.waitFor();
+    await page.reload();
+    await longDialogue.waitFor();
+    assert.equal(await longDialogue.locator('details').count(),0,'Long dialogue is not hidden just because it exceeds 1800 characters');
+    const work = panel.locator('.attached-record-group').filter({hasText:'Saved output 199'});
+    const workSummary = work.locator(':scope > summary');
+    assert.equal(await work.evaluate(node => node.open),false);
+    await workSummary.getByText('含中断或报错',{exact:true}).waitFor();
+    let releasePage, pageStarted;
+    const heldPage = new Promise(resolve => {releasePage = resolve;});
+    const pagingStarted = new Promise(resolve => {pageStarted = resolve;});
+    let held = false, historyOutage = true;
+    const holdHistory = async route => {
+      if (!new URL(route.request().url()).searchParams.has('before') || held) return route.continue();
+      if (historyOutage) {
+        historyOutage = false;
+        return route.fulfill({status:503,contentType:'text/html',body:'<html>Temporary history outage</html>'});
+      }
+      held = true;
+      const response = await route.fetch(); pageStarted(); await heldPage;
+      await route.fulfill({response});
+    };
+    await page.route('**/api/chat/codex-attached?*',holdHistory);
+    const transcript = panel.locator('.attached-conversation-messages');
+    await transcript.focus(); await page.keyboard.press('Home');
+    await panel.getByRole('alert').waitFor();
+    await Promise.race([pagingStarted, page.waitForTimeout(10_000).then(() => {throw new Error('Scrolling to earlier history did not request a source page');})]);
+    await longDialogue.locator('p').first().click();
+    const summaryTop = (await workSummary.boundingBox()).y;
+    releasePage();
+    await work.getByText('Saved output 110',{exact:true}).waitFor({state:'attached'});
+    await panel.getByRole('alert').waitFor({state:'hidden'});
+    assert.ok(Math.abs((await workSummary.boundingBox()).y - summaryTop) < 2,'Prepending a page keeps the source summary at the same reading position');
+    await page.unroute('**/api/chat/codex-attached?*',holdHistory);
+    await workSummary.focus(); await page.keyboard.press('Enter');
+    const expandedGroup = await work.elementHandle();
+    await scrollHistory(page,panel,-1);
+    await panel.getByText('请核对这些结果，并说明未通过的检查。',{exact:true}).waitFor();
+    assert.equal(await expandedGroup.evaluate(node => node.isConnected && node.open),true,'Older pages retain the expanded source group even when its last record is trimmed');
+    await panel.getByText('Saved output 0',{exact:true}).waitFor({state:'attached'});
+    assert.ok(await panel.locator('article').count() <= 300);
+    // Returning through newer tool pages must preserve the same disclosure and
+    // keep every original row reachable, rather than remounting a closed group.
+    for (let pageNumber = 0; pageNumber < 5 && !await longDialogue.count(); pageNumber++) {
+      const read = page.waitForResponse(response => new URL(response.url()).searchParams.has('after'));
+      await scrollHistory(page,panel,1); await read;
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await expandedGroup.evaluate(node => node.isConnected && node.open),true,'Newer pages preserve the expanded group');
+    }
+    await longDialogue.waitFor();
+    await (await expandedGroup.$(':scope > summary')).click();
+    await scrollHistory(page,panel,1);
+    await page.setViewportSize({width:390,height:844});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
+    await page.screenshot({path:resolve(outputDir,'attached-codex-dialogue-primary-phone.png'),animations:'disabled'});
+    await page.setViewportSize({width:1512,height:982});
     await page.request.post(new URL('/fixture/rebind',url).href);
     await panel.getByRole('alert').waitFor();
     await openOriginal.click();

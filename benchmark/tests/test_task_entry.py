@@ -198,7 +198,7 @@ def test_prose_or_fabricated_todo_does_not_qualify_planning(planning_env):
     )
 
 
-def test_planner_receives_existing_phase_clock_without_changing_task_identity(planning_env):
+def test_planner_keeps_host_clock_out_of_model_input_and_preserves_task_identity(planning_env):
     from benchmark.runtime.planning import task_plan_packet
     from benchmark.runtime.worker import loopx_command
 
@@ -208,9 +208,9 @@ def test_planner_receives_existing_phase_clock_without_changing_task_identity(pl
     receipt = run_once(env)
     assert receipt["ok"] and receipt["planning"]["state_readback_verified"]
     body = next(Path(env["LOOPX_WAKE_LOG_DIR"]).glob("*/planning-input.json")).read_text()
-    assert deadline in body
-    assert "Host execution window" in body
-    assert "Existing execution reserve: 160 seconds" in body
+    assert deadline not in body
+    assert "Host execution window" not in body
+    assert "Existing execution reserve" not in body
     packet = json.loads(body.split("Host-supplied planning checkpoint:\n", 1)[1])
     assert packet == before
     assert receipt["planning"]["input_digest"] == before["input_digest"]
@@ -218,24 +218,23 @@ def test_planner_receives_existing_phase_clock_without_changing_task_identity(pl
     assert not list(Path(env["LOOPX_PROJECT"]).iterdir())
 
 
-def test_planning_window_uses_one_phase_deadline_and_preserves_packet(monkeypatch):
-    from benchmark.runtime import planning
+def test_planning_input_is_clock_independent_but_preserves_task_time_constraints():
+    from benchmark.runtime.planning import render_planning_prompt
 
-    monkeypatch.setattr(planning, "time", SimpleNamespace(time=lambda: 1000.0))
-    packet = {"input_digest": "unchanged", "text": "保留原始任务"}
-    legacy = "$loopx\n\nHost-supplied planning checkpoint:\n" + json.dumps(packet, ensure_ascii=False)
-    assert planning.render_planning_prompt(packet, {}, execution_reserve_seconds=160) == legacy
-    env = {"LOOPX_PHASE_DEADLINE_EPOCH": "1600"}
-    body = planning.render_planning_prompt(packet, env, execution_reserve_seconds=160)
-    assert "Absolute phase deadline: 1600.0 Unix UTC seconds" in body
-    assert "Remaining phase time at observation 1000.0: 600.0 seconds" in body
-    assert "Observed work window before that reserve: 440.0 seconds" in body
-    assert "Planning invocation limit" not in body
+    packet = {"input_digest": "unchanged", "text": "Task constraint: inference under 30 seconds."}
+    body = render_planning_prompt(packet, {})
+    for deadline in ["100", "1600", "9999999999"]:
+        env = {"LOOPX_PHASE_DEADLINE_EPOCH": deadline}
+        assert render_planning_prompt(packet, env) == body
+        assert env == {"LOOPX_PHASE_DEADLINE_EPOCH": deadline}
     assert json.loads(body.split("Host-supplied planning checkpoint:\n", 1)[1]) == packet
-    monkeypatch.setattr(planning, "time", SimpleNamespace(time=lambda: 1700.0))
-    expired = planning.render_planning_prompt(packet, env, execution_reserve_seconds=160)
-    assert "Remaining phase time at observation 1700.0: 0.0 seconds" in expired
-    assert env == {"LOOPX_PHASE_DEADLINE_EPOCH": "1600"}
+    assert body.startswith("$loopx\n\nBenchmark research planning guidance:\n")
+    assert "declared interface, units, scale" in body
+    assert "preserve that reference while testing a replacement" in body
+    assert "negative experiment can complete its own Todo" in body
+    assert "neither creates a new acceptance document or permission requirement" in body
+    assert "Host deadline" not in body and "remaining" not in body
+    assert packet == {"input_digest": "unchanged", "text": "Task constraint: inference under 30 seconds."}
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "0", "-1", "not-a-clock"])
@@ -244,7 +243,7 @@ def test_planning_window_rejects_invalid_host_clock(value):
 
     with pytest.raises(ValueError):
         render_planning_prompt({"input_digest": "unchanged"},
-                               {"LOOPX_PHASE_DEADLINE_EPOCH": value}, execution_reserve_seconds=160)
+                               {"LOOPX_PHASE_DEADLINE_EPOCH": value})
 
 
 def test_retired_planning_limit_fails_before_host_invocation(planning_env):
@@ -698,6 +697,8 @@ def test_sforge_planning_failed_host_has_no_execution_handoff(planning_env):
 
 @pytest.mark.parametrize("settings,field,value", [
     ({}, "replan_after_effective_turns", 6),
+    ({"planning_horizon_goal": True}, "replan_after_effective_turns", 6),
+    ({"planning_horizon_goal": False}, "replan_after_effective_turns", 6),
     ({"replan_after_turns": 2}, "replan_after_effective_turns", 2),
     ({"replan_after_todos": 3}, "replan_after_completed_todos", 3),
     ({"stride_strategy": "off"}, "replan_after_effective_turns", 6),
@@ -745,5 +746,96 @@ def test_runner_cadence_persists_through_real_configure_goal(
     assert other not in profile
     strategy = settings.get("stride_strategy")
     assert profile.get("stride_strategy", "off") == (strategy or "off")
-    assert agent._replan_receipt() == {field: value, **({"stride_strategy": strategy}
+    horizon = settings.get("planning_horizon_goal")
+    assert profile.get("planning_horizon_goal", False) == (horizon or False)
+    assert agent._replan_receipt() == {field: value,
+        **({"planning_horizon_goal": horizon} if horizon is not None else {}), **({"stride_strategy": strategy}
                                                     if strategy is not None else {})}
+
+
+def test_sforge_planning_entry_retries_a_dropped_planning_wake_within_budget(planning_env, monkeypatch):
+    import benchmark.runtime.sforge_entry as entry
+
+    real = entry.run_once
+    seen = []
+
+    def flaky(env):
+        seen.append(env["LOOPX_TASK_STAGE"])
+        if len(seen) == 1:
+            # The native process died without a plan or a harness error.
+            return {"ok": False, "timed_out": False, "return_code": 1}
+        return real(env)
+
+    monkeypatch.setattr(entry, "run_once", flaky)
+    env = planning_env | {"LOOPX_PHASE_DEADLINE_EPOCH": str(time.time() + 600)}
+    assert entry.prepare_entry(env)
+    assert seen == ["plan", "plan"]
+    attempts = json.loads(Path(env["LOOPX_PLANNING_RESULT"]).with_name("planning-attempts.json").read_text())
+    assert [a["ok"] for a in attempts] == [False, True]
+    assert attempts[0]["return_code"] == 1
+    assert len(list(Path(env["LOOPX_WAKE_LOG_DIR"]).glob("*/receipt.json"))) == 1
+
+
+@pytest.mark.parametrize("receipt", [
+    {"ok": False, "timed_out": True, "return_code": 124},
+    {"ok": False, "timed_out": False, "return_code": 1, "error_kind": "ValueError"},
+    {"ok": False, "timed_out": False, "return_code": 0},
+])
+def test_sforge_planning_entry_does_not_retry_timeouts_or_harness_failures(planning_env, monkeypatch, receipt):
+    import benchmark.runtime.sforge_entry as entry
+
+    calls = []
+    monkeypatch.setattr(entry, "run_once", lambda env: calls.append(env["LOOPX_TASK_STAGE"]) or dict(receipt))
+    env = planning_env | {"LOOPX_PHASE_DEADLINE_EPOCH": str(time.time() + 600)}
+    with pytest.raises(RuntimeError, match="Planning failed"):
+        entry.prepare_entry(env)
+    assert calls == ["plan"]
+    attempts = json.loads(Path(env["LOOPX_PLANNING_RESULT"]).with_name("planning-attempts.json").read_text())
+    assert len(attempts) == 1 and attempts[0]["ok"] is False
+
+
+def test_sforge_planning_entry_stops_retrying_after_the_attempt_limit(planning_env, monkeypatch):
+    import benchmark.runtime.sforge_entry as entry
+
+    calls = []
+    monkeypatch.setattr(entry, "run_once", lambda env: calls.append(1) or {"ok": False, "timed_out": False, "return_code": 1})
+    env = planning_env | {"LOOPX_PHASE_DEADLINE_EPOCH": str(time.time() + 600)}
+    with pytest.raises(RuntimeError, match="Planning failed"):
+        entry.prepare_entry(env)
+    assert len(calls) == entry.PLANNING_WAKE_ATTEMPTS
+
+
+@pytest.mark.parametrize("context", ["fresh", "resume"])
+def test_execute_wake_keeps_host_clocks_out_of_fresh_and_resumed_input(planning_env, context):
+    """Exercise the real worker/heartbeat CLI and capture its model transport input."""
+    env = planning_env | {"LOOPX_ITERATION_CONTEXT": context}
+    assert run_once(env)["ok"]
+    binary = Path(env["CODEX_BIN"])
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "pathlib.Path(os.environ['CODEX_HOME'], 'execute-input.txt').write_text(sys.stdin.read())\n"
+        "print(json.dumps({'type': 'thread.started', 'thread_id': 'planning-fixture-session'}))\n"
+    )
+    before = Path(env["LOOPX_REGISTRY"]).with_name("state.md").read_bytes()
+    old_deadline = env["LOOPX_PHASE_DEADLINE_EPOCH"]
+    for offset in [900, 500]:
+        deadline = str(time.time() + offset)
+        current = env | {"LOOPX_TASK_STAGE": "execute",
+                         "LOOPX_PHASE_DEADLINE_EPOCH": deadline,
+                         "LOOPX_CODEX_TURN_TIMEOUT_SEC": "120"}
+        receipt = run_once(current)
+        assert receipt["ok"]
+        body = (Path(env["LOOPX_CODEX_HOME"]) / "execute-input.txt").read_text()
+        assert deadline not in body
+        assert "Absolute phase deadline" not in body
+        assert old_deadline not in body
+        assert "Current wake execution limit" not in body
+        assert "Existing execution reserve" not in body
+        assert "The Host enforces runtime limits externally" not in body
+        assert "heartbeat-prompt" in body or "quota" in body
+        assert receipt["session"]["action"] == ("resume" if context == "resume" else "start_new")
+        assert "turn_envelope" not in receipt
+        assert current["LOOPX_PHASE_DEADLINE_EPOCH"] == deadline
+    # Runtime clocks remain internal and never change task/completion authority.
+    assert Path(env["LOOPX_REGISTRY"]).with_name("state.md").read_bytes() == before

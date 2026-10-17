@@ -56,6 +56,30 @@ Lark queued notices describe the observed queue state without claiming that an
 earlier request is running: the first Turn can also await its native claim.
 Recovery retains an already persisted notice's exact text and provider intent.
 
+The existing four-slot reply pool wakes after private admission returns and
+after a local Turn worker exits, including preparation failure. These in-process
+Event hints carry no content or delivery authority and perform no provider IO;
+the scanner still reads the canonical journals and rechecks the source and Core.
+It clears the hint before discovery so arrivals during a scan remain visible to
+the following wait. Shutdown wakes that wait and unregisters the runtime hint.
+The one-second recovery poll, bounded pool, request fairness and thirty-second
+owner-notification cadence remain; custom controllers without the hook still poll.
+An occupied worker may still defer a request until a later scan. No completed-
+Future callback repeatedly reschedules unfinished work. File/Core and native
+protocol fixtures qualify this scheduling path separately from installed service,
+provider latency, complete stop acknowledgement and first-visible Web results.
+
+Native Lark sends and receipt recovery use one operation-bound source verifier
+for the current App, exact profile/chat/message and Core grant, as existing
+reply edits already do. The observed Bot name must match the Inbox metadata;
+a rename still holds the first send while metadata refreshes. The verifier
+joins source reads and rechecks the exact binding before returning. A lost
+readback retains the same attempt and re-verifies without resending. No identity
+or grant is cached across operations, and legacy membership-only callbacks
+retain separate sender authentication. File/Core fixtures qualify this transport
+transaction, including late revocation; they do not qualify installed provider
+latency, the complete stop SLA or first-visible Web results.
+
 The packaged settings journey, source revocation/recovery, duplicate events,
 native queue/stop and two-App isolation have synthetic-provider regression and
 browser coverage. A native Codex source canary separately qualifies distinct
@@ -71,6 +95,11 @@ a stored App identity retain their original profile-hash consumer lease. Request
 without private bindings do not add provider authentication; configured aliases
 reuse one request-scoped verified identity observation. Lark HTTP composition
 resides in the extension, while the typed binding owner remains provider-neutral.
+
+Binding resolution rereads the exact grant after provider identity observation.
+Revoking or replacing that binding during the observation rejects the request;
+an unrelated binding edit does not invalidate it. The typed owner still checks
+the current context, with no identity cache shared across verification calls.
 
 The same Settings read model includes Core bindings for locally installed
 conversation transports. Listener status comes from the exact host-composed
@@ -112,12 +141,49 @@ target that topic. Admission feedback, streamed posts, terminal edits and receip
 recovery use the existing delivery path with `source_thread` placement. A revoked
 binding or unreadable source prevents later result delivery.
 
+For `/status`, `/help`, `/new` and `/stop` in a locally admitted topic, the
+transport batches the canonical incoming message and root in one raw provider
+read. The accepted root journal only selects those two read IDs; it grants no
+authority. After that IO, Core freshly resolves the exact binding and App inside
+both existing request/source fences. An in-process source verifier checks the
+envelopes against that selection, including sender, ancestry, root mention and
+the still-current binding, before journal creation or exact replay. A changed
+App or grant, incomplete pair or source mismatch rejects the command. An event
+control hint whose canonical body is ordinary text returns to ordinary rendering
+before any Core write. Unknown topics and legacy rendered journals retain their
+original route. No identity survives the transaction; outbound verification,
+typed admission decisions and stop recovery retain their existing owners.
+File/Core tests qualify the transaction and its rejection/replay boundaries;
+real provider read timings alone do not qualify the full stop reply or Web SLA.
+
+A completed, target-frozen stop on a locally enabled group binding reads its two
+original provider messages while Core freshly resolves the binding and App
+identity. Both readonly observations must finish successfully before source,
+ancestry and root-mention validation can authorize delivery. Only that invocation
+reuses the verified identity; no observation is persisted or reused by a later
+verification. Changed bindings discard the buffered message observation; ordinary
+input, private conversations and unknown stop scope keep their existing paths.
+
 When an ordinary Codex topic has no active Turn, `/stop` also covers background
 commands left by completed Turns in that same canonical Session, even after a
 later answer. Core freezes the original Session and canonical candidate Turn
 identities in the existing request journal **before** native inventory or
 transport resume can fail. Native observation may only narrow that frozen set;
 a retry cannot add later completed/active Turns or switch to a newer Session.
+Completed-command discovery reads the exact native thread's complete paginated
+item inventory once, retaining only command ownership for the frozen candidates.
+This avoids a separate inventory round trip for each historical Turn. Missing or
+conflicting item ownership and incomplete pagination remain unconfirmed; the
+existing exact-Turn cancellation and independent terminal readback still run.
+The existing Lark listener returns after this durable freeze; its existing reply
+workers recover the prepared request to observe and cancel native background
+commands. Prepared recovery uses admission's fresh authority check inside both
+the request and source-route fences, without a duplicate provider probe before
+waiting for those fences. Revocation while waiting prevents control and delivery.
+Slow or unavailable native control therefore does not hold inbound
+admission. This is scheduling only: it introduces no queue or completion state,
+does not defer an active Turn's exact interrupt, and sends no successful stop
+reply until native control and the original delivery checks have succeeded.
 A recovered legacy request without a recorded target has unknown original scope;
 Core rejects retargeting and preserves it unconfirmed. A fresh stop is a separate
 user request, never an automatic replacement for the unknown one.
@@ -270,6 +336,24 @@ resume. Earlier source evidence records a Codex canary editing and reading back 
 synthetic note while preserving prior text and creating no Goal. This historical
 host/filesystem evidence is separate from current synthetic-protocol regression
 checks and does not qualify live Lark, material intake or a release.
+Disconnecting a binding or replacing its identity, context or grant first
+publishes typed revocation, then reuses Core's exact-Turn interruption. Cancel
+that binding's queued work before stopping its active Turns, including topic
+and resumed Sessions; unrelated authorized work continues. History remains
+readable and unchanged-configuration retries do not interrupt execution. Never
+hold the authorization-publication lock while waiting for the host to stop or
+create another queue, scheduler or provider authority. An unconfirmed stop
+retains revocation and reports failure. Retrying disconnect with the old binding
+identity and current revision continues stop confirmation, including after a
+failed replacement. Settings projects pending/running targets from Core's
+persisted state, retains exact stop recovery across refresh and reload, and
+removes recovery only after Core confirms termination. It does not restore the
+grant or change the new binding and unrelated work. A claimed attached host
+still lacks push-stop support: report that limit, cancel its unclaimed external
+requests and preserve unrelated local Turns. Synthetic Codex/provider tests
+qualify source semantics; installed/live-host stop, physical command cancellation
+and community enablement remain separate acceptance.
+
 Committed same-claim replay is separate from new admission: after a lost response
 and target revocation, the original host can recover its committed receipt; new
 claims and external result publication remain denied. Current validation uses real
@@ -1135,3 +1219,27 @@ host media and file delivery remain separate gaps. Regression covers model-wire
 image input, unchanged Session, replay, durable restart and download-time
 revocation; live provider/model acceptance is reported separately. No new
 Session authority, queue, worker or feature toggle is introduced.
+
+### Lark progress-edit budget and final-result recovery
+
+Private conversations and steward commissions reuse persisted Turn events to
+edit one progress message; the Core terminal answer still owns the full result.
+Progress allows at most 12 edit attempts, persisted before the provider write.
+Unknown receipts consume the budget and restart does not reset it. This is a
+conservative transport limit, not Lark's maximum allowance. After exhaustion,
+retain Turn events and the allowance for a final edit and necessary close notice.
+
+Older long tasks may already have exhausted the provider quota. Only an explicit
+`230072` response plus fresh readback proving the target body absent allows
+retaining the rejected-edit proof and sending the complete result separately
+through the existing source-session, audience and idempotent-send path. Never
+mark an exhausted draft successfully closed, rerun the model or recreate the
+Session. Unknown errors, lost receipts and unavailable readback retain recovery
+without a blind resend. If the result is verified but reaction cleanup remains,
+recover only its original result proof without sending again.
+
+Regression covers budget persistence across restart, final-result retention,
+explicit quota refusal, unknown failure, lost post-write receipt, unavailable
+readback, recovery of older failed journals and two-App isolation. Live provider
+delivery remains separate. Model completion, material intake and an intermediate
+card cannot substitute for final-message readback.

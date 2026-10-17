@@ -3,7 +3,7 @@ import { HANDOFF_MODES, EXECUTION_HANDOFF_MODES, type ExecutionHandoffMode } fro
 import { normalizeGoalDraft } from "../../../../../loopx/control_plane/collaboration/goal_draft.js";
 import { parseTurnStep, type TurnStep } from "./turn-steps.js";
 import { z } from "zod";
-import { actionSourceBasisSchema } from "./action-source-basis.js";
+import { actionSourceBasisSchema, todoUpdateSourceBasisSchema } from "./action-source-basis.js";
 
 import {
   todoApplyResultMatchesRequest,
@@ -651,6 +651,7 @@ export async function readTodoRequest(goalId: string, todoId: string, signal: Ab
   const result = z.object({
     ok: z.literal(true), goal_id: z.string(), todo_id: z.string(), text: z.string(),
     status: z.string(), archive_state: z.string(), updated_at: z.string().nullable(),
+    review_basis: todoUpdateSourceBasisSchema.optional(),
   }).parse(await requestJson<unknown>(`/api/chat/todo/detail?${query}`, {signal}));
   if (result.goal_id !== goalId || result.todo_id !== todoId) throw new Error("Task source changed");
   return result;
@@ -720,6 +721,7 @@ export async function createChatSession(
   mode: "resume_latest" | "new" = "resume_latest",
   signal?: AbortSignal,
   agentModelId?: string,
+  agentReasoningEffort?: string,
 ) {
   return requestJson<{
     agent_id: string;
@@ -735,23 +737,24 @@ export async function createChatSession(
     // silently re-point the steward channel away from its configured executor.
     // A project Session carries only the host-issued reference, never a Goal.
     body: JSON.stringify(context.kind === "project"
-      ? { context_kind: "project", project_ref: context.projectRef, agent_id: agentId, agent_model_id: agentModelId, mode }
-      : { goal_id: context.kind === "goal" ? context.goalId : "", agent_id: agentId, agent_model_id: agentModelId, mode, context_kind: context.kind }),
+      ? { context_kind: "project", project_ref: context.projectRef, agent_id: agentId, agent_model_id: agentModelId, agent_reasoning_effort: agentReasoningEffort, mode }
+      : { goal_id: context.kind === "goal" ? context.goalId : "", agent_id: agentId, agent_model_id: agentModelId, agent_reasoning_effort: agentReasoningEffort, mode, context_kind: context.kind }),
   });
 }
 
-export type AgentModelOption = { value: string; label: string };
+export type AgentModelOption = { value: string; label: string; reasoning_efforts?: string[] };
 export type AgentModelDiscovery = {
   ok: true;
   schema_version: "loopx_chat_agent_model_options_v1";
   agent_id: string;
   supported: boolean;
   model: { id: string; label: string; selected: string; options: AgentModelOption[] } | null;
+  reasoning_effort?: { id: string; label: string; selected: string; options: AgentModelOption[] } | null;
 };
 
-export function discoverAgentModelOptions(agentId: string, signal?: AbortSignal) {
+export function discoverAgentModelOptions(agentId: string, signal?: AbortSignal, goalId?: string, modelId?: string) {
   return requestJson<AgentModelDiscovery>("/api/chat/agent-model-options", {
-    method: "POST", signal, body: JSON.stringify({agent_id: agentId}),
+    method: "POST", signal, body: JSON.stringify({agent_id: agentId, ...(goalId ? {goal_id: goalId} : {}), ...(modelId ? {agent_model_id: modelId} : {})}),
   });
 }
 
@@ -769,6 +772,8 @@ export type ChatSessionSummary = {
   project_ref?: string | null;
   agent_id: string;
   agent_model_id?: string | null;
+  agent_reasoning_effort?: string | null;
+  agent_service_tier?: string | null;
   adapter_kind: string;
   channel_id?: string;
   status: string;
@@ -940,10 +945,12 @@ export async function acceptChatTurn(
   clientTurnId: string,
   attachments: ChatImageAttachmentInput[] = [],
   signal?: AbortSignal,
+  delivery?: "queue",
 ) {
   const body = JSON.stringify({
     message,
     client_turn_id: clientTurnId,
+    ...(delivery ? { delivery } : {}),
     ...(attachments.length ? { attachments: attachments.map((attachment) => ({
       data_url: attachment.dataUrl,
       id: attachment.id,
@@ -2504,6 +2511,12 @@ const privateConversationSchema = z.object({
   goal_scope: z.enum(["all_registered", "selected"]).nullable().optional(),
   audience: z.enum(["owner", "group"]).default("owner"), group_count: z.number().int().default(0),
   pending_count: z.number().int(), recovery_count: z.number().int(),
+  owner_attention: z.discriminatedUnion("available", [
+    z.object({available: z.literal(true), enabled: z.boolean(), revision: z.number().int(),
+      last_checked_at: z.number().nullable(), error_code: z.string().nullable(),
+      pending_count: z.number().int(), unconfirmed_count: z.number().int(), failed_count: z.number().int()}),
+    z.object({available: z.literal(false), error_code: z.string()}),
+  ]).optional(),
   agent_candidates: z.array(privateAgentSessionSchema).default([]), agent_targets: z.array(privateAgentTargetSchema).default([]),
 });
 const privateConversationStopRecoverySchema = z.object({binding_id: z.string(), project_ref: z.string(),
@@ -2532,6 +2545,13 @@ export async function disconnectPrivateConversation(bindingId: string, revision:
 export async function changePrivateAgentTarget(bindingId: string, revision: number, target: {session_id: string} | {target_ref: string}) {
   return privateConversationsSchema.parse(await requestJson<unknown>("/api/chat/lark/private-conversations/agent-targets", {
     method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({binding_id: bindingId, revision, ...target}),
+  }));
+}
+
+export async function changeOwnerNotifications(bindingId: string, bindingRevision: number, revision: number, enabled: boolean) {
+  return privateConversationsSchema.parse(await requestJson<unknown>("/api/chat/lark/private-conversations/owner-notifications", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({binding_id: bindingId, binding_revision: bindingRevision, revision, enabled}),
   }));
 }
 

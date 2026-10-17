@@ -42,8 +42,9 @@ acceptance rule, cost computation or new action.
 **Unchanged:** Todo, gate, quota, lifecycle, acceptance and usage authority;
 the Tasks board, W1 map, Chat, Files and the Stage 4 delivery section keep their
 contracts and become lenses or destinations of this page. **Default boundary:**
-the Overview composition is a default UI change and requires the owner's
-first-screen preview approval before M1 becomes default. **Not approved here:**
+the Overview composition is a default UI change. M1 follows the repository's
+first-screen evidence rule, with the concrete viewport in the PR description
+and ordinary refinements within authorized direction requiring no extra confirmation. **Not approved here:**
 new Todo fields (including display numbers), a lifetime usage aggregate,
 browser authoring of executable acceptance checks, Lark or CLI parity, and any
 live-team L1/L2 or G1 claim.
@@ -456,10 +457,49 @@ scientific scoring. The toolkit's
 is a compact native Goal lifecycle projection, initially for DeepSWE, not a
 complete research graph or quality assessment. The existing experiment board
 owns native runs, comparability and integrity; its counts do not prove research
-progress. A general deep-research evaluation service, product assessment-sidecar
-schema and calibrated model rubric are not implemented. Initial integration
-can consume the research owner's permitted, versioned analysis artifacts;
-these existing producers must not be relabeled as the missing service.
+progress. The opt-in [trajectory assessment producer](../../reference/trajectory-assessment.md)
+now owns a versioned input and result sidecar, source-bound fixed-pack registration,
+execution, cancellation and historical readback. The workspace consumes that same
+owner through its existing local Chat transport. It does not implement a general
+research evaluation service or independently calibrated rubric.
+
+The current product slice discovers a trusted host's registered pack for the
+selected owner Goal. Its title names the actual case and episode window before
+the single explicit analysis request; a matching result opens without another
+model call. The owner Goal, analyzed solver/run and fixed episode need not be the
+same history and must remain distinguishable. Unregistered cases are unavailable;
+automatic whole-run segmentation is not implemented. Ordinary users never prepare
+JSON paths or select an executable. Registration is a host/CLI preparation step,
+not a renderer operation or a grant of new source access.
+
+Results have three reading levels: the main question and original-objective
+benefit gap; the episode's benefit-test and evidence-adoption explanations;
+then optional individual judgments, original cited lines, method, coverage and
+separate analysis usage. A useful diagnostic prerequisite can coexist with an
+unperformed native utility test. There is no all-green quality summary or total
+score. Unknown population, uncalibrated model interpretation and historical
+applicability stay explicit. Closing, reopening and refreshing preserve the
+Goal-scoped selected pack without launching work. A stored running receipt is
+not presented as proof of current model activity.
+
+The numerical reading proposal reuses the same pack selection without opening or
+executing analysis. The toolkit's optional complete-session usage projection
+supplies the capture window, completed Turns, elapsed and within-Turn time,
+uncached/cached input and output. The first reading level names the window and
+excluded study costs; input already includes cache, and output already includes
+reasoning. A changed or missing capture retains historical values with an explicit
+warning, independently of assessment applicability. A pack without this producer
+shows unmeasured values, not zero. Case selection keeps the analysis panel closed
+when it was closed and remains available while the selected source is loading.
+
+Existing versioned assessment counts are a separate, optional reading level:
+yes/eligible, no and unknown for each criterion, with no combined score and no
+percentage when eligible is zero. They describe the selected sample, not the whole
+run or independent calibration. Native incumbent/best/final values, threshold
+time/cost, gain area and late marginal gain remain unavailable until the same
+owner supplies comparable source-bound facts. Neither the browser nor model prose
+may substitute for that producer. Packaged integration must distinguish this
+partial numerical journey from native-outcome qualification and installed adoption.
 
 Product and research must reconcile these existing producer/consumer facts
 before choosing a runtime schema; this table is an integration requirement,
@@ -502,7 +542,7 @@ This view does not authorize intervention in a frozen benchmark.
 | Copy the reference pattern literally (flat list, `#n`, lifetime runtime) | Rejected | Breaks the identity, liveness and unknown-is-not-zero invariants |
 | A separate Goal page route beside the workspace tabs | Rejected | Duplicates navigation; Overview is already the direct Goal destination |
 | A Python-served page projection | Rejected | The TypeScript presentation boundary is the established owner; a Python decision mirror is forbidden |
-| The W1 task map as every Overview's hero | Deferred | Ordinary work keeps its responsibility lens; research Goals use the whole-history Explore composition in Section 5.11, without turning task dependencies into research evidence; first-screen approval still applies |
+| The W1 task map as every Overview's hero | Deferred | Ordinary work keeps its responsibility lens; research Goals use the whole-history Explore composition in Section 5.11, without turning task dependencies into research evidence; first-screen PR evidence still applies |
 | Vitals on Overview only | Rejected | Owners working in Chat or Tasks would lose stop and needs-you context |
 | Lifetime totals summed from windows | Rejected | Double counting and retention gaps; lifetime belongs to the usage owner |
 
@@ -521,7 +561,8 @@ This view does not authorize intervention in a frozen benchmark.
   Agent time / Agent 用时, Cost / 成本, Last activity / 最近活动, Stopped / 已停止,
   Done / 已完成, Accepted / 已验收.
 - Default change: while under review, M1 may ship behind a local view toggle.
-  After first-screen approval it becomes the default, with release notes naming
+  After the required PR review and merge authorization it becomes the default,
+  with first-screen evidence in the PR description and release notes naming
   the changed Overview and masthead.
 
 ## 8. Migration and rollback
@@ -565,7 +606,7 @@ second upgrade.
 | Milestone | Shipped behavior | Entry gate | Exit evidence | Rollback |
 | --- | --- | --- | --- | --- |
 | M0 Contract | This RFC, the composition study and roadmap/RFC reconciliation | — | Docs governance smoke; owner review | Revert docs |
-| M1 Masthead and vitals | Persistent masthead with Stop/Resume readback on all Goal views; vitals from `goal_workspace_digest_v0`; Overview order Direction (read-only) → Needs you → existing sections | First-screen preview approval of the Goal page | V1, V2 (strip), V4, V6, V9 | Revert composition |
+| M1 Masthead and vitals | Persistent masthead with Stop/Resume readback on all Goal views; vitals from `goal_workspace_digest_v0`; Overview order Direction (read-only) → Needs you → existing sections | Goal first-viewport evidence in the PR description | V1, V2 (strip), V4, V6, V9 | Revert composition |
 | M2 Work lenses and rail | Now by owner with Board/Map lenses; All-work rail and Activity; shared selection and `todo` deep link; inline Add task; Results region | M1 | V2, V3, V6, V7, V9, V10 | Revert to M1 |
 | M3 Direction and return | Since-you-looked delta; target declaration through the acceptance owner | M2; D3 decided by its owner | V5, V8 | Hide declaration; delete marker |
 | M4 Live and expressive | W2 live state on rows and map from the execution observation owner; event motion; keyboard map and palette; dark inverse | M2; W2 observation available | V6 (motion, dark); live-team W2 acceptance | Disable motion/theme |
@@ -654,7 +695,55 @@ question to close. Research supplies permitted cases, assessment contracts and
 method qualification; product owns rendering, interaction and result consumption.
 This documentation establishes neither implementation, an available analysis
 provider, evaluator calibration, installed behavior nor scientific benefit.
-Any new first-screen composition still needs its concrete preview approval.
+New first-screen compositions follow the repository evidence rule: concrete
+viewport in the PR description, with no repeated approval for authorized refinements.
+
+The current author candidate combines the scoped paginated history reader with
+a default record-time lens and optional relationship view. Reading thirds,
+density, source labels and explicit decisions remain presentation projections;
+repeated decisions and delayed backfills must survive phase selection. Packaged
+validation now reads three authorized real research checkpoints (Portfolio,
+Graph and Ad placement), selected for actual downstream restoration, with all
+315 original Explore records preserved. Complete retained trajectories and
+source/restore manifests are pinned externally; the
+[reproduction guide](../../../examples/personal-workspace-browser/research-history.md)
+records hashes, coverage and redactions. All three sources lack explicit edges
+and parent links; date or touch-target grouping does not fill that collection
+gap. Independent coincident-point cases qualify precise pointer/keyboard access,
+including refresh and narrow screens, without altering the real captures.
+This is partial V11 evidence, not installed delivery or a completed V12 service.
+The static Lark example discloses its route/decision excerpt limits; it does not
+qualify the complete interactive history journey.
+
+**Checkpoint 2026-10-17 (V12 fixed-pack workspace integration, proposed).**
+The packaged workspace connects the registered-source producer to an explicit
+analysis action, cancellation, retry and cited result reading. Reading or
+refreshing an existing result never requests execution. All six analyzer-defined
+process judgments are primary: goal alignment, benefit testing, discrimination,
+information gain, evidence adoption and avoidable repetition. Each shows its
+producer-owned yes/eligible, no and unknown counts; zero eligibility is N/A.
+One optional disclosure reveals the episode, reason and citation; the shared
+reader opens original source lines. Method, result identity and scope remain
+inspectable. Usage and cost are secondary. Utility testing does not imply positive
+utility, and finding repetition is not a positive result; there is no total score. Disposable real-HTTP/process checks cover duplicate
+requests, cancellation, failed retry, owner isolation and changed sources;
+packaged browser checks cover selection races, reload, keyboard and narrow
+screens. A separately authorized real model journey exercises the same entry
+and reuses its completed job on refresh. This is proposed fixed-scope V12
+integration, not installed delivery, automatic preparation of arbitrary runs,
+independent scientific calibration or completion of V12. Host registration
+remains preparation outside the ordinary reading journey. CLI preparation uses
+the producer's existing interface; no new interactive Lark path is qualified.
+
+The follow-up native-readback proposal extends that same trusted registration
+with an optional provider outcome capture, scoped to the exact case/run/revision.
+The existing source disclosure separates first submission, best valid in capture,
+native-retained and final valid values, with original citations and historical/
+partial/unknown states. Submission order, not feedback arrival, identifies the
+candidate. This is not another scorer or automatic solver feedback. Captured
+solver usage and the current analysis attempt's receipt stay separate; full-study
+cost and causal benefit remain unknown. No first-viewport/hero/CTA change is
+introduced; six uncalibrated process judgments retain their existing role.
 
 ## 12. Open decisions
 

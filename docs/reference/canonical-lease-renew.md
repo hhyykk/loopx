@@ -51,7 +51,9 @@ can freeze the current Todo identity. Malformed frozen identities fail closed.
 Renewal, transfer and release preserve the frozen value and historical receipts.
 Current execution proof, acquire replay and inspection reject known repository
 drift with `lease_repository_divergence`; cleanup still uses exact owner/key/version.
-Changing retained work requirements is not a metadata-edit shortcut.
+Changing retained work requirements is not a metadata-edit shortcut: the
+[owner revision lifecycle](#revising-declared-work-requirements) retires the old
+grant atomically and requires a fresh acquisition for subsequent execution.
 
 JSON inspection exposes `lease.write_repository`; Markdown lease readback also
 shows the identity or `unknown (conservative overlap)`. This is a Goal-local,
@@ -95,9 +97,10 @@ if retained repository metadata differs for that physical checkout.
 Requests without a verified caller workspace retain ordinary exclusive scope
 checks, including against unknown legacy grants. Repository mismatch,
 redirected paths and a non-worktree root fail closed. Verified machine discovery
-currently supports macOS and Linux; other hosts retain ordinary leases. No
-workspace path or machine identifier is stored directly: only opaque digests
-and the existing public repository identity enter the private authority record.
+currently supports macOS, Linux and Windows; other hosts retain ordinary
+leases. No workspace path or machine identifier is stored directly: only
+opaque digests and the existing public repository identity enter the private
+authority record.
 
 Renewal preserves this identity. Acquire retries must use the same worktree,
 scopes and execution key; an alias resolving to the same worktree is valid.
@@ -172,6 +175,39 @@ The example assumes an active lease at version 3 and an unclaimed Todo or a Todo
 already assigned to the eligible receiver. Without `--transfer-claim`, transfer does not reassign the Todo
 claim. Neither form overrides an exclusion or widens write scopes. Use the actual readback
 versions, not these example numbers.
+
+### Ordinary task operations
+
+Use `todo update` for ordinary owner notes, evidence, priority, pause and resume.
+The canonical typed owner prepares current state and performs the authorized
+operation in one CAS; do not acquire a lease merely to edit a note. A pause can
+retire its current holder's lease atomically with note/evidence. Resume grants no
+execution; a new execution still uses this document's explicit lease lifecycle.
+See [Todo administrative and nonterminal updates](../project-agent-todo-contract.md#canonical-nonterminal-planning-updates).
+
+An explicit key/version remains a strict generation constraint. LoopX never
+silently replaces it, borrows a foreign holder or retries an ambiguous mutation
+as new work. Acquire, renew and transfer change execution authority and remain
+explicit. Every CLI lease refusal includes a routed `inspection.cli_args` command
+to read the actual holder/state/version; JSON and Markdown retain the original
+error. Parameter errors additionally explain missing and unsupported flags.
+Inspection is read-only and does not authorize the displayed lease's use.
+
+中文：普通本人任务的备注、证据、优先级、暂停和恢复直接使用 `todo update`，无需为改
+备注临时领租约。本人暂停可原子退休当前租约，恢复不授予执行。显式 key/version 仍是
+严格 generation 约束；不会自动替换、借用他人或把不确定提交作为新工作重试。
+领取、续期和转交执行权限仍须明确请求。所有 CLI lease 拒绝都提供带原路由的
+`inspection.cli_args`，可直接读取真实持有者、状态和版本；JSON/Markdown 保留原错误，
+参数错误另列缺失和冲突参数。读回不是使用凭证的授权。
+
+The synthetic deferred task below uses the same disposable canonical data in
+both views. The task detail now offers **Resume task** as its primary operation;
+completion proof is kept with completion. These compare source presentations,
+not an installed-App upgrade or a claim that a process stopped.
+
+| Previous task detail | Task detail with explicit resume |
+| --- | --- |
+| ![Deferred task with completion controls](../../apps/presentation/dashboard/smoke/assets/todo-lifecycle/before-deferred.png) | ![Deferred task with resume controls](../../apps/presentation/dashboard/smoke/assets/todo-lifecycle/after-deferred.png) |
 
 ### Action help and argument recovery
 
@@ -390,9 +426,12 @@ read the same task again: `resume_ready=true` allows acquisition under the usual
 owner/key/version checks. If the wait itself needs correction, use the existing
 authorized `todo update --resume-when ...` or `--clear-resume-when` operation;
 neither inspecting nor editing the wait grants execution authority.
-In hard-lease mode, ordinary edits still need an active execution proof. After
-release or expiry, use the existing narrow owner pause/reopen lifecycle, with a
-stable operation id, current provider revision and explicit reason:
+In hard-lease mode, execution-sensitive updates retain their active-proof or
+dedicated lifecycle admission. Ordinary owner text, note, evidence, reason and
+priority edits use the administrative provider-CAS path without acquiring a
+lease; see [administrative edits and explicit execution proof](../project-agent-todo-contract.md#administrative-edits-and-explicit-execution-proof).
+Correct an obsolete execution wait through the bounded owner pause/reopen
+lifecycle, with a stable operation id, current provider revision and explicit reason:
 
 ```bash
 loopx todo update --goal-id example-goal --todo-id todo_work --agent-id owner \
@@ -405,6 +444,7 @@ loopx todo update --goal-id example-goal --todo-id todo_work --agent-id owner \
 
 Read back between operations and acquire a fresh lease before executing. Do not
 attach an old lease proof or bundle ownership, text or work-requirement edits.
+Optional note/evidence may accompany each lifecycle step in its atomic update.
 
 在 canonical File、SQLite 和 PostgreSQL Goal 中，`todo_done` 和 `resume_at` 等待同时约束
 实际执行入口，而不只是候选任务展示。必须由真实前置 Todo 的 `done` 状态满足条件，
@@ -416,10 +456,68 @@ attach an old lease proof or bundle ownership, text or work-requirement edits.
 但有效 `active=false`。释放、历史完成读回、授权 supersede、普通分配和等待修复
 沿用原规则。前置任务正常完成或到达指定恢复时刻后，重新读回并按原 owner、key、
 version 规则继续执行。其他恢复条件及 governed amendment 的边界保持独立。
-hard-lease 普通编辑仍须提供有效执行 proof。租约释放或到期后，可按上面的既有窄范围
-流程，以明确理由、稳定操作 ID 和当前 provider revision 暂停并清除等待；读回后再用
-新 revision 明确重新打开，最后领取新租约。不能附带旧 proof、文案、归属或工作要求修改，
-也不能把暂停或重新打开当作执行授权。
+hard-lease 的执行敏感更新仍须有效执行 proof 或专属 lifecycle 准入；本人的普通说明、
+备注、证据、原因和优先级编辑走行政性 provider CAS，无需获取执行租约。
+修正过时等待时，可按上面的既有窄范围流程，以明确理由、稳定操作 ID 和当前
+provider revision 暂停并清除等待；读回后再用
+新 revision 明确重新打开，最后领取新租约。不能附带旧 proof、任务正文、归属或工作要求修改，
+也不能把暂停或重新打开当作执行授权；每步可原子附带备注和证据。
+
+### Revising declared work requirements
+
+In canonical **hard-lease** mode, the registered current Todo owner can revise
+the existing work-requirement fields through one `todo update`. The same provider
+transaction updates the declaration and releases the owner's active or expired
+lease. Absent or already released history needs no acquire/release preparation.
+The retained key, generation, repository and scopes remain historical facts;
+the update grants no execution and does not terminate a running process.
+
+```bash
+loopx todo update --goal-id example-goal --todo-id todo_work --agent-id owner \
+  --required-write-scope 'src/**' --required-write-scope 'tests/**' \
+  --required-capability filesystem_write --reason 'Include regression coverage' \
+  --update-operation-id revise-work
+loopx todo list --goal-id example-goal --todo-id todo_work
+loopx task-lease inspect --goal-id example-goal --todo-id todo_work
+```
+
+`work_requirements_transition` reports changed fields, lease retirement and
+`execution_authority_granted=false` in the preview, committed result and replay.
+Unchanged declarations preserve the current grant. After an actual revision,
+acquire a fresh generation with a new idempotency key and explicitly requested
+scopes before executing. Acquisition still checks the current Todo, repository,
+workspace, Goal policy and competing holders. Repository revisions preserve the
+old grant's frozen repository; the next grant binds the revised identity.
+That released history does not block the same claim owner's subsequent notes,
+pause/resume or further requirement/repository corrections without execution
+proof. These operations retain the entire old grant unchanged. An unreleased
+divergent grant, foreign retained holder, malformed repository or explicit old
+proof still rejects; the exception never applies to execution admission.
+
+This corrects the former default rejection of every retained requirement edit;
+it is limited to the existing hard-lease owner update path. Foreign retained
+holders, actor exclusions/bindings, archived/completed tasks and provider or
+registry conflicts remain fenced. Supplied proof must match one current active
+generation: stale, partial, expired or released proof is rejected and never
+silently replaced. Status, ownership, validation and dependency transitions
+cannot be bundled into this revision. Optional task copy, note, priority,
+reason and evidence may accompany it. Soft-claim behavior is unchanged.
+
+在 canonical **hard-lease** 模式中，当前已注册的 Todo owner 可通过一次既有
+`todo update` 修订工作要求。同一 provider 事务更新声明并释放本人有效或过期的
+旧租约；没有租约或已经释放时，无需先领取或再次释放。旧 key、代际、仓库和
+写入范围作为历史保留，修改不授予执行权，也不声称终止运行中的进程。
+预览、提交和重放的 `work_requirements_transition` 显示修改字段与租约结果；
+相同声明不会结束现有授权。真正修改后，必须用新幂等 key、明确写入范围重新
+申请租约；仓库修订只影响下一次授权，不改写旧授权的仓库身份。
+已释放的旧仓库历史不再阻断同一 claim owner 不带执行 proof 的后续备注、暂停/恢复、
+范围修订及再次纠正仓库；这些操作完整保留旧授权。未释放但仓库不符的授权、他人保留
+的租约、损坏仓库与显式旧 proof 仍被拒绝，此例外不用于执行准入。
+他人保留的租约、排除/绑定限制、归档/完成、provider 与 registry 冲突仍被拒绝；
+显式 proof 必须精确对应当前有效代际，陈旧、不完整、过期或已释放 proof 不会
+被自动替换。状态、归属、验证和依赖转换不能混在本次修订里；可附带普通正文、
+备注、优先级、原因及证据。此处明确改变的是 hard-lease owner 工作要求编辑的
+默认拒绝行为，soft-claim 规则保持原样。
 
 A successful readback is still a point-in-time proof, not a lock over subsequent
 external effects. Execution must retain its existing mutation fences; this
@@ -606,3 +704,40 @@ shadow outbox，并保留租约版本、generation、scope 及幂等回执；陈
 移除配置不会退役活跃 binding：启用 capture 及已有 binding 的恢复仍须持久准备
 并送达。本项只移除默认关闭时无用途的依赖，不改变 provider 默认值、不迁移 Goal、
 不删除受支持的 Markdown writer，也不授予删除 capture 历史和待处理 outbox 的权限。
+
+## Edit complete task requirements in the workbench
+
+For a local canonical Task with a recorded Agent owner, open its existing Task
+inspector and choose **Edit requirements**. The editor reads the entire original
+request, including text omitted from list previews. **Save requirements** is the
+owner's single write decision: the existing typed action prepares and applies
+the edit internally, then reads the exact Task back. It does not start or stop a
+process or grant execution authority. Existing completion and protected actions
+retain their separate review paths.
+
+This edits the Task's requirements prose. It preserves the admitted lease;
+repository, write-scope and capability declarations still use the separate
+work-requirement revision lifecycle above.
+
+The exact read supplies the existing canonical update basis (provider revision
+and registry fingerprint). A changed source refuses a new edit before writing;
+an intervening write after preparation still fails the native CAS. The draft is
+retained so the user can read current requirements, compare and save again. A
+lost successful response is reconciled through the original action journal, not
+by issuing another write. Readback failure stays unverified until the original
+result and exact source can be read.
+
+This local transport extends `todo.update` with an optional `review_basis` echo
+of `loopx_chat_canonical_update_basis_v0`. It is observation, not a lease or a new
+permission. The canonical Todo owner continues to decide actor, claim, lease,
+CAS and execution eligibility. Source-bound text uses the action journal's
+existing 8,000-character envelope; quick actions without the basis retain their
+400-character bound. Oversized requests remain readable and are never truncated
+into an edit. Legacy, remote, unidentified, unassigned and unavailable sources
+retain the read-only path. CLI behavior and Lark actions are unchanged.
+
+中文：在本机 canonical Task 的原详情中“修改要求”，完整原文直接进入编辑器，
+一次“保存要求”沿既有 typed action 内部准备、提交并精确读回；不要求填写租约或
+版本字段，也不新增确认页。要求改变可能使既有验收失效，不会启动或停止进程。
+来源变化时拒绝覆盖、保留草稿，可读取当前要求核对后再保存；响应丢失先对账原
+操作。只在完整来源和已记录负责人均可核实的任务开放编辑，其他来源仍可阅读。

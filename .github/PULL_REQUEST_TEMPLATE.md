@@ -110,6 +110,13 @@ after view. Include desktop and mobile when responsive layout changes, and inclu
 loading, empty, error, permission, or gated states when those states changed. Add
 a short recording only when still images cannot explain the interaction.
 
+Put the first viewport screenshot directly in this description, with the tested
+revision, data/build boundary and a working preview link when available. Refresh
+it for materially changed presentation. Ordinary authorized implementation and
+refinement do not require another user-confirmation round; reuse prior scoped
+direction. Ask only for an explicitly reserved presentation decision or a real
+scope/authority gap. See AGENTS.md's First-Screen Review Evidence rule.
+
 Use synthetic or public fixture data only. Do not upload live/private screenshots,
 even when the underlying access was authorized.
 -->
@@ -117,6 +124,7 @@ even when the underlying access was authorized.
 - UI impact: <!-- choose one: none | changed -->
 - Before:
 - After:
+- First viewport and preview: <!-- Embed the screenshot here; identify revision and prototype/packaged/installed boundary. N/A for no UI impact. -->
 - States and viewports shown:
 - Source data: <!-- choose one: none | synthetic | public_fixture -->
 - Attention review: <!-- Per docs/development/design.md: what earns its place through high-value information, essential interaction, or expressive visual presentation? Name consolidation/removal across the whole viewport, and how failures, uncertainty, and one-step controls remain available. -->
@@ -174,5 +182,6 @@ than attaching private fixtures, snapshot identifiers, raw output or infrastruct
 - [ ] Neither the diff nor this PR body/comments/attachments disclose private state, credentials, raw traces or verifier output, internal links, or local machine paths (including `.loopx/`, `.codex/goals/`, and live `ACTIVE_GOAL_STATE.md`).
 - [ ] I did not duplicate maintainer-owned benchmark work unless a maintainer split out a public issue for it.
 - [ ] I kept the change scoped to the linked issue/task.
+- [ ] Existing English/Chinese RFC pairs (including ledger entries) both have a diff, and the local premerge check `python3 scripts/check_rfc_bilingual.py --base origin/main --head HEAD` passes, or no paired RFC changed.
 - [ ] I completed the visual evidence section for UI changes, or marked UI impact `none`.
 - [ ] Every commit includes a DCO `Signed-off-by` trailer (`git commit -s`).
