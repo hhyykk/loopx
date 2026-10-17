@@ -231,6 +231,14 @@ added to status hot paths.
   nodes.
 - An unreadable Todo source returns `goal_map: null` and leaves the rest of the
   delivery review available.
+- The native map carries the existing `projection_envelope`, scoped to
+  `goal_task_map`. Actual Todo read time is distinct from assembly time;
+  missing read facts stay unknown. Unrenderable Todos, display-limit omissions
+  and unresolved relations prevent a whole-map completeness claim. A truncated
+  source has an unknown denominator. The outer delivery review inherits source
+  age and incomplete coverage from status and the map; an unreadable map alerts.
+  The UI and Markdown export disclose these flags without changing source-open
+  or execution authorization. See the [kernel read contract](../contracts/projection-envelope-contract.md).
 
 Like the predecessor lens, the map has no write authority. A drawn line is a
 recorded relation, not a readiness verdict; the resume evaluator and lifecycle

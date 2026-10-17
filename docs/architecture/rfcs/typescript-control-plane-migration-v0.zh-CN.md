@@ -745,6 +745,11 @@ evidence/handoff 的脱敏展示，适用于选中工作项的图。整 Goal 任
 一次请求；扩大的完整输入复用既有私有快照传输，不在普通传输上限处截断来源。
 HTTP delivery-review 的既有读取复用同一托管运行时代码版本作用域；provider
 读取和新鲜度检查仍由既有 owner 持有。
+原生地图现经既有 projection envelope owner 封装真实 Todo 读取时间、无法展示或
+超出上限的条目及未解析关系。HTTP 外层用一次整批封装请求继承 status 与地图来源；
+完整 HTTP 读取增加一次运行时调用，不增加逐节点调用。已交付读界面披露过期、
+不可读、部分或未知来源，导出保留封套。原来源打开和授权 owner 不变；这些元数据
+不成为新的执行或配置门槛。
 明确的语义修正：successor 谱系不再冒充完成
 依赖，unblocks 方向修正，补 Monitor generation 条件，上限处保留平行关系
 和菱形汇合边。详见[图协议](../../reference/protocols/task-graph-projection-v0.md#typed-todo-topology)。

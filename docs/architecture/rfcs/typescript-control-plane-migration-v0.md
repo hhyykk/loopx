@@ -1059,6 +1059,13 @@ One map still uses one request. Expanded complete inputs use the existing privat
 snapshot transport instead of truncating the source at the ordinary wire limit.
 The HTTP delivery-review composes its existing reads in one managed-runtime code
 revision scope; provider reads and freshness checks retain their owners.
+The native map now seals actual Todo-read time, unrenderable/display omissions
+and unresolved relations through the existing projection envelope owner.
+The HTTP wrapper inherits status and map sources in one coarse sealing request;
+this adds one runtime crossing to the complete HTTP read, not per-node calls.
+The shipped reader discloses stale, unreadable, partial or unknown sources and
+preserves their envelope in exports. Original source opening and authorization
+owners remain unchanged; metadata is not a new execution or configuration gate.
 This intentionally distinguishes successor lineage from completion dependencies,
 corrects unblocks direction, includes Monitor generation conditions and preserves
 parallel/diamond edges at the node cap. See the [graph contract](../../reference/protocols/task-graph-projection-v0.md#typed-todo-topology).
