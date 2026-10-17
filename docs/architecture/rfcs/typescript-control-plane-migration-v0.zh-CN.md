@@ -387,11 +387,23 @@ token／重试成本、source-mode 修复和常规短上下文／replan 完整�
 
 Replan 的义务结果规则现收敛到 `work_items/replan_semantics.ts`：接受结果选择、
 vision path／terminal 一致性校验与对应 refresh 输入投影共用同一 owner。
-Python 保留 progress 归一化／新颖性与持久化适配，不再重复义务匹配规则。
+`work_items/progress_delta.ts` 现在在同一资格请求内推导语义维度、终态覆盖及
+证据／blocker 新颖性；删除 Python 的 delta 与终态覆盖规则。Python 保留共享的
+observation／fingerprint 归一化、历史 codec 和持久化适配。TS 对完整的归一化窗口
+比较身份复用；更大的资格输入复用既有私有快照传输，不截断旧声明。更换 Turn／
+work-item 或刷新证据不能让旧 blocker 成为新结果，独立的 Vision 证据路径仍可使用。
+资格请求次数与输入错误顺序不变。共享 codec 随 refresh writer、replan history／
+context reader、external review 与 Explore evidence 消费者一起迁移后退役。
 这是有界规则收敛，不是 settlement writer 或存储迁移。先刻画既有接受语义，
 再修正所有 vision trigger 的可执行写入投影，并验证真实绑定 CLI 闭环、回读及
 资格范围错配反例。Checkpoint 恢复与 in-flight 规则仍由既有边界负责，
 不新增 capability、provider 或设置。
+
+有限的 refresh／checkpoint CLI 与独立 replan 资格判断复用既有 managed-runtime
+request scope。它只固定代码版本；source／provider 读取、canonical 写入、错误顺序与
+Turn 回执仍实时执行，保持原语义。晋升同时要求完整 File／SQLite CLI 资格与原生请求
+测量；减少指纹扫描本身不能证明收益。既往尾部失败、相同代码的 A/A 波动与当前资格
+分别保留在 PR 验证记录中。
 
 交付历史边界将 `classification`、`health_check` 与 `recommended_action` 视为
 叙述文本。它们不能生成或解除 follow-through obligation，不能证明 outcome，也
@@ -750,7 +762,19 @@ Handoff mode 的 legacy adapter 与原生 CAS／receipt 事务现共用 TS 空�
 Task graph topology 与 inventory/horizon 共用 `work_items/planning_relations.ts`。
 一轮纯 TS 请求拥有关系发现、稳定有界遍历、边去重与缺失/截断完整度；删除
 Python 的前驱索引、条件拆解和遍历。Python 保留 status 来源适配及节点、
-evidence/handoff 的脱敏展示。明确的语义修正：successor 谱系不再冒充完成
+evidence/handoff 的脱敏展示，适用于选中工作项的图。整 Goal 任务地图现在在
+同一 TS 拓扑请求内组合节点类型、元数据可见性、边和公共地图结构。Python 暂留共享的
+可展示来源、文本/状态及稳定 ID codec；元数据只对已准入节点做脱敏。剩余的
+选中工作项图和共享来源消费者一起迁移后，这些 codec 退役。一张地图仍只发
+一次请求；扩大的完整输入复用既有私有快照传输，不在普通传输上限处截断来源。
+HTTP delivery-review 的既有读取复用同一托管运行时代码版本作用域；provider
+读取和新鲜度检查仍由既有 owner 持有。
+原生地图现经既有 projection envelope owner 封装真实 Todo 读取时间、无法展示或
+超出上限的条目及未解析关系。HTTP 外层用一次整批封装请求继承 status 与地图来源；
+完整 HTTP 读取增加一次运行时调用，不增加逐节点调用。已交付读界面披露过期、
+不可读、部分或未知来源，导出保留封套。原来源打开和授权 owner 不变；这些元数据
+不成为新的执行或配置门槛。
+明确的语义修正：successor 谱系不再冒充完成
 依赖，unblocks 方向修正，补 Monitor generation 条件，上限处保留平行关系
 和菱形汇合边。详见[图协议](../../reference/protocols/task-graph-projection-v0.md#typed-todo-topology)。
 不改变生命周期准入、claim/lease 或默认 provider。来源仍可能不完整：本批
