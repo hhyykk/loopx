@@ -20,7 +20,7 @@ from sforge.harness.constants import get_admin_secret
 from sforge.harness.run_agent import run_agent
 from sforge.harness.task_spec import make_task_spec
 
-from benchmark.runtime.codex import TASK_ENTRIES
+from benchmark.runtime.codex import TASK_ENTRIES, turn_envelope_receipt
 from loopx.control_plane.work_items.stride_policy_codec import stride_strategy_options
 from benchmark.runtime.sforge import (
     DEFAULT_TIMEOUT_SECONDS, PROFILES, SForgeWorker,
@@ -29,7 +29,7 @@ from benchmark.runtime.sforge_backend import RecordingDockerBackend
 from benchmark.runtime.source import source_pins
 from benchmark.edgebench.prompts import (
     blind_task_prompt, best_only_task_prompt, native_task_prompt, native_task_instructions,
-    native_task_objective,
+    checkpoint_research_instructions,
 )
 from benchmark.edgebench.online_sampling import OnlineSampler
 from benchmark.edgebench.feedback import BestOnlyFeedback, FEEDBACK_MODES, validate_best_only
@@ -107,6 +107,9 @@ def main(argv=None):
                         help="New-run default: native public feedback; blind/best-only are explicit controls")
     parser.add_argument("--turn-envelope", action="store_true",
                         help="Opt-in short heartbeat context with same-invocation full captures")
+    parser.add_argument("--native-goal-continue", action="store_true",
+                        help="Opt-in: when a native Goal declares completion with budget left, start "
+                             "continuation Goals until the budget edge (native-goal worker only)")
     parser.add_argument("--model", required=True)
     parser.add_argument("--effort", choices=("low", "medium", "high", "xhigh"), required=True)
     parser.add_argument("--timeout", type=int,
@@ -118,6 +121,8 @@ def main(argv=None):
                          help="Heartbeat default: 6 settled effective work Turns")
     cadence.add_argument("--replan-after-todos", type=int, choices=range(1, 6),
                          help="Explicit completed-Todo cadence ablation for heartbeat profiles")
+    parser.add_argument("--planning-horizon-goal", action=argparse.BooleanOptionalAction, default=None,
+                        help="Opt-in full Goal in preselection horizon; --no-planning-horizon-goal explicitly disables it")
     parser.add_argument("--stride-strategy", choices=stride_strategy_options(),
                         help="Explicit heartbeat Goal-review strategy; omitted keeps the ordinary off treatment")
     parser.add_argument("--checkpoint-controller-file", type=Path,
@@ -133,6 +138,8 @@ def main(argv=None):
     parser.add_argument("--restore-source-todo")
     parser.add_argument("--restore-research-component", action="append", default=[],
                         help="Opt-in captured file component ID to restore at its original research path; repeat per component")
+    parser.add_argument("--restore-fresh-replan", action="store_true",
+                        help="Start a fresh conversation before checkpoint preparation and the first current replan")
     parser.add_argument("--restore-phase-extension-seconds", type=int, default=0,
                         help="Explicit authorized extra continuation time; omitted preserves the checkpoint's remaining phase")
     parser.add_argument("--eval-interval", type=int,
@@ -157,11 +164,15 @@ def main(argv=None):
         parser.error("--task-entry loopx-planned requires a heartbeat worker")
     if args.turn_envelope and args.worker not in {"heartbeat-resume", "heartbeat-explore"}:
         parser.error("--turn-envelope requires a heartbeat worker")
+    if args.native_goal_continue and args.worker != "native-goal":
+        parser.error("--native-goal-continue requires --worker native-goal")
     if (args.replan_after_turns is not None or args.replan_after_todos is not None
             ) and not args.worker.startswith("heartbeat-"):
         parser.error("Replan cadence requires a heartbeat worker")
     if args.stride_strategy is not None and not args.worker.startswith("heartbeat-"):
         parser.error("--stride-strategy requires a heartbeat worker")
+    if args.planning_horizon_goal is not None and not args.worker.startswith("heartbeat-"):
+        parser.error("--planning-horizon-goal requires a heartbeat worker")
     checkpoint_request = None
     if args.checkpoint_request is not None:
         if not args.worker.startswith("heartbeat-"):
@@ -180,6 +191,8 @@ def main(argv=None):
         parser.error("A non-negative phase extension requires an explicit warm checkpoint continuation")
     if args.restore_research_component and not args.restore_checkpoint:
         parser.error("Research component restoration requires an explicit warm checkpoint continuation")
+    if args.restore_fresh_replan and not args.restore_checkpoint:
+        parser.error("Fresh context requires an explicit warm checkpoint continuation")
     if args.restore_checkpoint and (not handoff or args.eval_interval != 0 or args.replan_after_todos is not None):
         parser.error("Warm continuation requires full native checkpoint capture, no periodic evaluation and effective-Turn cadence")
     # One directory is one attempt: never reuse native registration or overwrite
@@ -224,7 +237,13 @@ def main(argv=None):
             selection=task.judge.selection, score_direction=task.judge.score_direction)
         feedback_prompt = native_task_prompt(task.work.agent_query, task.submit_paths, **native_policy)
         workspace_instructions = native_task_instructions(task.submit_paths, **native_policy)
-        task_objective = native_task_objective()
+        if checkpoint_request is not None:
+            research = checkpoint_research_instructions(declaration, task.cwd)
+            workspace_instructions += research
+            # Keep the exact policy prefix shared with AGENTS.md; the original
+            # task remains the separately owned Goal objective.
+            feedback_prompt = workspace_instructions + f"---\n\n{task.work.agent_query}\n"
+        task_objective = task.work.agent_query
     config = SForgeConfig(
         agent_api_base_url=api_base_url, agent_api_key=api_key,
         agent_model=args.model, agent_effort=args.effort,
@@ -252,7 +271,7 @@ def main(argv=None):
         candidate = WarmStart(args.restore_checkpoint, args.restore_sha256, args.restore_config,
             args.restore_goal, args.restore_agent, args.restore_source_todo,
             int(time.time()) + args.timeout, args.replan_after_turns or 6,
-            tuple(args.restore_research_component))
+            tuple(args.restore_research_component), args.restore_fresh_replan)
         metadata = candidate.verify(task.cwd)
         snapshot = metadata["worker_file_snapshot"]
         capsule = args.restore_checkpoint / "components" / snapshot["native_capsule_component_id"]
@@ -265,8 +284,10 @@ def main(argv=None):
                          task_objective=task_objective,
                          task_entry=args.task_entry,
                          turn_envelope=args.turn_envelope,
+                         native_goal_continue=args.native_goal_continue,
                          replan_after_turns=args.replan_after_turns,
                          replan_after_todos=args.replan_after_todos,
+                         planning_horizon_goal=args.planning_horizon_goal,
                          **({"stride_strategy": args.stride_strategy}
                             if args.stride_strategy is not None else {}),
                          **({"checkpoint_request": checkpoint_request}
@@ -320,13 +341,15 @@ def main(argv=None):
            if agent.task_entry == "loopx-planned" else {}),
         "model": args.model, "effort": args.effort, "timeout_seconds": args.timeout,
         "loopx_commit": pins[0], "runner_commit": pins[1],
-        **({"turn_envelope": True} if args.turn_envelope else {}),
+        **turn_envelope_receipt(explicit=args.turn_envelope),
+        **({"native_goal_continue": True} if args.native_goal_continue else {}),
         "task_sha256": hashlib.sha256(task_file.read_bytes()).hexdigest(),
         "feedback": args.feedback, "internet": task.internet,
         "eval_interval": args.eval_interval, "submission_cooldown": args.submission_cooldown,
         "status": "starting", "score_countable": False,
         **({"restore_phase_extension_seconds": args.restore_phase_extension_seconds}
            if args.restore_phase_extension_seconds else {}),
+        **({"restore_fresh_replan": True} if args.restore_fresh_replan else {}),
         **({"restored_checkpoint_sha256": warm_start.sha256,
             "original_deadline_epoch": warm_start.deadline_epoch,
             "receiver_preparation_cadence": 1, "normal_replan_cadence": warm_start.normal_cadence}
@@ -339,6 +362,8 @@ def main(argv=None):
            if agent.replan_after_turns is not None else {}),
         **({"replan_after_completed_todos": agent.replan_after_todos}
            if agent.replan_after_todos is not None else {}),
+        **({"planning_horizon_goal": args.planning_horizon_goal}
+           if args.planning_horizon_goal is not None else {}),
         **({"stride_strategy": args.stride_strategy}
            if args.stride_strategy is not None else {}),
         **({"checkpoint_request_sha256": hashlib.sha256(checkpoint_request).hexdigest()}

@@ -1,10 +1,11 @@
-"""Failure-only observations for copied runtime drain and retirement fixtures."""
+"""Owned child cleanup and failure observations for copied runtime fixtures."""
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 
 from loopx.control_plane import effect_runtime
 
@@ -12,7 +13,7 @@ PREFIX = "loopx_fixture_retirement:"
 EVENTS = frozenset({"shutdown_requested", "close", "flush_enter", "flush_done", "locator_read_done",
     "locator_read_error", "locator_unlink_enter", "locator_unlink_done", "locator_unlink_error",
     "cleanup_finally", "lock_attempt", "lock_acquired", "lock_acquire_error", "lock_release_error",
-    "lock_release_result", "request_error"})
+    "lock_release_result", "request_error", "kill_enter", "kill_returned"})
 CODES = frozenset({"EACCES", "EPERM", "ENOENT", "EEXIST", "EIO", "EBUSY", "ENOTEMPTY", "EBADF",
     "ENOSPC", "EMFILE", "ENFILE", "ETIMEDOUT", "EINTR", "ENOTDIR", "EROFS", "EDQUOT", "EINVAL",
     "EISDIR", "ENAMETOOLONG", "mutation_lock_timeout"})
@@ -52,6 +53,8 @@ def instrument_copied_runtime(root: Path) -> None:
     text = _replace(cache.read_text(), 'const FLUSHING =', TRACE + '\nconst FLUSHING =')
     for before, after in (
         ('flushCompileCache();', 'fixtureTrace("flush_enter"); flushCompileCache(); fixtureTrace("flush_done");'),
+        ('process.kill(process.pid, "SIGKILL");',
+         'fixtureTrace("kill_enter", {main_thread: isMainThread}); process.kill(process.pid, "SIGKILL"); fixtureTrace("kill_returned");'),
         ('published = JSON.parse(await readFile(locator.infoPath, "utf8"));',
          'published = JSON.parse(await readFile(locator.infoPath, "utf8")); fixtureTrace("locator_read_done");'),
         ('} catch {\n      return;\n    }\n    // Both retirement paths',
@@ -86,7 +89,9 @@ def instrument_copied_runtime(root: Path) -> None:
     errors.write_text(text)
 
 
-def observe_copied_runtime(tmp_path: Path, monkeypatch, request) -> tuple[Path, list[int]]:
+def observe_copied_runtime(
+    tmp_path: Path, monkeypatch, request, *, processes: list[subprocess.Popen] | None = None,
+) -> tuple[Path, list[int]]:
     """Reuse the isolated source copy and retain stderr until failure readback."""
     source_root = effect_runtime._control_plane_root()
     root = tmp_path / "control_plane"
@@ -109,11 +114,29 @@ def observe_copied_runtime(tmp_path: Path, monkeypatch, request) -> tuple[Path, 
 
     def capture_stderr(args, *positional, **options):
         retained_stderr(args, options, root, captures)
-        return popen(args, *positional, **options)
+        process = popen(args, *positional, **options)
+        if processes is not None and str(root / "effect_runtime_server.ts") in args:
+            processes.append(process)
+        return process
 
     monkeypatch.setattr(effect_runtime.subprocess, "Popen", capture_stderr)
     monkeypatch.setattr(effect_runtime, "_control_plane_root", lambda: root)
     return root, captures
+
+
+def reap_copied_runtime(processes: list[subprocess.Popen], pid: int) -> None:
+    """Dispose only the captured child; PID liveness cannot prove ownership."""
+    matches = [process for process in processes if process.pid == pid]
+    assert len(matches) == 1, "fixture must own exactly one matching runtime child"
+    process = matches[0]
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        # Popen retains the Windows process handle and handles exit racing
+        # termination. Reaping also prevents a later PID from being mistaken
+        # for this child. Real termination/wait errors still fail the fixture.
+        process.terminate()
+        process.wait(timeout=3)
 
 
 def trace_events(raw: bytes) -> list[dict]:
@@ -135,6 +158,8 @@ def trace_events(raw: bytes) -> list[dict]:
                 item[key] = number
         if type(value.get("released")) is bool:
             item["released"] = value["released"]
+        if type(value.get("main_thread")) is bool:
+            item["main_thread"] = value["main_thread"]
         if "code" in value:
             item["code"] = value["code"] if isinstance(value["code"], str) and value["code"] in CODES else None
         if "syscall" in value:

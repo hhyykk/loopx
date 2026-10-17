@@ -90,7 +90,27 @@ and check** once. A configured contract needs only **Check delivery**. The
 advanced JSON import remains available for technical migration; it is not a
 prerequisite for this path.
 
-Agent preparation uses the existing typed action preview store:
+The Overview places this interaction in its Direction brief, before work and
+result lists. The same acceptance readback supplies the objective, criteria and
+current check result; it is not a second overview controller. Desktop expands
+the check details, while phones fold them without hiding the required action,
+its command effect or failure feedback. Technical records and migration controls
+remain in that disclosure. A configured recheck is a quiet secondary control;
+a prepared plan retains its explicit **Use plan and check** decision.
+
+In an explicitly enabled Goal LoopX conversation whose native tool advertises
+`prepare_check`, the Agent can call `loopx_collaboration` with
+`action=prepare_check`, a stable `operation_id` and the existing acceptance
+`document`. The host binds the Goal, registered preparing Agent and runtime;
+the model cannot replace those identities or roots. Paused, stopped, obsolete
+Turns and revoked execution configuration cannot prepare a plan. A conflicting
+retry retains the original proposal and requires reconciliation.
+
+This reuses the existing typed action preview store. It does not add a second
+configuration owner or enable LoopX mode automatically. Native thread tool
+schemas are fixed when created: an older thread may not advertise this action,
+and an unfinished native Goal is never replaced just to add tools. The existing
+registered-Agent CLI preparation remains available independently:
 
 ```bash
 loopx --format json goal-acceptance prepare --goal-id example-goal \
@@ -111,6 +131,22 @@ reconciled. Readback never runs checks. A stored successful receipt cannot
 certify changed files, independent reviewer identity, adoption or Goal completion.
 A later finished/cancelled plan does not resurrect an older draft.
 
+Prepared plans bind the reviewed acceptance configuration and declared work,
+rather than every update to the Goal's provider revision. Notes and work outside
+an explicit `selected_work` scope do not require preparing the same plan again.
+Changed covered requirements, a new owner configuration or another Goal instance
+still invalidate it. TypeScript classifies that context; each actual write keeps
+the current provider CAS. The original operation and configuration context remain
+bound to native receipts, including recovery after a lost response. Historical
+plans without a reviewed context retain their original strict revision check.
+
+Retrying preparation with the same operation, Goal, preparing Agent and document
+returns the original saved proposal, even after unrelated progress or an owner
+decision. It does not refresh the reviewed basis, rerun checks or reopen a
+cancelled, stale or applied plan. Changed intent still conflicts, and applying
+the recovered proposal still validates the current acceptance context. Its
+historical receipt is not current acceptance.
+
 Count the complete task: with an Agent-prepared plan already delivered, the owner
 has one required decision. If the original request still lacks acceptance intent
 or authority, that missing decision is an additional round; preparing a proposal
@@ -122,6 +158,19 @@ No-plan/default-off behavior remains unchanged, and no Lark action is introduced
 `prepare --execute` 只保存可审阅方案，不修改 Goal 规则、不执行检查。丢失回执先对账，
 不能自动重跑；历史通过不能认证变化后的版本。交互次数从原始意图算起，前置缺失的意图或
 授权不能从计数中省略。此入口沿用可信本机所有者边界，不证明远程身份、独立复核或实际采用。
+显式启用的 Goal LoopX 会话在原生工具声明 `prepare_check` 时，可直接准备相同方案；
+Goal、Agent 与运行目录由宿主固定，暂停、过期 Turn 或撤销配置后不能继续准备。
+旧原生线程的工具声明不会自动升级，也不会为新增工具替换未完成线程；未声明时保留 CLI
+准备路径。该入口不自动启用 LoopX、不配置或运行检查。
+准备响应丢失后，以相同操作、Goal、准备 Agent 和文档重试会读回原方案及其当前记录状态，
+不因进展或所有者决定而刷新审阅依据，也不重跑检查或重新打开已取消、过期、已采用的方案。
+意图改变仍报冲突；执行原方案仍检查当前依据，历史回执不代表当前验收。
+概览将同一个交付检查交互放在“方向”正文中，先于工作和成果列表；目标、条件和当前结果
+使用同一验收读回。桌面展开检查细节，窄屏默认折叠条件、版本记录与高级迁移入口，但不折叠
+必需动作、命令影响或失败反馈。已有配置的重查使用次要按钮，待采用方案保留明确的采用决定。
+待采用方案绑定实际审阅的验收规则与工作声明；备注或明确范围外的工作变化，不要求重复准备。
+覆盖任务要求、所有者配置或 Goal 实例变化仍使方案失效。TypeScript 判断依据，写入继续使用
+当前 provider CAS；原操作与配置依据由原生回执保留。旧方案维持原来的严格版本检查。
 
 For advanced CLI configuration, inspect the current provider revision:
 
@@ -375,7 +424,9 @@ status 同时在独立的 `run_history.goals[].artifact_lifecycle` 和 Markdown 
 所有者可为已注册且**已提升到 canonical authority** 的 Goal 显式启用版本化验收合同。
 命令不会自动提升 provider，canonical 读取失败也不回退到旧 Markdown。
 三个明确决定是：目标与验收条件、现有推进任务与条件的关联、是否启用这项治理。
-合同归既有 Goal authority 所有，Dashboard 只读，不新增配置编辑器或 provider。
+合同归既有 Goal authority 所有，Dashboard 展示其检查结果，并通过同一 owner 执行授权操作；
+不新增独立配置 owner 或 provider。普通路径采用上方的 Agent 准备与原位检查，以下 CLI/JSON
+步骤保留给高级配置及迁移。
 
 在 Goal 的交付工作区先运行
 `loopx --format json goal-acceptance inspect --goal-id example-goal`，
@@ -599,8 +650,12 @@ Workspace discovery in this regression is synthetic; it does not establish
 installed-App adoption or the live L1 correction episode.
 
 
-Synthetic packaged views of the actual local-owner interaction (not an installed
-App or live team): prepared plan on [desktop](../../examples/personal-workspace-browser/oracle-controls-desktop.png)
-and [390px](../../examples/personal-workspace-browser/oracle-controls-mobile.png);
-current result on [desktop](../../examples/personal-workspace-browser/oracle-current-desktop.png)
-and [390px](../../examples/personal-workspace-browser/oracle-current-mobile.png).
+Packaged composition comparison on the canonical synthetic showcase workspace.
+The images illustrate placement and disclosure; the disposable SQLite regression
+above separately qualifies the operation. Neither proves installed-App adoption,
+model preparation or a complete one-round request.
+
+| View | Before | Contextual check |
+| --- | --- | --- |
+| Desktop | ![Earlier desktop](../../examples/personal-workspace-browser/check-overview-before-desktop.png) | ![Check in the Goal brief](../../examples/personal-workspace-browser/check-overview-desktop.png) |
+| 390px | ![Earlier phone](../../examples/personal-workspace-browser/check-overview-before-phone.png) | ![Phone check and folded details](../../examples/personal-workspace-browser/check-overview-phone.png) |

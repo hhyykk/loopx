@@ -6,6 +6,7 @@ from typing import Any
 
 from .capabilities.configuration_ui import build_capability_configuration_catalog
 from .capabilities.content_ops.reference import reference_configuration_descriptor
+from .capabilities.decision_context.catalog_entry import decision_context_configuration_descriptor
 from .control_plane.agent_context import agent_context_descriptor
 from .explore_graph import explore_configuration
 from .capabilities.todo_replan_cadence.machine_defaults import default_replan_cadence_configuration
@@ -242,8 +243,8 @@ def build_goal_configuration_catalog(
                     "cutover to canonical local authority."
                 ),
                 "effect": (
-                    "Captures transaction-bound Todo and task-lease mutations in "
-                    "the file-v0 shadow used by parity qualification."
+                    "Retains inspection and bootstrap controls for pre-cutoff "
+                    "file-v0 shadow lineage; normal writes no longer feed it."
                 ),
                 "does_not": [
                     "promote the Goal or fence legacy writers",
@@ -631,6 +632,8 @@ def build_goal_configuration_catalog(
                 "default": {"enabled": False},
                 "current": {
                     "binding_status": reward_memory.get("binding_status"),
+                    "registered_agents": list(reward_memory.get("registered_agents") or []),
+                    "agent_bindings": list(reward_memory.get("agent_bindings") or []),
                     "effective_available": reward_memory.get("effective_available")
                     is True,
                     "desired_automation": dict(
@@ -688,22 +691,22 @@ def build_goal_configuration_catalog(
                         goal_id,
                         "--reward-memory-config",
                         "<ignored-reward-memory-config>",
-                        "--reward-memory-agent",
+                        "--reward-memory-agent-id",
                         "<agent-id>",
                     ),
                     "apply_enable": _configure_command(
                         goal_id,
                         "--reward-memory-config",
                         "<ignored-reward-memory-config>",
-                        "--reward-memory-agent",
+                        "--reward-memory-agent-id",
                         "<agent-id>",
                         execute=True,
                     ),
                     "preview_disable": _configure_command(
-                        goal_id, "--clear-reward-memory-config"
+                        goal_id, "--reward-memory-agent-id", "<agent-id>", "--clear-reward-memory-config"
                     ),
                     "apply_disable": _configure_command(
-                        goal_id, "--clear-reward-memory-config", execute=True
+                        goal_id, "--reward-memory-agent-id", "<agent-id>", "--clear-reward-memory-config", execute=True
                     ),
                     "verify": [
                         inspect_command,
@@ -887,6 +890,7 @@ def build_goal_configuration_catalog(
         }
     )
     catalog["features"].append(reference_configuration_descriptor())
+    catalog["features"].append(decision_context_configuration_descriptor())
     overrides = machine_inheritable_goal_overrides or {}
     for feature in catalog["features"]:
         feature_id = str(feature.get("feature_id") or "")

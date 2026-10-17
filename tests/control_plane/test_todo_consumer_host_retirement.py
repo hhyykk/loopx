@@ -28,6 +28,14 @@ def cold_api(tmp_path, monkeypatch, consumer_distribution):  # noqa: F811
 
     def isolated_workspace(*args):
         result = list(workspace(*args))
+        # The shared cold-import fixture retains history/drain adapters. This
+        # stronger isolation oracle removes them only from its disposable copy;
+        # keep the pre-start assertion so a borrowed source cannot pass unnoticed.
+        receiver = result[-2] / "loopx"
+        for name in ("control_plane/coordination/runtime_shadow.py",
+            "control_plane/coordination/local_authority_shadow_adapter.py",
+            "control_plane/coordination/local_authority_shadow_outbox.py"):
+            (receiver / name).unlink(missing_ok=True)
         # The copied receiver is first, with only the selected dependencies;
         # -S prevents an editable finder restoring the removed modules.
         env = result[-1]
@@ -72,8 +80,8 @@ def test_app_import_actions_and_restart_without_legacy_consumers(cold_api, provi
 
 
 @pytest.mark.parametrize("provider", ["file", "sqlite"])
-def test_app_rejects_missing_lease_and_provider_without_legacy_consumers(cold_api, provider):
-    cold.test_app_enforces_lease_and_missing_provider_without_legacy_fallback(cold_api, provider)
+def test_app_copy_preserves_execution_and_provider_fences_without_legacy_consumers(cold_api, provider):
+    cold.test_app_copy_preserves_execution_and_provider_fences_without_legacy_fallback(cold_api, provider)
 
 
 def test_app_rejects_changed_source_and_backup_without_legacy_consumers(cold_api):
@@ -119,19 +127,15 @@ print(json.dumps({'todo_count': result['todo_count'], 'replayed': True}))
 def test_fresh_research_execution_and_historical_replay_use_retained_owners(
     tmp_path, provider, consumer_distribution,  # noqa: F811
 ):
-    from canonical_authority_fixture import initialize_canonical_authority
     from tests.capabilities import test_explore_research_evidence as research
-    from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
-    from loopx.control_plane.todos.list_readback import list_goal_todos
 
     # Seed through the existing source fixture, then use the selected copied
     # distribution for every CLI decision. No editable finder can restore it.
-    registry, runtime, log, observation = research.execution_fixture(tmp_path)
+    registry, runtime, log, observation = research.execution_fixture(
+        tmp_path,
+        provider=provider,
+    )
     state = tmp_path / "project/ACTIVE_GOAL_STATE.md"
-    todos = list_goal_todos(registry_path=registry, goal_id=research.GOAL, role="agent")["todos"]
-    initialize_canonical_authority(runtime, research.GOAL,
-        build_todo_runtime_shadow_projection(goal_id=research.GOAL, todos=todos, handoff_mode="soft_claim"),
-        state_path=state, provider=provider)
     package, command = consumer_distribution
     packet = tmp_path / "observation.json"
     packet.write_text(json.dumps(observation))

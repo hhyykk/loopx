@@ -1,11 +1,39 @@
 # Local authority: retirement cadence after integration
 
-- Current plan: October 7, 2026, `06b6caa07`; historical audit: `ce3862e33`; adoption follow-up: `71525ab90`, September 28, 2026; [中文](2026-09-28-retirement-cadence.zh-CN.md).
+- Current implementation checkpoint: October 16, 2026, #6396 landed at `a4483aaec`; historical 1.x plan: October 7, 2026, `06b6caa07`; historical audit: `ce3862e33`; adoption follow-up: `71525ab90`, September 28, 2026; [中文](2026-09-28-retirement-cadence.zh-CN.md).
 - Owners: overall roadmap R3/R4/R5/R6; shared authority D1–D3; TS migration T0–T4.
 - This replaces the **current inventory/estimates** in the September 27 recovery
   and Host-supervision ledgers, not their historical validation results.
 
-## Reconciled baseline
+<a id="current-candidate-checkpoint"></a>
+
+## Current implementation checkpoint (2026-10-16)
+
+Contributor-led [#6396](https://github.com/loopx-project/loopx/pull/6396) landed
+at `a4483aaec`, with the same complete tree as final PR head `404433aee`.
+The C1/T4 deletion package includes fork supplements, the native Core-version
+repair and [absorbed #6366 obligations](../../../../reference/local-authority-provider-selection.md#retirement-proposal-reconciliation).
+The compatible 1.4.2 release preceded it; the 2.0 cutoff is now on main, not a
+released-default or complete-adoption claim.
+
+| Boundary | Landed fact | Remaining work / retained obligation |
+| --- | --- | --- |
+| Ordinary Markdown mutation and capture producers | Obsolete writers and ordinary producers are removed; canonical creation/mutation, team-plan, Monitor and lease callers reuse existing typed owners. | Qualify final-main installed callers; do not repeat this deletion family. Keep permanent document IO and supported import/recovery. |
+| Ownership and historical recovery | Fresh execution/configuration accepts soft/hard; historical legacy codecs, exact release and original receipts remain. | Exercise affected installed Host/App paths, stale proofs, expired-but-unreleased leases and later-write preservation. Storage conversion is not lifetime adoption. |
+| Final combination | The post-#7 source and its installed repair have explicit tree/source mappings; later main merges match automatic trees and include #6597. | [Executed evidence](https://github.com/loopx-project/loopx/pull/6396#issuecomment-6208115093) stays pinned to its revisions. Graph equivalence and merge status do not certify an unexecuted final combination. |
+| Full backup and identity | M1 inert verification/readback exists; source/import history stays readable. | Existing complete-recovery M2/M3 and #5206 own capture consistency, lifetime/old-writer/effect drain and controlled adoption. Pending outboxes keep original receipt/cursor/disposition owners. |
+| Sustained/default qualification | New-Goal SQLite/hard-lease selection exists in source. | D2 retains formal volume/elapsed failures and missing rows; D3 and shared-authority 7.2 decide cohort versus released default separately. No cohort or soak starts here. |
+
+Use [R5's post-merge sequence](../../loopx-overall-roadmap-v0.md#post-6396-delivery-plan)
+and the [TS current frontier](../../typescript-control-plane-migration-v0.md#current-delivery-frontier-2026-10-02)
+for new work. The dated records below retain their original measurements and
+dependency judgments. Statements that ordinary source writers are reachable
+refer to their older baselines, not unfinished implementation on current main.
+Retire further adapters only with actual last-caller/compatibility evidence;
+historical recovery and provider/OS IO are not unused merely because writer
+retirement landed.
+
+## Historical reconciled baseline
 
 | Already merged | What no longer belongs in the remaining-work count |
 | --- | --- |
@@ -27,12 +55,12 @@ reimplementing them. Their scopes are dependencies only for affected callers;
 local default does not wait for unrelated cloud or hundred-Agent work.
 
 **File as the default store factory is not File as the default authority for
-all new/existing Goals.** Unpromoted Markdown writers remain reachable. Two
+all new/existing Goals.** At this historical baseline, unpromoted Markdown writers remained reachable. Two
 successful Goal migrations, or File↔SQLite transfer, do not prove their absence.
 No fixed “5–8 PRs remaining” is carried forward: below are named delivery and
 qualification boundaries, not a promise about defect count or merge count.
 
-## When and how to delete
+## Historical last-caller inventory and deletion rules
 
 | Boundary | Actual reachable code/caller | Earliest safe deletion and retained obligation |
 | --- | --- | --- |
@@ -126,9 +154,9 @@ C1, D2 and release-default adoption remain separate acceptance boundaries.
 
 <a id="current-closeout-validation-migration-and-deletion-2026-10-02"></a>
 
-## Current closeout: validation, migration and deletion (2026-10-07)
+## Historical closeout plan: validation, migration and deletion (2026-10-07)
 
-Rechecked against main `06b6caa07` and the linked merged PRs. This is the current
+Rechecked against main `06b6caa07` and the linked merged PRs. This was the
 execution plan for **R5 / D1–D3 / T0–T4**, replacing the previous A–D schedule;
 older measurements remain source-specific evidence. R6 is a separate successor.
 Storage format, authority selection and ownership policy are three distinct
@@ -927,7 +955,7 @@ legacy-writer retirement and formal failed/missing D2 evidence remain intact.
 
 ### Runtime retirement drains admitted effects
 
-The shared TS Effect server now counts pending handlers independently of TCP
+The shared TS Effect server now counts admitted, unfinished request handlers independently of TCP
 connections. The idle window starts after the last handler and private response
 sink finish. Explicit shutdown stops accepting connections, waits for admitted
 effects (including disconnected clients), and then removes only its own locator.

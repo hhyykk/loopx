@@ -80,8 +80,8 @@ def test_stale_markdown_cannot_admit_terminal_or_blocked_work(tmp_path, provider
 def test_exact_selection_reaches_work_beyond_display_limits(tmp_path, provider):
     project, runtime, registry, path, prefix = _source(tmp_path, provider=provider)
     if provider != "legacy":
-        # Canonical Todo admission does not need displayed rows. Goal intent
-        # and constraints remain required independently of the Todo provider.
+        # Goal intent remains readable, while its bounded Todo display cannot
+        # supply the exact candidate from the canonical provider.
         path.write_text(prefix)
     code, guard = _guard(project, runtime, registry)
     assert code == 0, guard
@@ -286,15 +286,17 @@ def test_migrated_hard_lease_can_write_settle_retry_and_continue(tmp_path, provi
     assert code == 0 and migrated["status"] == "applied", migrated
     assert Path(migrated["backup_path"]).is_file()
     assert migrated["execution_authority_granted"] is False
-    # Remove Todo display while retaining the independent Goal frame.
-    path.write_text(prefix)
+    goal_context = path.read_text().split("## Agent Todo")[0]
+    path.write_text(goal_context + "## Agent Todo\n\n")
 
     code, guard = _guard(project, runtime, registry)
     assert code == 0 and guard["decision"] == "run", guard
     assert guard["heartbeat_receipt"]["settlement_identity"]["todo_id"] == cli.TODO_ID
     update = ("todo", "update", "--todo-id", cli.TODO_ID, "--agent-id", cli.AGENT_ID,
               "--text", "Continue after policy migration")
-    code, rejected = run(*update)
+    # A migrated owner may edit copy, but migration supplies no execution proof.
+    code, rejected = run(*update, "--task-lease-idempotency-key", "not-acquired",
+                         "--task-lease-expected-version", "1")
     assert code == 1 and rejected["error_code"] == "handoff_mode_requires_lease", rejected
 
     lease_key = "migrated-delivery"

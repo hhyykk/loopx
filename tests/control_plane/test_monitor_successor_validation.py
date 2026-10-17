@@ -46,20 +46,21 @@ def test_public_monitor_poll_accepts_repository_and_action_aliases(tmp_path):
     assert successor["unblocks_todo_id"] == monitor["todo_id"]
 
 
-@pytest.mark.parametrize("provider", ["legacy", "file", "sqlite"])
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
 @pytest.mark.parametrize("explicit", [False, True])
-def test_monitor_priority_cli_and_readback(tmp_path, monkeypatch, provider, explicit):
+@pytest.mark.parametrize(("user_task_class", "default_user_priority"), [
+    ("user_action", "P1"),
+    ("user_gate", "P0"),
+])
+def test_monitor_priority_cli_and_readback(
+    tmp_path, monkeypatch, provider, explicit, user_task_class, default_user_priority,
+):
     from canonical_authority_fixture import isolate_sqlite_runtime
     from test_native_monitor_poll import _canonical
     from loopx.todos import update_goal_todo, list_goal_todos
 
     isolate_sqlite_runtime(tmp_path, monkeypatch)
-    if provider == "legacy":
-        registry, runtime, _ = _write_fixture(tmp_path)
-        monitor = _add_monitor(registry, text="Watch ordinary changes", target_key="public-target",
-            next_due_at="2000-01-01T00:00:00Z")
-    else:
-        registry, runtime, _, monitor = _canonical(tmp_path, provider=provider)
+    registry, runtime, _, monitor = _canonical(tmp_path, provider=provider)
     update_goal_todo(registry_path=registry, runtime_root_arg=str(runtime), goal_id=GOAL_ID,
         todo_id=monitor["todo_id"], agent_id=AGENT_ID, priority="P0")
     flags = ["--next-agent-priority", "P2", "--next-user-priority", "P3"] if explicit else []
@@ -67,10 +68,11 @@ def test_monitor_priority_cli_and_readback(tmp_path, monkeypatch, provider, expl
         "--agent-id", AGENT_ID, "--runtime-profile", "generic_cli",
         "--todo-id", monitor["todo_id"], "--result-hash", "priority-change", "--material-change",
         "--next-agent-todo", "Validate the transition", "--next-action-kind", "validate",
-        "--next-user-todo", "Review the result", "--next-user-task-class", "user_action",
+        "--next-user-todo", "Review the result", "--next-user-task-class", user_task_class,
         *flags, "--execute", registry_path=registry, runtime_root=runtime)
     writeback = result["todo_writeback"]
-    expected = {"agent": "P2", "user": "P3"} if explicit else {"agent": "P1", "user": "P1"}
+    expected = ({"agent": "P2", "user": "P3"} if explicit
+        else {"agent": "P1", "user": default_user_priority})
     for created, receipt in zip(writeback["next_todos"], writeback["successor_receipts"], strict=True):
         priority = expected[created["role"]]
         assert created["priority"] == receipt["priority"] == priority
@@ -79,17 +81,13 @@ def test_monitor_priority_cli_and_readback(tmp_path, monkeypatch, provider, expl
         assert next(row for row in current if row["todo_id"] == created["todo_id"])["priority"] == priority
 
 
-@pytest.mark.parametrize("provider", ["legacy", "file", "sqlite"])
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
 def test_monitor_priority_retry_keeps_original_intent(tmp_path, monkeypatch, provider):
     from canonical_authority_fixture import isolate_sqlite_runtime
     from test_native_monitor_poll import _canonical
 
     isolate_sqlite_runtime(tmp_path, monkeypatch)
-    if provider == "legacy":
-        registry, runtime, _ = _write_fixture(tmp_path)
-        monitor = _add_monitor(registry, text="Watch changes", target_key="public-target")
-    else:
-        registry, runtime, _, monitor = _canonical(tmp_path, provider=provider)
+    registry, runtime, _, monitor = _canonical(tmp_path, provider=provider)
     args = dict(registry_path=registry, runtime_root=runtime, goal_id=GOAL_ID,
         todo_id=monitor["todo_id"], agent_id=AGENT_ID, execute=True,
         generated_at="2026-09-09T12:00:00Z", result_hash="priority-a", material_change=True,

@@ -95,6 +95,18 @@ class ProtectedActionGate(ActionConflictError):
         super().__init__(self.gate["summary"])
 
 
+class _AgentUnavailableError(ValueError):
+    """Availability refusal from the existing endpoint eligibility owner.
+
+    Tool, trust and workspace admission failures remain ordinary ValueErrors;
+    callers must not infer this narrower condition from their message text.
+    """
+
+    def __init__(self, message: str, *, capability: Mapping[str, Any] | None = None) -> None:
+        self.capability = dict(capability) if capability is not None else None
+        super().__init__(message)
+
+
 def _opaque(value: Any, *, field: str) -> str:
     token = str(value or "").strip()
     if not _OPAQUE_ID.fullmatch(token):
@@ -232,11 +244,19 @@ class ChatActionService(
         chat_store: ChatSessionStore | None = None,
         runtime_controller: Any | None = None,
         workspace_roots: Sequence[Path] = (),
+        runtime_root_override: str | Path | None = None,
     ) -> None:
         self.store = store
         self.registry_path = Path(registry_path).expanduser().resolve()
         self.chat_store = chat_store
         self.runtime_controller = runtime_controller
+        # The runtime root the serving Chat selected (its --runtime-root). A
+        # creation on a registry that does not exist yet has no recorded root
+        # to follow, so the first Goal must persist where the service already
+        # keeps its own state, never in an implicit default beside it.
+        self.runtime_root_override = (
+            str(runtime_root_override) if runtime_root_override else None
+        )
         self.workspace_roots = tuple(
             Path(root).expanduser().resolve() for root in workspace_roots
         )
@@ -295,11 +315,53 @@ class ChatActionService(
         return goal
 
     def _registry_fingerprint(self) -> str:
+        """Identity of the registry a proposal was previewed against.
+
+        A fresh install has no registry until its first Goal is created. That
+        absence is a stable fact to fingerprint, so the first creation can be
+        reviewed and confirmed from the page; a registry that appears between
+        preview and apply still reads as a change and asks for a new review.
+        """
+
         try:
             content = self.registry_path.read_bytes()
+        except FileNotFoundError:
+            return "registry-absent"
         except OSError as exc:
             raise ValueError("the active LoopX registry is unavailable") from exc
         return hashlib.sha256(content).hexdigest()
+
+    def _creation_agent_eligibility(
+        self, agent_id: str, *, project: Path | None = None
+    ) -> dict[str, Any]:
+        """Availability refusal for a Goal's first Agent becomes a typed gate.
+
+        A fresh install often has no usable Agent yet. The owner who clicks
+        "Create a Goal" needs the reason in their own language and the way to
+        fix it, not a protocol sentence: the preview answers with a gate that
+        names the Agent and, when the catalog states it, why it is unavailable.
+        Nothing is written and nothing is granted; a working Agent still goes
+        through the same eligibility check.
+        """
+
+        try:
+            return self._agent_eligibility(agent_id, project=project)
+        except _AgentUnavailableError as exc:
+            row = exc.capability
+            gate: dict[str, Any] = {
+                "kind": "agent_unavailable",
+                "agent_id": agent_id,
+                "registered": row is not None,
+                "summary": f"The selected Agent ({agent_id}) is not available to start this Goal.",
+                "next_action": "Resolve the reported availability issue, then preview this request again.",
+                "detail": str(exc),
+            }
+            if row is not None:
+                for field in ("unavailable_reason", "executable", "environment_variable"):
+                    value = row.get(field)
+                    if isinstance(value, str) and value:
+                        gate[field] = value
+            raise ProtectedActionGate("goal.create", gate=gate) from exc
 
     def _agent_eligibility(
         self,
@@ -327,9 +389,9 @@ class ChatActionService(
             None,
         )
         if row is None:
-            raise ValueError("selected Agent endpoint is not registered")
+            raise _AgentUnavailableError("selected Agent endpoint is not registered")
         if row.get("available") is not True:
-            raise ValueError("selected Agent endpoint is not healthy")
+            raise _AgentUnavailableError("selected Agent endpoint is not healthy", capability=row)
         if requires_tools and row.get("tool_calls") is not True:
             raise ValueError("selected Agent endpoint cannot execute Goal tools")
         if str(row.get("trust_scope") or "") not in {"read_only", "workspace_write"}:
@@ -654,7 +716,9 @@ class ChatActionService(
             },
         )
         registry = self._registry()
-        runtime_root = resolve_runtime_root(registry, registry_path=self.registry_path).resolve()
+        runtime_root = resolve_runtime_root(
+            registry, self.runtime_root_override, registry_path=self.registry_path
+        ).resolve()
         objective = str(parameters.get("objective") or parameters["title"])
         if existing_goal is not None:
             # Registry publication precedes storage initialization. Resume the
@@ -1190,7 +1254,7 @@ class ChatActionService(
                 }
             )
             agent_id = str(normalized.get("agent_id") or "codex")
-            eligibility = self._agent_eligibility(agent_id, project=project)
+            eligibility = self._creation_agent_eligibility(agent_id, project=project)
             workspace_binding = self._goal_workspace_binding(
                 project, source_goal, requested_ref=str(normalized.get("workspace_ref") or "current")
             )

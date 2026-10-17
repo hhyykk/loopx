@@ -535,11 +535,17 @@ async fn perform(
     // A JoinError (task panic/cancellation) is an unknown-state failure just
     // like an install error: both must clear the same verification below, so
     // neither returns ahead of the recovery decision.
-    let installed: Result<(), String> =
-        tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-            .await
-            .map_err(|_| "app_install_failed".to_string())
-            .and_then(|result| result.map_err(|_| "app_install_failed".to_string()));
+    let installed: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        return crate::macos_update::install(&update, &bytes);
+        #[cfg(not(target_os = "macos"))]
+        update
+            .install(bytes)
+            .map_err(|_| "app_install_failed".into())
+    })
+    .await
+    .map_err(|_| "app_install_failed".to_string())
+    .and_then(|result| result);
     if installed.is_err() {
         // The pinned macOS installer renames the old App away before moving
         // the new one in, so a failed install does not by itself prove the
@@ -672,9 +678,10 @@ fn runtime_state_publishes_own_phase(error: &str) -> bool {
 }
 
 fn resume_runtime(app: &AppHandle) -> Result<crate::services::SelectedRuntime, String> {
+    use crate::runtime_ancestry::compare_official_commits;
     use crate::runtime_selection::{
-        compare_official_commits, is_private_runtime, prefer_current_bundle,
-        prefer_discovered_runtime, same_release_installation, Selection,
+        is_private_runtime, prefer_current_bundle, prefer_discovered_runtime,
+        same_release_installation, Selection,
     };
     let mut selection = crate::runtime_selection::selected(app)?;
     let mut installed = crate::services::runtime_identity_for_executable(&selection.executable);
