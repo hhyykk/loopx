@@ -8,6 +8,7 @@ from typing import Any
 
 from ...turn_identity import normalize_turn_instance_id
 from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
+from .replan_semantics_codec import project_replan_semantics
 from ..goals.goal_vision_state import normalize_goal_vision_state
 from ..todos.contract import (
     normalize_todo_task_domain,
@@ -331,7 +332,7 @@ def replan_writeback_requirements(
 ) -> dict[str, Any]:
     """Adapt the shared typed discharge policy for CLI and host projection."""
     try:
-        result = effect_runtime_result("work_item.replan_semantics.project", {
+        result = project_replan_semantics({
             "operation": "requirements", "obligation": dict(obligation),
         })
     except EffectRuntimeRejected as exc:
@@ -350,7 +351,7 @@ def replan_successor_transition_allowed(
 ) -> bool:
     """Ask the typed owner whether a Todo transition can settle this review."""
     try:
-        result = effect_runtime_result("work_item.replan_semantics.project", {
+        result = project_replan_semantics({
             "operation": "transition_eligibility", "obligation": dict(obligation),
             "stride_strategy": stride_strategy,
         })
@@ -367,7 +368,7 @@ def guarded_replan_transition_delta(
 ) -> dict[str, Any] | None:
     """Adapt revalidated canonical receipts to the TS-owned exact Turn gate."""
     try:
-        result = effect_runtime_result("work_item.replan_semantics.project", {
+        result = project_replan_semantics({
             "operation": "turn_transition", "guard_scoped": guard_scoped,
             "selected_obligation_id": selected_obligation_id,
             "transition_candidates": transition_candidates,
@@ -429,6 +430,9 @@ def semantic_delta_from_writeback(
     vision path, can contribute outcomes.
     """
 
+    # The same source serves novelty and cited-outcome replay; consume an
+    # iterable once without reopening or modifying its authority store.
+    runs = list(history_runs) if history_runs is not None else None
     baseline = obligation.get("progress_baseline")
     if not isinstance(baseline, Mapping):
         baseline = next(
@@ -461,14 +465,14 @@ def semantic_delta_from_writeback(
     claimed = list(window) if isinstance(window, list) else []
     if isinstance(coverage, list):
         claimed.extend(coverage)
-    if history_runs is not None and context is not None:
+    if runs is not None and context is not None:
         from .replan_context_codec import replan_evidence_rows
 
         # The readable context has a display budget; admission does not forget
         # an older claim merely because it was omitted from that display.
         claimed.extend(
             row["progress_observation"]
-            for row in replan_evidence_rows(history_runs, goal_id=context["goal_id"], agent_id=context["agent_id"])
+            for row in replan_evidence_rows(runs, goal_id=context["goal_id"], agent_id=context["agent_id"])
             if row["progress_observation"] is not None
         )
     elif context is not None and context.get("coverage_truncated"):
@@ -481,10 +485,19 @@ def semantic_delta_from_writeback(
     vision = dict(agent_vision) if isinstance(agent_vision, Mapping) else {}
     if vision:
         vision["state"] = normalize_goal_vision_state(vision.get("state"))
+    source_review = None
+    stride = vision.get("stride_decision")
+    review = stride.get("previous_review") if isinstance(stride, Mapping) else None
+    if (runs is not None and context is not None and context.get("stride_strategy") != "off"
+            and context.get("decision_followthrough") and isinstance(review, Mapping)):
+        from .replan_context_codec import replay_stride_review_evidence
+
+        source_review = replay_stride_review_evidence(context=context, review=review, runs=runs)
     try:
-        result = effect_runtime_result("work_item.replan_semantics.project", {
+        result = project_replan_semantics({
             "operation": "qualify", "obligation": dict(obligation),
             "observation_delta": observation_delta, "agent_vision": vision,
+            **({"stride_review_evidence": source_review} if source_review is not None else {}),
         })
     except EffectRuntimeRejected as exc:
         raise ValueError(str(exc)) from None
@@ -503,6 +516,7 @@ def build_replan_context(
     stride_strategy: str = "off",
     explore_context: Mapping[str, Any] | None = None,
     goal_acceptance_contract: Mapping[str, Any] | None = None,
+    todo_items: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from .replan_context_codec import project_replan_context
 
@@ -511,6 +525,7 @@ def build_replan_context(
         runs=newest_first_runs, obligation=obligation, source_status=source_status,
         goal_acceptance_contract=goal_acceptance_contract, stride_strategy=stride_strategy,
         history_newest_first=True, explore_context=explore_context,
+        todo_items=todo_items,
     )
 
 

@@ -139,7 +139,7 @@ def main():
                 raise ValueError("Reused point/configuration must be physical paths")
             packet = json.loads((point / "checkpoint.json").read_bytes())
             verified = effect_runtime_result("runtime.checkpoint_artifacts", {
-                "action": "verify", "root": str(point), "expected_sha256": packet["sha256"]})
+                "action": "verify", "root": str(point), "expected_sha256": packet["sha256"]}, large_local_snapshot=True)
             assert verified["integrity_verified"]
             metadata = packet["point_metadata"]
             assert metadata["held_decision_component_id"] and metadata["worker_file_snapshot"]["prepared_source_verified"]
@@ -181,7 +181,7 @@ def main():
             git_object = point / "components/task_workspace/.git/objects/ab/retained-object"
             assert git_object.read_text() == "Readonly source evidence" and git_object.stat().st_mode & 0o777 == 0o444
             config = _stage_source_configuration(container, metadata["native_session"], output / "native-config")
-        for name in ("ordinary", "stride", "fresh"):
+        for name in ("ordinary", "stride", "recapture"):
             stride = name != "ordinary"
             results = output / name
             results.mkdir()
@@ -190,7 +190,7 @@ def main():
             extra_env = {}
             extra_volumes = {}
             capture_supervisor = None
-            if name == "fresh":
+            if name == "recapture":
                 operator = output / "receiver-controller"
                 operator.mkdir(mode=0o700)
                 phase = operator / "phase-deadline"
@@ -223,15 +223,15 @@ def main():
                   {"LOOPX_JOINT_RECEIVER_POINT": "/point", "LOOPX_JOINT_RECEIVER_CONFIG": "/captured-config.toml",
                    "LOOPX_RUNTIME_ROOT": "/results/transport-runtime",
                    **({"LOOPX_JOINT_RECEIVER_STRIDE": "1"} if stride else {}),
-                   **({"LOOPX_JOINT_RECEIVER_FRESH": "1"} if name == "fresh" else {}), **extra_env},
+                   **extra_env},
                   output / f"{name}.log", capture_supervisor=capture_supervisor)
-            if name == "fresh":
+            if name == "recapture":
                 newer = [p for p in (publication / "published").iterdir() if p.is_dir() and (p / "checkpoint.json").exists()]
                 assert len(newer) == 1
                 recaptured = newer[0]
                 next_packet = json.loads((recaptured / "checkpoint.json").read_bytes())
                 check = effect_runtime_result("runtime.checkpoint_artifacts", {
-                    "action": "verify", "root": str(recaptured), "expected_sha256": next_packet["sha256"]})
+                    "action": "verify", "root": str(recaptured), "expected_sha256": next_packet["sha256"]}, large_local_snapshot=True)
                 assert check["integrity_verified"]
                 third = output / "grandreceiver"
                 third.mkdir()
@@ -269,7 +269,7 @@ def main():
                         source / "tests/control_plane/codex_checkpoint_fixture.py"]},
                    "image_id": image, "point_sha256": packet["sha256"],
                    "binary_sha256": {k: hashlib.sha256(p.read_bytes()).hexdigest() for k, p in binaries.items()},
-                   "ordinary_and_stride": True, "post_replan_fresh_context": True, "core_goal_without_benchmark": True,
+                   "ordinary_and_stride": True, "core_goal_without_benchmark": True,
                    "source_created_in_this_run": not bool(args.reuse_point),
                    "source_test_passed_in_this_run": not bool(args.reuse_point),
                    "automatic_full_recapture_sha256": next_packet["sha256"], "another_receiver_actual_work": True,

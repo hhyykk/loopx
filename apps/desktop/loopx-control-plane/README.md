@@ -37,10 +37,28 @@ unknown; this is maintenance of the App's own installation, not proof that one
 source revision is newer. A provably newer runtime remains selected. Both local HTTP services must expose the selected
 artifact's identity before the workspace opens.
 
+If anonymous GitHub ancestry lookup is unavailable, the App can reuse an
+existing GitHub CLI login for the same fixed public-repository GET. It never
+starts login or requests account permissions. Each tool has a three-second
+process deadline; missing, failed or unauthenticated `gh` leaves ancestry
+unknown. A successful non-ordering answer is not retried under another account.
+Core still owns wheel qualification; this read neither changes its identity
+rules nor grants Goal or account authority.
+
 The bundled runtime carries its Core package version from the archived wheel
-metadata. Main App build numbers (`0.0.0-main.…`) identify the native shell;
-they are not compared with CLI package versions. Older bundle metadata retains
-its previous shell-version fallback; this correction requires an App update.
+metadata. Native validation and ordering use Python's [PEP 440 version format](https://packaging.python.org/en/latest/specifications/version-specifiers/),
+including alpha, beta, release candidate, development, post-release and local
+versions. The original version string remains in the identity; parsing does not
+rewrite receipts or installation metadata. A stable package is newer than its
+same-base prerelease, so even an App-owned or installer-default fallback cannot
+downgrade it. Equal package versions still need source ancestry or the existing
+same-installation ownership rule. Invalid versions remain unavailable.
+
+Main App build numbers (`0.0.0-main.…`) identify the native shell; they are not
+compared with CLI package versions. Older bundle metadata retains its previous
+shell-version fallback. Only those historical Main shell versions use their
+release base for comparison; real Core prereleases keep their order. This
+correction requires an App update; updating the CLI alone cannot patch it.
 
 If the bundle is newer, or no selected CLI qualifies, the App prepares its
 bundled snapshot in its own data directory through the existing installer.
@@ -143,6 +161,7 @@ cargo run --example webcontent_recovery -- --baseline
 ```
 
 It reads no Goals or accounts and never targets an installed LoopX process.
+
 The fault injector uses a private WebKit process-id getter only in this example;
 production recovery uses the public Tauri termination hook.
 This controlled regression does not establish long-duration reliability or
@@ -177,6 +196,38 @@ counter and expands Recovery & updates. Unchanged invalid selections are
 rechecked at most every 30 seconds; an explicit recovery action wakes the
 supervisor immediately. It returns to the loading shape as soon as the
 snapshot leaves the terminal phase (for example while an explicit repair runs).
+
+### Returning After A Normal Close
+
+The packaged App remembers the selected local Goal, view, Agent and Todo when
+its main window closes or the App quits. Reopening uses the newly allocated
+loopback origin and returns to that selection without another navigation step.
+Selecting **LoopX 管家** before closing instead returns to Manager next time.
+This restores a reading position; it never submits a message or starts work.
+
+The optional `workspace-location.json` in the App's private data directory
+contains only those selection identifiers. It stores no origin, raw URL, prompt,
+credentials or report/session query. Missing, corrupt or obsolete preferences
+fall back to the ordinary workspace; unknown views fall back to the frontend's
+default. Boot and foreign pages cannot overwrite a saved local selection.
+Remote status sources and host-granted workspace contexts are not restored:
+they reopen at local Manager, so their Goal identifiers cannot be replayed
+against the local source. Vite development navigation is unchanged. Explicit
+runtime repair retains its existing root handoff; WebContent crash recovery
+continues to retain the current in-process route.
+
+For native qualification, use a separately identified packaged App with the
+real backend: select a local Goal and Agent page, quit normally, reopen, and
+check the same selection on the new port. Also check window-close, an explicit
+return to Manager and a corrupt preference in that disposable App profile.
+Bind the disposable registry and its `common_runtime_root` at the QA launch
+entrypoint, and set `LOOPX_USAGE_PING=0` for all synthetic Core invocations:
+a caller-only environment can be lost when a window tool or the
+system relaunches the bundle. Verify the reopened process's data route before
+observing or operating it; never use the installed App as a fault fixture.
+Retain Session IDs and active-Turn readbacks before and after; navigation is
+not evidence that work was resumed or accepted. Cross-platform and sustained
+use require their own qualification.
 
 ## Known Issues
 
@@ -301,6 +352,22 @@ npm run dev
 
 ## Validation
 
+For the ancestry fallback, use that isolated packaged App and a qualified Core
+fixture. A QA-only invalid `CURL_CA_BUNDLE` can deny curl's public read while the
+existing `gh` still reads the real relation. Compare the old and candidate
+native binaries with the same corrupt preference and immutable Core fixture;
+read both service identities and the saved selection after the window opens.
+Also check that unavailable public transports retain a qualified runtime and
+that normal reopening preserves the disposable Session. Remove faults from the
+QA launcher afterwards; never change the system proxy or certificate store.
+
+The viewport below is a separately packaged macOS QA shell with an empty
+synthetic Goal registry. It records a successful workspace opening, not model
+execution, model-selection qualification or an installed-product upgrade. The
+ancestry change adds no new UI control or configuration step.
+
+![Packaged QA workspace with zero Goals](docs/assets/native-ancestry-qa.jpg)
+
 ```bash
 cd apps/desktop/loopx-control-plane/src-tauri
 cargo fmt --check
@@ -311,6 +378,40 @@ cd ..
 ./scripts/dashboard.sh build
 npm run build
 ```
+
+To qualify the native supervisor against an actual installed Core, first build
+the runtime bundle as above with `LOOPX_USAGE_PING=0`, then run from `src-tauri`:
+
+```sh
+qa_root="$(mktemp -d)"
+mkdir "$qa_root/state"
+printf '%s\n' '{"goals":[]}' > "$qa_root/state/registry.global.json"
+(
+  set -e
+  export LOOPX_USAGE_PING=0
+  export LOOPX_REGISTRY="$qa_root/state/registry.global.json"
+  export LOOPX_RUNTIME_ROOT="$qa_root/state"
+  export LOOPX_TEST_PRIVATE_RUNTIME="$qa_root/runtime"
+  export LOOPX_TEST_BUNDLE="$PWD/../runtime"
+  cargo test --lib real_private_installer_keeps_the_default_cli_owner -- --ignored --nocapture
+  cargo test --lib real_private_runtime_serves_and_rejects_stale_identity -- --ignored --nocapture
+)
+```
+
+Both opt-in tests require the telemetry opt-out before invoking Core. A
+disposable registry does not isolate machine-wide usage reporting; this
+synthetic run must not contribute adoption or installation telemetry. The
+opt-out applies only to this test invocation and leaves user consent unchanged.
+
+This installs only in the disposable root. The second test uses an explicit
+local launch pin to route the production supervisor's two services to its own
+fresh empty registry and data directory. It checks both artifact identities,
+serves the packaged Chat document, reads zero Goals/Sessions, stops and reopens
+the services, and rejects
+a stale expected identity without leaving owned listeners. It does not launch
+the installed App, run a model, or qualify automatic runtime selection, native
+window reopening, signed replacement or rendered UI. The incognito WebKit
+regression above covers its separate navigation failure boundary.
 
 On macOS, also qualify a released artifact using the opt-in checks below
 (run from `src-tauri`, replacing the paths with downloaded release artifacts).

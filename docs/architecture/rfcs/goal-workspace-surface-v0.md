@@ -42,8 +42,9 @@ acceptance rule, cost computation or new action.
 **Unchanged:** Todo, gate, quota, lifecycle, acceptance and usage authority;
 the Tasks board, W1 map, Chat, Files and the Stage 4 delivery section keep their
 contracts and become lenses or destinations of this page. **Default boundary:**
-the Overview composition is a default UI change and requires the owner's
-first-screen preview approval before M1 becomes default. **Not approved here:**
+the Overview composition is a default UI change. M1 follows the repository's
+first-screen evidence rule, with the concrete viewport in the PR description
+and ordinary refinements within authorized direction requiring no extra confirmation. **Not approved here:**
 new Todo fields (including display numbers), a lifetime usage aggregate,
 browser authoring of executable acceptance checks, Lark or CLI parity, and any
 live-team L1/L2 or G1 claim.
@@ -305,6 +306,18 @@ rather than being copied.
   owner selects "Mark seen" or leaves the Goal after the line was shown.
 - The line is not a notification channel and does not touch the attention queue.
 
+For long-horizon research, the proposed [progress reading journey](../../product/use-cases/auto-research/long-horizon-progress-design.md)
+uses this page and its shared selection to connect a native outcome/time window,
+one episode/branch and inline versioned evidence. The already-open Goal needs
+no setup; one selection should expose what changed, its check and subsequent
+adoption or the exact gap. An optional comparison preserves window/focus and
+labels unmatched or unavailable evidence. A summary or Todo-count delta does
+not establish information gain or outcome improvement. Reuse the existing
+since-last-look and usage semantics above; do not invent a second cost ledger,
+progress percentage, live signal or writable graph. This is a design extension,
+not delivered M1/M2 behavior; packaged source/access/recovery and comprehension
+qualification remain required.
+
 ### 5.8 Direction and measurable target
 
 - When an acceptance contract is enabled, show its objective and criteria.
@@ -386,6 +399,142 @@ separate identity.
 
 ![Phone composition](assets/goal-workspace-surface-v0/goal-workspace-phone.jpg)
 
+### 5.11 Research Goals: whole-history Explore and on-demand analysis
+
+**Proposed product refinement; not implemented or scientifically qualified.**
+The default research view must answer what happened across the whole recorded
+research history, including a study lasting well over ten hours. A selected episode
+is a detail of that history, not the default unit of the page. This extends
+the existing Goal workspace and Explore read model; it adds no graph authority,
+scientific score, scheduler or evaluator implementation.
+
+**Layer 1 — default Explore history.** Opening a research Goal requires no
+configuration or extra model call. One graph covers its recorded time span,
+with questions and competing routes organizing attempts across Turns, explicit
+forks, inheritance, reversals, positive/negative evidence and subsequent
+decisions or observed adoption. Reuse the native outcome curve, measurement
+times and scoring conditions alongside the history. Task dependency edges,
+research relationships and outcome attribution retain their distinct meanings.
+Chronological neighbors are not causal or adoption links.
+
+Fit the whole covered interval initially. Semantic grouping and progressive
+detail may reduce density, but must preserve failed, abandoned and unfinished
+routes, later work, old anchors, waiting and observation gaps. State the
+requested interval, the interval actually observed and any unloaded pages or
+retention limits. A recent page or summary must not be labeled complete
+history. Missing attempt timestamps or route bindings remain unknown; a
+reader repair or replay does not rewrite the original historical record.
+Selecting a route/attempt once exposes its decisive authorized evidence,
+artifact/input version, check and next decision inline. Refresh, back and
+return to the whole graph preserve scoped focus or explain its invalidation.
+
+When only Explore records are available, label the scope as recorded Explore
+history. `recorded_at` is record time, including delayed analysis and historical
+backfills, not an established native attempt timestamp or complete route/adoption
+coverage. Parent/topic containment remains grouping even when an older projection
+encoded it as `supports` with `materialized_from=node_parent_id`; it is not
+scientific supporting evidence. Explicit source relationships retain their basis,
+without being promoted to independent verification.
+
+**Layer 2 — requested Agent analysis.** This is the product consumer of the
+benchmark research owner's deep trajectory evaluation, not a second judge
+built into the frontend. Reuse its analysis method and versioned result
+sidecar, then generate an explanatory graph and conclusions over the same
+history. The whole run and prospectively fixed comparison windows own coverage,
+native outcomes and marginal cost; the research owner defines episode
+segmentation, including cross-Turn episodes, and its explicit mapping through
+source references, submission ids and artifact digests in the same snapshot.
+A display grouping does not establish an
+evaluation unit. Rubric, calibration and scientific claims remain with the
+[long-horizon research program](long-horizon-harness-benchmark-research-program-v0.md#63-long-horizon-control-quality)
+and [research evaluation owner](research-exploration-control-plane-v0.md#15-evaluation-and-claim-boundary).
+
+**Current producers, not a completed analysis service.** Existing
+[`benchmark_behavior_finding_v0` / `benchmark_behavior_report_v0`](../../reference/benchmark-behavior-findings.md)
+support bounded `exploratory_behavior` observations and interpretations, not
+scientific scoring. The toolkit's
+[`public_trajectory_summary_v0`](../../../loopx/capabilities/benchmark_toolkit/README.md)
+is a compact native Goal lifecycle projection, initially for DeepSWE, not a
+complete research graph or quality assessment. The existing experiment board
+owns native runs, comparability and integrity; its counts do not prove research
+progress. The opt-in [trajectory assessment producer](../../reference/trajectory-assessment.md)
+now owns a versioned input and result sidecar, source-bound fixed-pack registration,
+execution, cancellation and historical readback. The workspace consumes that same
+owner through its existing local Chat transport. It does not implement a general
+research evaluation service or independently calibrated rubric.
+
+The current product slice discovers a trusted host's registered pack for the
+selected owner Goal. Its title names the actual case and episode window before
+the single explicit analysis request; a matching result opens without another
+model call. The owner Goal, analyzed solver/run and fixed episode need not be the
+same history and must remain distinguishable. Unregistered cases are unavailable;
+automatic whole-run segmentation is not implemented. Ordinary users never prepare
+JSON paths or select an executable. Registration is a host/CLI preparation step,
+not a renderer operation or a grant of new source access.
+
+Results have three reading levels: the main question and original-objective
+benefit gap; the episode's benefit-test and evidence-adoption explanations;
+then optional individual judgments, original cited lines, method, coverage and
+separate analysis usage. A useful diagnostic prerequisite can coexist with an
+unperformed native utility test. There is no all-green quality summary or total
+score. Unknown population, uncalibrated model interpretation and historical
+applicability stay explicit. Closing, reopening and refreshing preserve the
+Goal-scoped selected pack without launching work. A stored running receipt is
+not presented as proof of current model activity.
+
+The numerical reading proposal reuses the same pack selection without opening or
+executing analysis. The toolkit's optional complete-session usage projection
+supplies the capture window, completed Turns, elapsed and within-Turn time,
+uncached/cached input and output. The first reading level names the window and
+excluded study costs; input already includes cache, and output already includes
+reasoning. A changed or missing capture retains historical values with an explicit
+warning, independently of assessment applicability. A pack without this producer
+shows unmeasured values, not zero. Case selection keeps the analysis panel closed
+when it was closed and remains available while the selected source is loading.
+
+Existing versioned assessment counts are a separate, optional reading level:
+yes/eligible, no and unknown for each criterion, with no combined score and no
+percentage when eligible is zero. They describe the selected sample, not the whole
+run or independent calibration. Native incumbent/best/final values, threshold
+time/cost, gain area and late marginal gain remain unavailable until the same
+owner supplies comparable source-bound facts. Neither the browser nor model prose
+may substitute for that producer. Packaged integration must distinguish this
+partial numerical journey from native-outcome qualification and installed adoption.
+
+Product and research must reconcile these existing producer/consumer facts
+before choosing a runtime schema; this table is an integration requirement,
+not a new protocol or a claim that a producer already supplies every item:
+
+| Shared basis | Product consumption requirement |
+| --- | --- |
+| Source snapshot | Same Goal/source, revisions, full requested window, observed coverage, episode-to-event/artifact bindings and permitted audience; unknown and unallocated work retained |
+| Evaluation basis | Input digest and coverage, method/code revision, model/configuration only if used, assessment time, qualification, actual cost/coverage and comparable controls; proposed or uncalibrated judgments labeled as such |
+| Analysis result | One referenced, versioned sidecar and artifact digest with observations, interpretations, checks, adoption, supporting/counterevidence, uncertainty, abstentions and disagreements; generated graph claims point back to it |
+| Validity | Input/artifact or method changes leave the prior result readable on its historical basis and mark its current applicability unestablished; a new result does not silently replace the old one |
+
+With intent and scoped authority already present, one optional request should
+be enough: reuse a valid matching assessment or let the existing authorized
+Agent/execution owner prepare and perform analysis. Do not ask for source ids,
+provider selection or graph construction. Any additional decision must follow
+from a real missing fact, permission or cost boundary. Opening, refreshing or
+selecting history never starts analysis. Show unavailable permissions/budget,
+in-progress, cancellation, failure and retry through the existing action owner;
+failure leaves Layer 1 usable. Repeated clicks or navigation do not duplicate
+the request. Expose execution only when its owning path can actually perform it;
+otherwise explain its unavailability. Analysis cannot borrow a frozen solver's
+budget, cooldown or feedback opportunities. This RFC neither creates that action
+nor grants model/run budget.
+
+Keep the factual graph available while viewing the generated explanation.
+Observation, Agent interpretation, independent check and actual adoption remain
+separately sourced. A flat native score, many attempts, one review, a graph edge
+or an attractive explanation cannot establish benefit. Analysis never changes
+native scores or writes conclusions back as observed Explore facts. Only
+audience-authorized projections reach the workspace. Protected evaluator
+material requires a terminated solver **and** completed scoring, remains under
+its existing access boundary and never enters solver context or runtime feedback.
+This view does not authorize intervention in a frozen benchmark.
+
 ## 6. Alternatives and design choices
 
 | Alternative | Decision | Reason |
@@ -393,7 +542,7 @@ separate identity.
 | Copy the reference pattern literally (flat list, `#n`, lifetime runtime) | Rejected | Breaks the identity, liveness and unknown-is-not-zero invariants |
 | A separate Goal page route beside the workspace tabs | Rejected | Duplicates navigation; Overview is already the direct Goal destination |
 | A Python-served page projection | Rejected | The TypeScript presentation boundary is the established owner; a Python decision mirror is forbidden |
-| The W1 map as the Overview hero | Deferred | The map is a lens; "what needs me" is faster as a list; first-screen approval would still apply |
+| The W1 task map as every Overview's hero | Deferred | Ordinary work keeps its responsibility lens; research Goals use the whole-history Explore composition in Section 5.11, without turning task dependencies into research evidence; first-screen PR evidence still applies |
 | Vitals on Overview only | Rejected | Owners working in Chat or Tasks would lose stop and needs-you context |
 | Lifetime totals summed from windows | Rejected | Double counting and retention gaps; lifetime belongs to the usage owner |
 
@@ -412,7 +561,8 @@ separate identity.
   Agent time / Agent 用时, Cost / 成本, Last activity / 最近活动, Stopped / 已停止,
   Done / 已完成, Accepted / 已验收.
 - Default change: while under review, M1 may ship behind a local view toggle.
-  After first-screen approval it becomes the default, with release notes naming
+  After the required PR review and merge authorization it becomes the default,
+  with first-screen evidence in the PR description and release notes naming
   the changed Overview and masthead.
 
 ## 8. Migration and rollback
@@ -436,6 +586,8 @@ the local delta marker can be deleted at any time without effect.
 | V8 Target declaration (M3) | Preview, confirm, CAS conflict, readback; Agent-role invocation | Owner path succeeds; conflict shows the newer revision; Agent role cannot configure | Executable checks out of scope |
 | V9 No side effects | Browser network assertions while opening, refreshing, switching lenses and opening the palette | No action, quota or validator request | — |
 | V10 Render budget | 200-node Goal (the map node limit) | Threshold frozen before measuring, then met | Not live-team display scale |
+| V11 Whole research history | Packaged UI and real read-only owner over an authorized multi-hour history with competing routes and multiple attempts; flat best score, negatives, old/missing anchors, absent timestamps/relations, pagination, duplicates, out-of-order events, disconnect and another Goal | Default zero-configuration whole covered interval; gaps/partiality explicit; one optional selection exposes decisive evidence; refresh/back, 390px, keyboard and reduced motion preserve meaning; no inferred causal edge or execution effect | A synthetic graph qualifies a prototype only; incomplete coverage cannot qualify complete history |
+| V12 Shared deep analysis | The same pinned research assessment consumed by the packaged workspace, including uncalibrated/abstaining results, changed inputs/method, denied access/budget, repeated request, cancellation and failed/retried analysis | One authorized request reuses a matching result or executes once; source-linked explanation agrees with the assessment's source/version/coverage; stale results stay historical; Layer 1 survives failure; no scoring/solver-feedback side effect | Product usability and independent benchmark/evaluator qualification require separate evidence; specification or model agreement is not calibration |
 
 Synthetic fixtures may prove composition. Journeys V4, V5, V7 and V8 also need
 the real owning backend on disposable state. A skipped row is not green.
@@ -454,7 +606,7 @@ second upgrade.
 | Milestone | Shipped behavior | Entry gate | Exit evidence | Rollback |
 | --- | --- | --- | --- | --- |
 | M0 Contract | This RFC, the composition study and roadmap/RFC reconciliation | — | Docs governance smoke; owner review | Revert docs |
-| M1 Masthead and vitals | Persistent masthead with Stop/Resume readback on all Goal views; vitals from `goal_workspace_digest_v0`; Overview order Direction (read-only) → Needs you → existing sections | First-screen preview approval of the Goal page | V1, V2 (strip), V4, V6, V9 | Revert composition |
+| M1 Masthead and vitals | Persistent masthead with Stop/Resume readback on all Goal views; vitals from `goal_workspace_digest_v0`; Overview order Direction (read-only) → Needs you → existing sections | Goal first-viewport evidence in the PR description | V1, V2 (strip), V4, V6, V9 | Revert composition |
 | M2 Work lenses and rail | Now by owner with Board/Map lenses; All-work rail and Activity; shared selection and `todo` deep link; inline Add task; Results region | M1 | V2, V3, V6, V7, V9, V10 | Revert to M1 |
 | M3 Direction and return | Since-you-looked delta; target declaration through the acceptance owner | M2; D3 decided by its owner | V5, V8 | Hide declaration; delete marker |
 | M4 Live and expressive | W2 live state on rows and map from the execution observation owner; event motion; keyboard map and palette; dark inverse | M2; W2 observation available | V6 (motion, dark); live-team W2 acceptance | Disable motion/theme |
@@ -532,6 +684,66 @@ The M1 subset does not establish GQ08/GQ09 or live-team L1 completion.
 This track runs beside R2/R3, like the W-track. It makes their outcomes legible
 and does not pre-empt R1/R2 P0 repairs. It advances no L1, V4 or G1 gate. CLI
 and Lark adoption of the digest are separate qualifications.
+
+**Checkpoint 2026-10-16 (research-history refinement, proposed).**
+Section 5.11 corrects a selected-episode-first journey: the default is one
+whole-history Explore graph, followed by optional detail and requested deep
+analysis sharing the benchmark owner's method and result. Deliver the read-only
+history prototype and V11 packaged journey first; integrate the existing
+authorized analysis action and V12 next, without waiting for every scientific
+question to close. Research supplies permitted cases, assessment contracts and
+method qualification; product owns rendering, interaction and result consumption.
+This documentation establishes neither implementation, an available analysis
+provider, evaluator calibration, installed behavior nor scientific benefit.
+New first-screen compositions follow the repository evidence rule: concrete
+viewport in the PR description, with no repeated approval for authorized refinements.
+
+The current author candidate combines the scoped paginated history reader with
+a default record-time lens and optional relationship view. Reading thirds,
+density, source labels and explicit decisions remain presentation projections;
+repeated decisions and delayed backfills must survive phase selection. Packaged
+validation now reads three authorized real research checkpoints (Portfolio,
+Graph and Ad placement), selected for actual downstream restoration, with all
+315 original Explore records preserved. Complete retained trajectories and
+source/restore manifests are pinned externally; the
+[reproduction guide](../../../examples/personal-workspace-browser/research-history.md)
+records hashes, coverage and redactions. All three sources lack explicit edges
+and parent links; date or touch-target grouping does not fill that collection
+gap. Independent coincident-point cases qualify precise pointer/keyboard access,
+including refresh and narrow screens, without altering the real captures.
+This is partial V11 evidence, not installed delivery or a completed V12 service.
+The static Lark example discloses its route/decision excerpt limits; it does not
+qualify the complete interactive history journey.
+
+**Checkpoint 2026-10-17 (V12 fixed-pack workspace integration, proposed).**
+The packaged workspace connects the registered-source producer to an explicit
+analysis action, cancellation, retry and cited result reading. Reading or
+refreshing an existing result never requests execution. All six analyzer-defined
+process judgments are primary: goal alignment, benefit testing, discrimination,
+information gain, evidence adoption and avoidable repetition. Each shows its
+producer-owned yes/eligible, no and unknown counts; zero eligibility is N/A.
+One optional disclosure reveals the episode, reason and citation; the shared
+reader opens original source lines. Method, result identity and scope remain
+inspectable. Usage and cost are secondary. Utility testing does not imply positive
+utility, and finding repetition is not a positive result; there is no total score. Disposable real-HTTP/process checks cover duplicate
+requests, cancellation, failed retry, owner isolation and changed sources;
+packaged browser checks cover selection races, reload, keyboard and narrow
+screens. A separately authorized real model journey exercises the same entry
+and reuses its completed job on refresh. This is proposed fixed-scope V12
+integration, not installed delivery, automatic preparation of arbitrary runs,
+independent scientific calibration or completion of V12. Host registration
+remains preparation outside the ordinary reading journey. CLI preparation uses
+the producer's existing interface; no new interactive Lark path is qualified.
+
+The follow-up native-readback proposal extends that same trusted registration
+with an optional provider outcome capture, scoped to the exact case/run/revision.
+The existing source disclosure separates first submission, best valid in capture,
+native-retained and final valid values, with original citations and historical/
+partial/unknown states. Submission order, not feedback arrival, identifies the
+candidate. This is not another scorer or automatic solver feedback. Captured
+solver usage and the current analysis attempt's receipt stay separate; full-study
+cost and causal benefit remain unknown. No first-viewport/hero/CTA change is
+introduced; six uncalibrated process judgments retain their existing role.
 
 ## 12. Open decisions
 

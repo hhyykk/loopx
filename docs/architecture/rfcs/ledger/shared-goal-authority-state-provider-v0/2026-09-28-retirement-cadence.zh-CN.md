@@ -1,11 +1,34 @@
 # 合并后的本地权威退役节奏
 
-- 当前计划：2026-10-07，`06b6caa07`；历史核对基线：`ce3862e33`；采用后续核对：`71525ab90`，2026-09-28；[English](2026-09-28-retirement-cadence.md)。
+- 当前实现检查点：2026-10-16，#6396 已合入 `a4483aaec`；历史 1.x 计划：2026-10-07，`06b6caa07`；历史核对基线：`ce3862e33`；采用后续核对：`71525ab90`，2026-09-28；[English](2026-09-28-retirement-cadence.md)。
 - Owner：总 roadmap R3/R4/R5/R6、shared authority D1–D3、TS 迁移 T0–T4。
 - 本记录替代 9 月 27 日 recovery、Host supervision 记录的**当前清单和估算**，
   不替代其历史验证结果。
 
-## 重新核对的基线
+<a id="current-candidate-checkpoint"></a>
+
+## 当前实现检查点（2026-10-16）
+
+贡献者主导的 [#6396](https://github.com/loopx-project/loopx/pull/6396) 已合入 `a4483aaec`，
+与最终 PR head `404433aee` 完整 tree 相同。C1/T4 删除包包含 fork 补缺、原生 Core
+版本修复及 [#6366 已吸收义务](../../../../reference/local-authority-provider-selection.md#retirement-proposal-reconciliation)。
+兼容 1.4.2 已先发布；2.0 截止已进入 main，不等于发布默认或完整采用资格完成。
+
+| 边界 | 已落地事实 | 剩余工作／保留义务 |
+| --- | --- | --- |
+| 普通 Markdown mutation 与 capture producer | 废弃 writer 和普通 producer 已删除；canonical 创建／写入、team-plan、Monitor 和 lease caller 复用既有 typed owner。 | 验证最终 main 的安装 caller，不重做该删除家族；保留永久文档 IO 及受支持导入／恢复。 |
+| 所有权与历史恢复 | fresh 执行／配置接受 soft／hard，历史 legacy codec、精确 release 和原回执保留。 | 验证受影响安装 Host／App、旧 proof、过期未释放租约及后写保持；存储转换不等于生命周期接纳。 |
+| 最终组合 | #7 后的源码及安装修复有明确 tree／source 对应；后续 main 合并等于自动 tree，并含 #6597。 | [已执行证据](https://github.com/loopx-project/loopx/pull/6396#issuecomment-6208115093) 保留原 revision；图等价和合入状态不认证未执行的最终组合。 |
+| 完整备份与身份 | M1 隔离验证／读回已存在，源／导入历史仍可读。 | 既有完整恢复 M2/M3 与 #5206 负责捕获一致性、生命周期／旧 writer／effect drain 及受控接纳；pending outbox 保留原 receipt／cursor／处置 owner。 |
+| 持续／默认资格 | 新 Goal 的 SQLite／hard-lease 源码选择已存在。 | D2 保留正式容量／经过时间失败和缺失项；D3 与 shared-authority 7.2 区分 cohort 和发布默认决定；本计划不启动 cohort／soak。 |
+
+新工作沿 [R5 合入后顺序](../../loopx-overall-roadmap-v0.zh-CN.md#post-6396-delivery-plan)
+和 [TS 当前边界](../../typescript-control-plane-migration-v0.zh-CN.md#当前交付边界2026-10-02)。
+下方具名记录保留原测量与依赖判断；“普通源 writer 仍可达”描述其旧基线，不能当作
+当前 main 尚未实现的工作。后续 adapter 删除须有真实最后 caller／兼容证据；
+历史恢复、provider／OS IO 不因 writer 已退役而变成无用代码。
+
+## 历史核对基线
 
 | 已合并 | 不再计入剩余工作的内容 |
 | --- | --- |
@@ -25,11 +48,11 @@
 不等待无关云端或百 Agent 工作。
 
 **File 是默认 store factory，不等于所有新旧 Goal 默认以 File 为权威。**
-未晋升的 Markdown writer 仍可达。两个 Goal 迁移成功、或 File↔SQLite 传输成功，
+在这个历史基线上，未晋升的 Markdown writer 仍可达。两个 Goal 迁移成功、或 File↔SQLite 传输成功，
 都不能证明旧 writer 已没有消费者。本轮不再沿用“还剩 5–8 个 PR”；以下列出的是
 交付和验证边界，不承诺缺陷数量或合并数量。
 
-## 什么时候删、怎么删
+## 历史最后调用方清单与删除规则
 
 | 边界 | 真实可达的代码／调用方 | 最早删除条件及保留义务 |
 | --- | --- | --- |
@@ -109,10 +132,10 @@ Host IO；C1、D2 和发布默认采用仍是独立验收边界。
 
 <a id="当前收尾验证迁移与删除2026-10-02"></a>
 
-## 当前收尾：验证、迁移与删除（2026-10-07）
+## 历史收尾计划：验证、迁移与删除（2026-10-07）
 
 按 main `06b6caa07` 和所列已合并 PR 重新核对。本节是 **R5 / D1–D3 / T0–T4**
-的当前执行计划，替代旧 A–D 排期；历史测量仍只适用于原源码和负载。R6 单独推进。
+的当时执行计划，替代旧 A–D 排期；历史测量仍只适用于原源码和负载。R6 单独推进。
 存储格式、权威选择、所有权策略是三种不同迁移：有 SQLite 数据库，不代表新 Goal
 已经默认使用 canonical authority，也不代表 `legacy` handoff 策略已经退役。
 
@@ -623,6 +646,21 @@ OS 缓存，未控制其他进程负载，不代表 p95、provider 对比或完�
 预算、结果未知读回、独立采用 fence、旧 writer 退役及正式 D2 的失败／缺失证据
 全部保留。
 
+
+### Runtime 退役须排空已准入效果
+
+共享 TS Effect server 现独立于 TCP 连接统计已准入、尚未完成的请求 handler；空闲窗口在最后一个
+handler 及私有 response sink 完成后才开始。显式 shutdown 停止接受连接，等待已准入
+效果（含断连调用方），最后只删除自己的 locator。认证、请求预算、原 receipt 与调用方
+恢复不变，不增加 provider 或 Python 决策 owner。
+
+旧 close handler 可能在断连调用方写入仍等待真实 mutation lock 时退出。真实 server
+回归在空闲退役与显式 shutdown 下重现，用仍连接调用方作对照，同时验证并发 ping、
+认证拒绝、listener 关闭、持久写入读回和最终退役。替换 locator、重启及 File/SQLite
+archive crash/recovery 测试仍须保留。
+
+这只修复 R5/D2 recovery 的一个 S4/runtime-lifetime 依赖，不证明持续运行，不选择
+release 默认值，不增加冻结容量预算，也不授权删除 legacy writer。
 
 ### 委派完成阶段的原租约衔接
 

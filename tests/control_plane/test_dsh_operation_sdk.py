@@ -6,7 +6,9 @@ Confirmation is an authenticated *fixture*, never live transaction authority.
 """
 
 import json
+import hashlib
 import os
+import shutil
 import threading
 from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -82,12 +84,32 @@ def tool_results(notifications):
     return results
 
 
+def prepared_request_ref(messages):
+    """Read the actual context result in either SDK provider wire format."""
+    def values(value):
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, dict) and "prepared_request" in parsed:
+                    yield parsed["prepared_request"]
+            except ValueError:
+                pass
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from values(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from values(item)
+    return next(values(messages))
+
+
+@pytest.mark.parametrize("request_transport", ["inline", "frozen"])
 @pytest.mark.parametrize("authority_provider", ["file", "sqlite"])
 @pytest.mark.parametrize(
     "connection_lifetime", ["retained", "restarted", "missing", "unreadable"]
 )
 def test_real_sdk_native_prepare_confirmation_consume_report_and_profile_revocation(
-    tmp_path, monkeypatch, authority_provider, connection_lifetime
+    tmp_path, monkeypatch, authority_provider, connection_lifetime, request_transport
 ):
     pytest.importorskip("deepseek_harness")
     module = os.environ.get("DSH_NATIVE_OPERATION_MODULE")
@@ -96,6 +118,14 @@ def test_real_sdk_native_prepare_confirmation_consume_report_and_profile_revocat
     runtime_bin = os.environ.get("DSH_NATIVE_OPERATION_RUNTIME")
     if connection_lifetime != "retained" and not runtime_bin:
         pytest.skip("explicit resume-capable runtime required")
+    # Exercise URI/JSON escaping through the actual SDK loader, including
+    # the frozen-request and persisted-session paths, without changing code.
+    if request_transport == "frozen":
+        escaped_module = tmp_path / 'native module "quoted" 雪'
+        escaped_module.mkdir()
+        for source in Path(module).parent.glob("*.js"):
+            shutil.copy2(source, escaped_module / source.name)
+        module = str(escaped_module / Path(module).name)
     service, store = fixtures.service(tmp_path)
     isolate_sqlite_runtime(tmp_path, monkeypatch)
     projection = build_todo_runtime_shadow_projection(
@@ -121,6 +151,7 @@ def test_real_sdk_native_prepare_confirmation_consume_report_and_profile_revocat
     terms["projection"]["simulated"] = False
     steps = []
     errors = []
+    provider_messages = []
 
     def operation():
         rows = store.list(goal_id=fixtures.GOAL_ID)
@@ -131,6 +162,10 @@ def test_real_sdk_native_prepare_confirmation_consume_report_and_profile_revocat
         if index == 0:
             return {"action": "context"}
         if index == 1:
+            if request_transport == "frozen":
+                args = {"action": "prepare", "request": prepared_request_ref(provider_messages[-1])}
+                assert len(json.dumps(args)) < 150
+                return args
             return {"action": "prepare", "request": operation_request}
         proposal = operation()
         if index == 4:
@@ -160,6 +195,7 @@ def test_real_sdk_native_prepare_confirmation_consume_report_and_profile_revocat
                 index = len(steps)
                 assert index < 9, "bounded scripted request budget exceeded"
                 steps.append(index)
+                provider_messages.append(body["messages"])
                 if index in {3, 8}:
                     delta = {
                         "role": "assistant",
@@ -302,6 +338,11 @@ def test_real_sdk_native_prepare_confirmation_consume_report_and_profile_revocat
     }
     if runtime_bin:
         options["runtime_bin"] = Path(runtime_bin)
+    if request_transport == "frozen":
+        source_file = tmp_path / "frozen-request.json"
+        source_file.write_text(json.dumps(operation_request))
+        options.update(operation_request_file=source_file,
+            operation_request_sha256=hashlib.sha256(source_file.read_bytes()).hexdigest())
     notifications = []
     turn = request()
     try:
@@ -465,3 +506,54 @@ def test_callback_failure_quiesces_owned_sdk_before_host_can_be_reused(
         assert not host.connection.path.exists()
         with pytest.raises(ValueError, match="closed"):
             host.run(request(), **options)
+
+
+@pytest.mark.parametrize("failed_artifact", ["operation.mjs", "operation.patch.yml"])
+def test_artifact_write_failure_closes_connection_before_sdk_launch(
+    tmp_path, monkeypatch, failed_artifact
+):
+    sdk = pytest.importorskip("deepseek_harness")
+    service, store = fixtures.service(tmp_path)
+    module = tmp_path / "native-operation.js"
+    module.write_text("export function apply() {}\n")
+    writes = []
+    original_write = Path.write_text
+
+    def write(path, *args, **kwargs):
+        if path.name in {"operation.mjs", "operation.patch.yml"}:
+            writes.append(path.name)
+            if path.name == failed_artifact:
+                raise OSError("fixture artifact write failed")
+        return original_write(path, *args, **kwargs)
+
+    def forbidden_launch(*_args, **_kwargs):
+        pytest.fail("artifact failure must precede SDK process launch")
+
+    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(sdk, "DeepSeekHarness", forbidden_launch)
+    with OwnedDshOperationHost() as host:
+        with pytest.raises(OSError, match="fixture artifact write failed"):
+            host.run(
+                request(),
+                runtime_root=store.root.parent.parent,
+                registry_path=service.registry_path,
+                project=service.registry_path.parent.parent,
+                dsh_home=tmp_path / "sdk-home",
+                operation_module=module,
+                provider="deepseek-official",
+                model="fixture-model",
+                reasoning_effort="high",
+                max_tokens=128,
+                runtime_bin=(Path(os.environ["DSH_NATIVE_OPERATION_RUNTIME"])
+                    if os.environ.get("DSH_NATIVE_OPERATION_RUNTIME") else None),
+            )
+        assert writes == (["operation.mjs"] if failed_artifact == "operation.mjs"
+                          else ["operation.mjs", "operation.patch.yml"])
+        assert host.harness is None
+        assert not host.connection.path.exists()
+        assert not host.connection.path.parent.exists()
+        with pytest.raises(ValueError, match="closed"):
+            host.run(request())
+        assert load_codex_cli_session(
+            store.root.parent.parent, lineage=_lineage(request()), host="dsh"
+        ) is None

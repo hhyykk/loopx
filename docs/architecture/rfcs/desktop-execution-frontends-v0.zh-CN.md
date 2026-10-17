@@ -66,6 +66,48 @@ manager Agent，也不把连接器硬编码到 Codex。
 配置。可选 Lark 投影同一选择及自己的受众约束。用例通过前，这是分配设计而非
 运行保证。见[近期发布路线](loopx-overall-roadmap-v0.zh-CN.md#近期本地-agent-产品与发布路线)。
 
+## 设置归属与作用域
+
+导航按用户任务组织，作用域按配置归属决定。管家保留一级 **Steward** 入口，配置其执行器、
+模型/推理偏好与宿主 runtime grant。这不是 Goal 成员的模型设置，也不能仅因配置归设备
+所有就埋进能力中心。不同入口复用相同配置组件与事务 owner。
+
+能力中心只有一个目标选择器：**设备默认值**或**某个 Goal**。当前“全局”只指本设备的
+配置权威，不是账户级或跨宿主同步设置；远端宿主保留自己的凭证与默认值。按以下行为
+决定作用域，不能按现有编辑器或存储路径猜测。
+
+| 配置 owner | 作用域决定 | 原因 |
+| --- | --- | --- |
+| `manager_runtime` | 仅设备；Steward 页 | 宿主向管家授予工具，Goal 不能扩大 grant。 |
+| `steward_executor` | 仅设备；Steward 页 | 一个管家 channel 拥有执行器/模型/effort 偏好；Goal worker 分配仍属于其自身 binding。 |
+| `periodic_report` | 设备默认值 + Goal 覆盖 | 复用报告样式、时区、schedule，允许项目节奏；默认 route alias 不授权向其他 Goal 的受众投递。 |
+| `change_quality_qualification` | 设备默认值 + Goal 覆盖 | 复用验证偏好并容纳显式项目合同；配置不能豁免仓库或合并要求。 |
+| `pull_request_review` | 设备默认值 + Goal 覆盖 | 复用 CI 等待和队列优先级偏好；两个作用域都不授予批准或合并权限。 |
+| `todo_replan_cadence` | 设备默认值 + Goal 覆盖 | 复用复盘频率并允许 Goal 工作节奏；这是已完成工作复盘频率，不是 automation timer。 |
+| `multi_subagent` | 仅 Goal | 子模型、容量、职责域和委托 binding 属于一个 Goal 的团队与资源边界。 |
+| `peer_task_coordination` | 仅 Goal | coordinator 必须是本 Goal 成员，不能继承无关 Agent 身份。 |
+| `explore_harness`、`explore_graph` | 仅 Goal | 探索策略与 opt-in 只影响本 Goal 的规划和证据图。 |
+| `progress_review` | 仅 Goal | drift 模式与阈值绑定本 Goal 固定的验收合同版本。 |
+| `reward_memory` | 仅 Goal | 私有 provider binding 和启用 Agent 是 Goal 局部配置，设备偏好不能扩散数据 binding。 |
+| `lark_kanban_heartbeat_sync` | 仅 Goal | 目标看板与同步遵循本 Goal 的 binding 和受众。 |
+| `lark_event_inbox` | 仅 Goal；在 Lark 设置/CLI 编辑 binding | 捕获消息、session binding 和 cursor 属于本 Goal；能力卡只读，传输凭证仍归宿主。 |
+| `coordination_runtime_shadow` | 仅 Goal | 实验观察显式限定在本 Goal 执行中。 |
+| `local_authority_shadow` | 仅 Goal；已退役/只读 | 历史检查不构成新的激活或设备默认值。 |
+
+这些决定保留已交付的作用域合同。仅 Goal 不排斥未来可复用 preset；应用 preset 须有意创建
+Goal 局部配置，不能实时继承身份、权限、binding 或实验激活。未来若拆分可复用偏好与局部
+binding，须先同时修改所属 schema 与真实消费者，再宣传新的作用域。
+
+双作用域能力保留 **Goal 显式值 → 当前设备默认值 → 能力默认值** 的优先级。Goal 覆盖是
+完整值，不按字段合并。恢复继承经既有 preview/apply/readback 路径删除覆盖。只读状态与
+作用域独立：即使当前不能编辑，Goal 绑定能力仍须显示仅 Goal。catalog、runtime 解析和
+UI 必须一致；不支持的作用域写入由既有 owner 拒绝。
+
+模型 provider 凭证、usage telemetry 与外观保留在各自设备级设置入口，Agent 分配属于
+Goal。自动执行间隔沿用其 Goal/Agent/automation 层级与 scheduler 读回，能力中心不另建
+timer。验收须覆盖上述矩阵、非法写入拒绝、打包 UI 的三类作用域及只读 Goal binding，
+保留独立 Steward 页，并验证切换目标、preview/apply/readback 和恢复继承不发生跨目标写入。
+
 ## 问题
 
 LoopX 已经拥有两个不同产品的零件：
@@ -205,6 +247,26 @@ Agent 分类或转发消息。绑定不硬编码到 Codex：该 Agent 的执行�
 
 `loopx_collaboration_status_v0` 可以提供有用的只读卡片，但它不是核心抽象。
 核心对象是 Agent 级的前端连接和收敛后的工作会话。
+
+托管 Goal Chat 的可观察性切片将执行器身份、已解析模型与显式模型选择分开。
+用户请求及确认视图保留 canonical Agent 作者；历史缺失作者保持未知。
+仅呈现宿主明确公开的推理摘要，隐藏历史原始推理。这是现有 Chat 路径的有界
+修正，不证明 attached 宿主或 Lark 交互已完整对等。默认行为与来源契约见
+[投影边界](../../integrations/session-runtime-control-plane-adapter.md#projection-boundary)。
+
+共享管家头部在 390px 下保留已知、未知模型的可读观察。可选模型菜单在视口内展开，
+进入页面不启动目录发现。浏览器拒绝存储时，composer 草稿仍可编辑；从未派发的尝试
+不会变成投递未确认。已获资格的重试仍保留原 Session、Turn 与 ingress。
+这些打包页面与隔离原生检查不代表安装宿主已经采用。
+
+挂接 Codex 记录也让对话优先于连续工具事件。自然滚动在有界源窗口内向前/向后
+分页，保留阅读锚点，仅在末尾回到缓冲的实时观察。工具详情、来源缺口和已观察
+失败仍可访问。已知原生文本块在正文分页前解码，长 Unicode 结果可完整读取。
+即使正文需分页，折叠的工作过程也提示已记录的 shell 非零退出码；不从退出码或
+文字推断任务失败或验收。未知文本块元数据仍保留为源 JSON，疑似凭据内容继续隐藏。
+此处改变呈现，不改变原会话输入/审批权限，也不替代尚未完成的
+provider 与安装宿主资格验证。
+
 
 ## Agent 级外部连接器模型
 
@@ -708,6 +770,17 @@ executor 精确版本、完成情况、延迟、动作数、人工介入、禁�
 挂接描述符或托管会话引用不能授予新的 Goal 权威。陈旧或不匹配的 Goal、Agent、
 工作区、运行时、provider 或信任绑定失败关闭。
 
+Desktop 壳自身的 CLI/HTTP 产物选择，与 Agent 工作会话或 provider binding 分开。
+启动比较已资格化的 package 版本和官方源码祖先；启动时的开发覆盖保持显式。记住的 App
+自有 release 路径只是发现缓存。同基线 snapshot 无法排序时，当前 App 可用 bundled
+产物维护自己的安装，但须保留可证明较新的 runtime 或独立管理的 CLI。修复在重连前
+保留已资格化 promotion，两项 HTTP 服务都须读回所选身份。启动被阻断时，已可用的签名
+App 更新仍能操作；在用户应用更新或有意选择其他恢复前，未变的服务重试不能覆盖它。
+手动更新或恢复失败同样保留错误、诊断和重试控件，直到下一次显式动作。自动更新源不可用
+仍须允许已安装 App 启动。已完成且验证的恢复清除安装未完成标记并显示 Restart；在重启前
+仍不得启动服务。验收同时覆盖普通打包重启、同窗口恢复和失败 fallback；安装成功或临时
+覆盖不能关闭该 bootstrap 验收、Agent 执行验收或签名发布资格。
+
 ## 安全与隐私
 
 - 把不透明会话句柄、凭据、环境值、进程元数据、原始转录、provider 负载、
@@ -729,7 +802,7 @@ executor 精确版本、完成情况、延迟、动作数、人工介入、禁�
 
 #4547/#4548/#4552 已交付团队预览确认 UI、打包资源及 browser fixture，不再把确认入口列为未实现。按[统一路线](loopx-overall-roadmap-v0.zh-CN.md) R1 补语义一致的 partial/gap/stale 回读，R2 验 worker 实际执行，R3 验自动回报和重启恢复。现有确认 fixture 不能证明 Lark 端完整闭环。
 
-前端/Lark 消费同一 proposal、receipt 和 audience projection；运行状态不能由计划已确认推断。每个实现批次含 packaged frontend 的实际交互和 Lark 适用路径验收，或明确说明未验收。涉及首屏/主 CTA 的实现继续先展示具体预览并获批准；本次仅更新 RFC，不修改 UI。
+前端/Lark 消费同一 proposal、receipt 和 audience projection；运行状态不能由计划已确认推断。每个实现批次含 packaged frontend 的实际交互和 Lark 适用路径验收，或明确说明未验收。涉及首屏/主 CTA 的实现遵循仓库首屏证据规则：具体首屏放入 PR description，复用既有范围内的设计方向，不为普通细化再增加一轮确认；本次仅更新 RFC，不修改 UI。
 
 ## 交付切片
 
@@ -775,25 +848,40 @@ executor 精确版本、完成情况、延迟、动作数、人工介入、禁�
 
 这是围绕已在运行的工作采用 Desktop 的短路径。
 
-第一阶段的可执行 broker 契约沉淀在 Chat session/store 与通用
-`worker-bridge attached-session-*` 命令中，而不是 Lark provider 内部：
+有界 provider checkpoint：本机 Goal Chat 可检查已登记 Codex App Agent 原先保存的
+对话，并经既有 Desktop owner 提供仅空闲时可用的纯文本回复。它读取有界来源窗口，
+每秒观察已保存记录，不恢复另一个 app-server。provider 展示可见消息、function/custom-tool
+输入与结果及显式 Turn 生命周期。长文本可原处续读，前后分页与 append cursor 保留 burst
+中的历史。有界空窗口追赶避免反复点击元数据；折叠工具行解码原生文本块，保留来源字段并
+展示可读 shell 输出。读旧记录时暂停插入，并提供回到最新的路径。
 
-- `agent_id` 始终表示 Goal 内已登记的 LoopX Agent；
-- `executor_endpoint_id` 单独表示 `codex`、`claude-code` 或其他执行端；
-- attach 只有在 `(host_surface, host_session_id)` 已精确绑定该 Agent 时才成立；
-- attached session 的 Web 与 Lark 消息进入同一有界 FIFO，并保留
-  `origin=web|lark`；
-- 已有宿主可以保持一个最长 30 分钟的 claim 等待，并在队列出现消息时立即
-  获得旧项优先、幂等 claim；超时只返回空结果，不启动或恢复任何运行时；
-- 原宿主通过稳定 claim/completion id 领取消息并回写，重复调用不会重复生成
-  Agent 回复；以及
-- 任何 attached session 路径都不得调用 managed runtime 的启动/恢复函数。
+排除隐藏 reasoning/configuration，隐去凭证形态字段。不支持、畸形、非文本和超限记录
+保留为可见覆盖缺口。目标是每个 Goal/Agent 都有稳定工作对话：Goal 目录现打开稳定 Agent
+路由，保留刷新与前进/后退，明确未绑定或不支持的宿主；该视图不显示普通 Goal composer/
+executor。首个 provider 不证明其他 provider 覆盖或完整原生活动/stream 对等。详见
+[provider 边界与操作](../../integrations/session-runtime-control-plane-adapter.md#experimental-owner-local-codex-app-conversations)。
 
-该阶段已经能支撑 `session_queue` 与回复 readback。`live_steering` 仍要求宿主提供
-对正在运行 Turn 的 push transport；在此之前 capability 明确为 false，入口失败
-关闭，不能用新启动的 app-server 或静默改投另一个模式冒充完成。Desktop 下一步
-需要把 bind/list/claim 状态投影成首屏 attach 管理交互，并由 Codex App 等宿主
-自动完成 claim/complete，而不是要求人手工运行 CLI。
+有界的实时观察伴随路径现沿原 Desktop owner 带版本的 snapshot/patch（视图快照与增量更新）流，在未观察到
+宿主空闲时，更新同一 Agent reader 中受支持、未完成的可见消息和工具。历史插入暂停及
+已保存记录回退仍保留。精确 owner/binding、revision、私有内容排除和数据有界约束继续
+生效，不新增 executor 或审批权限。限制仍见同一 provider 操作指南。
+
+这是实验 provider 提案，不代表完整切片 B 验收：完整原生事件/token 对等、忙碌 Turn steering/queueing、
+审批 callback、原生 live-send、Windows 传输与已安装采用仍分别待验。其有界用户任务是在
+查看 Goal 工作时跟进特定 Agent。已确认输入后 composer 立即可用，无冗余 ACK；被中断的
+回复从已有 receipt 恢复，不重复提交，真实不确定输入仍须先恢复再发送。
+
+Overview owner 入口一次导航打开精确 Agent，无需再次选择；binding 缺失就保持不可用。
+稳定页面复用既有原生 provider 和权限。这缩短了本机 Overview 路径；其余工作会话整合
+仍须与在 Codex App 选择原对话比较，覆盖目标发现、纠正和结果读回。传输成功不证明
+任务路径更短、独立验收或 G1 完成。
+
+普通托管对话只使用一个 composer，承接新消息与精确 Turn 追加指令。时间线及概览回执中的
+“调整本轮”只聚焦该输入框，不再打开第二个编辑器。草稿按对话隔离；旧版行内草稿迁移时
+保留原 Session、Turn 与 ingress 身份。投递未确认时，刷新或原回合结束后仍重试原 Turn；
+只有确认未送达才可取得新 ingress。浏览器存储失败时保留草稿并拒绝未经持久读回的投递。
+不支持 steering 的执行器仅显示中断，不展示追加入口。此呈现修改不为上述挂接 Desktop
+provider 新增忙碌回合输入能力。
 
 ### 切片 C：托管参考垂直
 
@@ -819,6 +907,18 @@ executor 精确版本、完成情况、延迟、动作数、人工介入、禁�
 只有切片 C 和切片 D 都通过共享一致性测试套件后，双运行时托管模式才算完整。
 
 ## 验证标准
+
+### 原生服务所有权
+
+打包原生窗口使用自己的 loopback status/Chat 端点，只拥有自己启动的子进程。同源码
+版本且已就绪的服务不能证明使用相同 registry 或归 App 所有。窗口导航与原生维护权限
+必须跟随精确 Chat origin。runtime repair 保留同窗口端点，两项替换子进程由同一个已
+资格化选择启动，不能独立重新发现全局 CLI。CLI 服务与 Vite 开发保留既有共享端口；
+打包 App 启动不再借用、重启这些服务或其 LaunchAgent。
+
+验收时让独立共享服务同时运行：两项 HTTP runtime 身份与渲染工作区都属于所选 runtime，
+退出、修复、重开只影响自己的子进程。私有端点被占用时拒绝，不接管或终止 listener。
+源码 checkout 或 helper 测试通过不能认证该原生进程边界。
 
 ### 公共
 

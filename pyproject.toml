@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopx"
-version = "1.4.2"
+version = "2.0.0a1"
 description = "A Loop Engineering control plane for long-running agent goals (requires Node.js 22.22.3+)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,10 +24,10 @@ Changelog = "https://github.com/loopx-project/loopx/releases"
 
 [project.optional-dependencies]
 ego-source-reader = [
-  "mcp==1.28.1",
+  "mcp==1.30.0",
 ]
 public-source-reader = [
-  "mcp==1.28.1",
+  "mcp==1.30.0",
   "resvg-py==0.5.0",
   "defusedxml==0.7.1",
   "pillow>=11,<13",
@@ -42,7 +42,7 @@ test = [
   "defusedxml==0.7.1",
   "pillow>=11,<13",
   "jsonschema>=4.23,<5",
-  "mcp==1.28.1",
+  "mcp==1.30.0",
   "pyyaml>=6,<7",
   "types-jsonschema>=4.23,<5",
   "pytest>=9.0.3,<10",
@@ -121,6 +121,14 @@ include = ["loopx*"]
 "share/loopx/skills/loopx-project" = [
   "skills/loopx-project/SKILL.md",
   "skills/loopx-project/.loopx-skill-scope",
+]
+"share/loopx/skills/loopx-project/references" = [
+  "skills/loopx-project/references/start-and-connect.md",
+  "skills/loopx-project/references/installation-and-diagnosis.md",
+  "skills/loopx-project/references/autonomous-execution.md",
+  "skills/loopx-project/references/heartbeat-hosts.md",
+  "skills/loopx-project/references/handoff-and-feedback.md",
+  "skills/loopx-project/references/materials-explore-quality.md",
 ]
 "share/loopx/skills/loopx-project/agents" = [
   "skills/loopx-project/agents/openai.yaml",
@@ -202,8 +210,6 @@ files = [
   "loopx/control_plane/testing/authority_e2e_fixtures.py",
   "loopx/control_plane/testing/authority_e2e_ladder.py",
   "loopx/control_plane/testing/authority_e2e_row_support.py",
-  "loopx/control_plane/testing/authority_e2e_rows_stage2c.py",
-  "loopx/control_plane/testing/authority_e2e_rows_stage2c2.py",
   "loopx/control_plane/work_items/delivery_batch_scale.py",
   "loopx/control_plane/work_items/delivery_outcome.py",
   "loopx/control_plane/work_items/lifecycle.py",

@@ -20,7 +20,7 @@ from benchmark.edgebench.feedback import FEEDBACK_MODES
 from benchmark.edgebench.feedback_hook import FEEDBACK_PAYLOAD
 
 from .codex import DEFAULT_REPLAN_AFTER_TURNS, Execution, prepare_codex_home
-from .codex_offline import CodexOffline, stage_portable_python
+from .codex_offline import CodexOffline, MODEL_CATALOG_REMOTE, stage_portable_python
 from .harbor import (
     BenchmarkCodex, _CONTROL, _CODEX_HOME, _PYTHON, _SCHEDULER_STATE, _SRC,
 )
@@ -91,9 +91,11 @@ class SForgeWorker(CodexAgent):
                  task_objective: str | None = None,
                  task_entry: str | None = None,
                  turn_envelope: bool = False,
+                 native_goal_continue: bool = False,
                  replan_after_turns: int | None = None,
                  replan_after_todos: int | None = None,
                  stride_strategy: str | None = None,
+                 planning_horizon_goal: bool | None = None,
                  checkpoint_request_path: str | None = None,
                  checkpoint_request: bytes | None = None,
                  warm_start=None):
@@ -142,6 +144,12 @@ class SForgeWorker(CodexAgent):
         if stride_strategy is not None:
             from loopx.control_plane.work_items.stride_policy_codec import normalize_stride_strategy
             stride_strategy = normalize_stride_strategy(stride_strategy)
+        if planning_horizon_goal is not None:
+            if not isinstance(planning_horizon_goal, bool):
+                raise ValueError("planning_horizon_goal must be a boolean")
+            if not profile.startswith("heartbeat-"):
+                raise ValueError("planning_horizon_goal requires a heartbeat profile")
+        self.planning_horizon_goal = planning_horizon_goal
         self.stride_strategy = stride_strategy
         self.checkpoint_request_path = None
         self.checkpoint_request = checkpoint_request
@@ -166,6 +174,11 @@ class SForgeWorker(CodexAgent):
             raise ValueError("Unknown feedback mode")
         if feedback != "native" and feedback_prompt is None:
             raise ValueError("Restricted feedback requires its task wrapper")
+        if not isinstance(native_goal_continue, bool):
+            raise ValueError("native_goal_continue must be a boolean opt-in")
+        if native_goal_continue and profile != "native-goal":
+            raise ValueError("native_goal_continue requires the native-goal profile")
+        self.native_goal_continue = native_goal_continue
         if workspace_instructions is not None and (
             feedback != "native" or not workspace_instructions.strip()
             or feedback_prompt is None or not feedback_prompt.startswith(workspace_instructions)
@@ -173,9 +186,10 @@ class SForgeWorker(CodexAgent):
             raise ValueError("Workspace feedback instructions must match the native task wrapper")
         if task_objective is not None and (
             not isinstance(task_objective, str) or not task_objective.strip()
-            or workspace_instructions is None or task_objective not in workspace_instructions
+            or workspace_instructions is None or feedback_prompt is None
+            or task_objective not in feedback_prompt
         ):
-            raise ValueError("Task objective must occur in the native workspace instructions")
+            raise ValueError("Task objective must occur in the native task prompt")
         self.feedback = feedback
         self.feedback_prompt = feedback_prompt
         self.workspace_instructions = workspace_instructions
@@ -207,7 +221,7 @@ class SForgeWorker(CodexAgent):
     def _install_worker(self, backend, handle, log_dir, logger):
         self.backend, self.handle = backend, handle
         self.log_dir = log_dir
-        effort = {"max": "xhigh"}.get(self._config.agent_effort, self._config.agent_effort)
+        effort = self._config.agent_effort
         common = dict(logs_dir=log_dir / "worker", model_name=self._config.agent_model,
                       reasoning_effort=effort)
         if self._config.agent_api_base_url:
@@ -217,7 +231,8 @@ class SForgeWorker(CodexAgent):
                 "CODEX_AUTH_JSON_PATH": "",
             }
         if self.profile in {"official", "single"}:
-            asyncio.run(CodexOffline(**common).install(self.environment))
+            offline = CodexOffline(**common)
+            asyncio.run(offline.install(self.environment))
             result = backend.exec_run(handle, "mkdir -p /home/agent/.codex", user="agent")
             if result.exit_code:
                 raise RuntimeError("Could not create isolated Codex home")
@@ -231,6 +246,9 @@ class SForgeWorker(CodexAgent):
                     model=self._config.agent_model, effort=effort,
                     base_url=self._config.agent_api_base_url or "",
                     api_key=self._config.agent_api_key or "", wire_api="responses", skills=None,
+                    model_catalog=offline._model_catalog_source,
+                    model_catalog_destination=(Path(MODEL_CATALOG_REMOTE)
+                                               if offline._model_catalog_staged else None),
                 )
                 for name in ("auth.json", "config.toml"):
                     if not (home / name).exists():
@@ -254,21 +272,26 @@ class SForgeWorker(CodexAgent):
                 scheduler_timeout_sec=self.timeout_seconds,
                 task_entry=self.task_entry,
                 turn_envelope=self.turn_envelope,
+                native_goal_continue=self.native_goal_continue,
                 replan_after_turns=self.replan_after_turns,
                 replan_after_todos=self.replan_after_todos,
                 stride_strategy=self.stride_strategy,
+                planning_horizon_goal=self.planning_horizon_goal,
                 checkpoint_request_path=self.checkpoint_request_path,
+                checkpoint_request=self.checkpoint_request,
                 task_objective=self.task_objective,
                 **({"goal_id": self.warm_start.goal_id, "agent_id": self.warm_start.agent_id,
                     "defer_codex_home": True} if self.warm_start is not None else {}),
             )
             asyncio.run(self.runtime.install(self.environment))
             if self.warm_start is not None:
-                asyncio.run(self.warm_start.stage(self.environment, self.cwd))
+                research_paths = asyncio.run(self.warm_start.stage(self.environment, self.cwd))
                 self._warm_command("workspace", user="root")
-                result = backend.exec_run(handle, ["chown", "-R", "-P", "agent:agent", self.cwd], user="root")
+                result = backend.exec_run(handle,
+                    ["chown", "-R", "-P", "agent:agent", self.cwd, *research_paths], user="root")
                 if result.exit_code:
-                    raise RuntimeError("Restored workspace is not writable by its receiver")
+                    raise RuntimeError("Restored research state is not writable by its receiver"
+                        if research_paths else "Restored workspace is not writable by its receiver")
             if self.checkpoint_request is not None:
                 with tempfile.TemporaryDirectory(prefix="benchmark-checkpoint-") as directory:
                     declaration = Path(directory) / "request.json"
@@ -319,7 +342,8 @@ class SForgeWorker(CodexAgent):
             **({"planning_timeout_seconds": None}
                if self.task_entry == "loopx-planned" else {}),
             "stop_hook": self.profile == "official",
-            **({"turn_envelope": True} if self.turn_envelope else {}),
+            **(self.runtime._turn_envelope_receipt() if self.runtime is not None else {}),
+            **({"native_goal_continue": True} if self.native_goal_continue else {}),
             "outer_resume": self.resume_cmd is not None,
             "explore_graph": self.profile == "heartbeat-explore",
             "explore_harness": self.profile == "heartbeat-explore",
@@ -337,14 +361,25 @@ class SForgeWorker(CodexAgent):
             with tempfile.TemporaryDirectory(prefix="benchmark-prompt-") as directory:
                 prompt = Path(directory) / "task.md"
                 prompt.write_text(self.feedback_prompt)
+                # The native copy preserves the host mode and lands root-owned.
+                # The container's agent user must read the prompt whatever
+                # umask the launcher runs under.
+                prompt.chmod(0o644)
                 asyncio.run(self.environment.upload_file(prompt, prompt_path))
             # Native run_agent saved the pre-override wrapper. Keep its visible
             # prompt artifact aligned with what all five workers actually read.
             (self.log_dir / "agent_prompt.md").write_text(self.feedback_prompt)
             self.prompt_installed = True
         if self.profile in {"official", "single"}:
-            return self._execution_command(super().format_run_cmd(prompt_path, model=model, cwd=cwd,
-                                          internet=internet, resume=resume))
+            command = super().format_run_cmd(prompt_path, model=model, cwd=cwd,
+                                            internet=internet, resume=resume)
+            # Native SForge predates clients/providers with a distinct max
+            # effort. Undo its legacy alias instead of silently downgrading
+            # the explicit trial input; all other native command behavior stays.
+            if self._config.agent_effort == "max":
+                command = command.replace('model_reasoning_effort="xhigh"',
+                                          'model_reasoning_effort="max"', 1)
+            return self._execution_command(command)
         if self.runtime is None:
             raise RuntimeError("Run the native SForge installation hook before execution")
         if not self.prepared:

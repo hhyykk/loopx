@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { goalCreateRequest } from "./goal-create-request.ts";
+import { goalCreateRequest, goalCreationAgentId } from "./goal-create-request.ts";
 import { localizedCapabilityFieldCopy } from "./capability-localization.ts";
 import { taskSessionStatus } from "./goal-activity.ts";
 import "./monitor-readback.test.mjs";
 
 const source = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
+const projectionAgent = { agentId: "status-only", adapterKind: "status_projection", available: true, label: "Status" };
+const missingAgent = { agentId: "codex", available: false, label: "Codex" };
+const availableAgent = { agentId: "claude", available: true, label: "Claude" };
+assert.equal(goalCreationAgentId("status-only", [missingAgent, projectionAgent]), "codex", "Creation diagnoses the real missing executor, never the read-only snapshot");
+assert.equal(goalCreationAgentId("status-only", [missingAgent, availableAgent, projectionAgent]), "claude", "Creation can use the discovered available executor");
+assert.equal(goalCreationAgentId("codex", [missingAgent, availableAgent, projectionAgent]), "codex", "An explicit unavailable executor remains selected for its own gate");
+assert.equal(goalCreationAgentId("custom", [missingAgent, projectionAgent]), "custom", "An unknown explicit identity is left for backend eligibility");
+assert.equal(goalCreationAgentId("status-only", [projectionAgent]), "status-only", "An empty executor catalog cannot manufacture an executor");
 const answerText = source("./answer-text.ts");
 const model = source("./personal-workspace-model.ts");
 const activity = source("./goal-activity.ts");
@@ -50,7 +58,8 @@ for (const operation of ["reassign", "block"]) {
 assert.match(drawer, /previewTodoTransition\(selection\.item, "defer"/, "Todo defer collects a resume condition before preview");
 assert.match(drawer, /resume_when:\s*resumeWhen/, "Todo defer sends its explicit resume condition");
 assert.doesNotMatch(drawer + page, /owner_resume/, "Personal Workspace never emits the unsupported owner_resume sentinel");
-assert.match(drawer, /previewTodoTransition\(selection\.item, "complete"/, "Todo complete is the primary drawer action");
+assert.match(drawer, /\["blocked", "deferred"\]\.includes\(selection\.item\.status/, "Paused Todos offer resume through the existing primary action");
+assert.match(drawer, /className="personal-primary-action" onClick=\{\(\) => void previewTodoTransition\(selection\.item, todoAwaitingResume \? "resume" : "complete"/, "The primary Todo action resumes paused work and completes open work through typed preview");
 assert.match(drawer, /actionKind: "todo\.create"/, "Todo successor uses the canonical create action");
 
 for (const field of ["evidence", "explanation"]) {
@@ -449,7 +458,7 @@ assert.match(machineSettings, /const configured = Boolean\(/, "Only configured c
 assert.match(machineSettings, /periodicReportActivationDescription/, "Machine periodic reports explain stage-triggered automatic delivery");
 assert.match(i18n, /Enabled means automatic delivery at validated stage boundaries/, "English machine settings name automatic stage delivery");
 assert.match(i18n, /开启后将在已验证的阶段节点自动投递/, "Chinese machine settings name automatic stage delivery");
-assert.match(machineSettings, /localizedCapabilityFieldCopy\(locale\)/, "Machine capability fields follow the selected locale");
+assert.match(machineSettings, /localizedCapabilityFieldCopy\(locale,\s*selected\.capability_id\)/, "Machine capability fields follow the selected locale");
 assert.match(goalCapabilitySettings, /localizedCapabilityFieldCopy\(locale,\s*localizedSelected\.capability_id\)/,
   "Goal fields use the selected locale and capability-specific vocabulary");
 assert.deepEqual(localizedCapabilityFieldCopy("en", "explore_harness").mode.options,
@@ -600,6 +609,39 @@ for (const key of ["home.firstGoal.title", "home.firstGoal.lead", "home.firstGoa
   assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
 }
 
+// Runtime readiness: the service's own reason fields drive the copy; the
+// read-only status projection and the loading placeholder never count as a
+// runtime; a re-check reads the catalog again and nothing is installed.
+const runtimeReadiness = source("./runtime-readiness.ts");
+assert.match(runtimeReadiness, /if \(agents\.length === 0\) return \{ kind: "detecting" \};/, "An empty catalog is detecting, not absence");
+assert.match(page, /agent\.adapterKind !== "status_projection" && agent\.source !== "detecting"/, "Readiness ignores the status projection and the loading placeholder");
+assert.match(dashboard, /onRecheckRuntimes: \(\) => setCapabilityRevision\(\(revision\) => revision \+ 1\)/, "Re-check re-reads the capabilities catalog");
+assert.match(dashboard, /source: "detecting",/, "The placeholder row is typed as detecting");
+assert.doesNotMatch(dashboard, /statusLabel: "正在检测"|"可用" : "需要配置"|当前 Goal 写入前验证/, "Agent status labels are localized");
+for (const key of ["readiness.noneTitle", "readiness.missingExecutable", "readiness.missingEnvironment", "readiness.selectedUnavailable", "readiness.recheck", "agent.statusDetecting"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}
+
+// Needs-you desktop notifications: a per-browser opt-in. Off by default, the
+// page neither asks for permission nor re-reads the workspace in the background.
+const attentionNotifications = source("./attention-notifications.ts");
+assert.match(attentionNotifications, /export function shouldNotifyAttention/, "Notification admission is one typed rule");
+assert.match(page, /const attentionNotificationsActive = attentionNotificationsEnabled && attentionNotificationSupportState === "granted" && !readOnly;/, "Polling and notifying share one activation predicate that includes read-only");
+assert.match(page, /if \(!attentionNotificationsActive \|\| !backgroundRefreshRef\.current\) return;/, "No background re-read unless notifications are active");
+assert.match(page, /Notification\.requestPermission\(\)/, "Permission is requested from the owner's toggle, not on load");
+assert.doesNotMatch(page.replace(/async function updateAttentionNotifications[\s\S]*?\n  }\n/, ""), /requestPermission/, "Only the toggle handler asks for permission");
+assert.match(page, /seenAttentionKeysRef\.current = new Set\(model\.userTodos\.map\(attentionNotificationKey\)\)/, "Enabling seeds every listed item so nothing already listed is replayed");
+assert.match(page, /const fresh = notifiableAttention\(newAttentionItems\(seen, items\)\);/, "Only an item first seen while it waits on the owner notifies; optional actions never do");
+assert.match(page, /const remembered = seen \? new Set\(seen\) : new Set<string>\(\);\s*for \(const item of items\) remembered\.add\(attentionNotificationKey\(item\)\);/, "Seen identities are kept for the activation lifetime; a partial read never forgets one");
+assert.doesNotMatch(page.slice(page.indexOf("const remembered = seen"), page.indexOf("const fresh = notifiableAttention")), /seenAttentionKeysRef\.current = keys/, "The seen set is never replaced by the current read");
+assert.match(attentionNotifications, /export function notifiableAttention[\s\S]*?items\.filter\(\(item\) => item\.blocking\)/, "Notifiable means the attention owner's blocking classification, never the whole list");
+assert.match(page, /window\.addEventListener\("focus", readBack\);[\s\S]*?document\.addEventListener\("visibilitychange", readBack\);[\s\S]*?navigator\.permissions\?\.query\(\{ name: "notifications" \}\)/, "The browser's permission answer is read back on return, on settings and on change");
+assert.doesNotMatch(page.slice(page.indexOf("const readBack = () =>"), page.indexOf("const attentionNotificationsActive")), /requestPermission|setAttentionNotificationsEnabled\(true\)/, "Reading the answer back never asks for permission or enables on its own");
+assert.match(dashboard, /onBackgroundRefresh=\{\(\) => loadFromUrl\([^\n]*\{ background: true, readScope: "all"/, "The background re-read keeps snapshots on screen and re-reads every Goal");
+for (const key of ["settings.attentionNotifications", "settings.attentionNotificationsToggle", "settings.attentionNotificationsDenied", "settings.attentionNotificationsUnsupported", "notifications.attentionMore"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}
+
 // Since you looked (RFC goal-workspace-surface §5.7): a browser-local marker
 // per source and Goal, typed counts and ids only, no cost, no service write;
 // the line appears only for a material delta. Mark seen acknowledges what is
@@ -659,3 +701,13 @@ for (const route of ["./views/frontstage-developer-page", "./views/benchmark-stu
 assert.equal((page.match(/<Suspense fallback=\{<p className="personal-lazy-loading" role="status">/g) ?? []).length, 1, "The lazy settings site shows a loading status");
 
 console.log("personal workspace drawer contract smoke passed");
+
+// An unavailable first Agent: the service refuses the creation preview with a
+// typed gate (kind, agent, catalog reason) and the page tells the owner in
+// their language, never with the protocol sentence; nothing is written.
+assert.match(page, /const agentGate = gateKind === "agent_unavailable"/, "The page maps the typed Agent gate to owner-language copy");
+assert.match(page, /reasonCode === "executable_not_found"[\s\S]*?reasonCode === "api_key_not_set"[\s\S]*?rawGate\.registered === false/, "The reason follows the catalog's own fields");
+assert.match(source("./context-drawer.tsx"), /selection\.item\.gate\?\.kind === "agent_unavailable" \? selection\.item\.title/, "The drawer shows the Agent gate's own title, not host confirmation");
+for (const key of ["proposal.agentGate.title", "proposal.agentGate.summary", "proposal.agentGate.reason.executable_not_found", "proposal.agentGate.reason.api_key_not_set", "proposal.agentGate.reason.unregistered", "proposal.agentGate.reason.unavailable", "proposal.agentGate.nextAction", "proposal.agentGate.impact"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}

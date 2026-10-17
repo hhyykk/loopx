@@ -19,12 +19,17 @@ export function normalizeStrideStrategy(value: unknown): string {
 // result classifier, route ban or admission authority.
 const decisionValueReview = {
   work_slice: "Compare the complete cost and useful outcome of continuation with one feasible alternative. " +
+    "Assess the quality of the first deliverable and later gain beyond the retained best separately; " +
+    "recovering an avoidable initial quality deficit is not evidence of additional capability. " +
     "Name the observation that would change that choice, and size a complete experiment to obtain it. " +
     "A larger test count is not greater decision value; preserve unfinished decisive work rather than restart its setup.",
   route_distance: "Name the remaining authoritative goal gap, its limiting component and the plausible headroom. " +
+    "Keep the retained best artifact as the comparison anchor and check whether subsequent work actually implements the proposed mechanism change. " +
     "Compare a different approach that can affect that component. Distinguish an unexecuted intervention, failed transfer and insufficient route potential: they imply different next experiments. " +
     "A changed auxiliary mechanism alone does not show that it addresses the gap.",
   validation_scope: "Use evidence applicable to the limiting outcome and changed mechanism. " +
+    "Bind comparisons to the artifact version, input conditions and original budget, and distinguish when feedback became available from when work was submitted. " +
+    "Keep decision, execution and measured outcome separate; a saved snapshot is not proof of restoration or continued execution. " +
     "First establish that the intervention actually changes the relevant behavior; unchanged outcomes may require tracing its activation rather than a wider parameter sweep. " +
     "Choose a comparison or negative control that separates the surviving explanations, and state what each possible result would change. " +
     "Before a check vetoes further work, identify its source and protected goal: an original constraint or frozen study criterion, versus an agent-proposed candidate heuristic. " +
@@ -49,6 +54,10 @@ export function stridePlanningGuidance(value: unknown): string[] {
     "Do not force a pivot from elapsed time, a progress count or one noisy result. " +
     "Missing or refuted evidence is not a universal route ban. Preserve the best qualified artifact and original priorities. " +
     "Declare minimum evidence, a testable prediction, adoption criterion and full marginal cost including control and validation; review actual adoption, quality and cost next. Verify must resolve a named grow-or-switch question, not repeat an unchanged check. " +
+    "Carry the next_probe into existing executable Todo work, reusing an unfinished experiment when it still answers the question. " +
+    "Use the existing agent_vision.todo_delta action:todo_id entries to identify that work after its normal authoring/readback; do not invent IDs or add a planning-only Todo. " +
+    "Read planned_work and subsequent observations before crediting the previous decision. A negative experiment may finish its Todo while the broader goal remains open. " +
+    "Keep a candidate experiment separate from the best retained artifact: authorized evaluation may be informative before replacement is justified. " +
     "Use the live stride_control contract for agent_vision.stride_decision. This controls proposal completeness, not execution, " +
     "spawn, acceptance or a promise of utility; existing Todo/path and authority owners still govern work."];
 }
@@ -249,7 +258,7 @@ export function projectStrideExploreBasis(value: unknown, goal: string, agent: s
 }
 
 /** Context binding checks shape and declared provenance, never truth of Agent claims. */
-export function strideReviewMismatch(decision: JsonObject, context: JsonObject): string | null {
+export function strideReviewMismatch(decision: JsonObject, context: JsonObject, sourceReview?: unknown): string | null {
   const follow = context.decision_followthrough as JsonObject | undefined;
   const previous = follow?.previous_decision as JsonObject | undefined;
   const review = decision.previous_review as JsonObject | undefined;
@@ -257,10 +266,47 @@ export function strideReviewMismatch(decision: JsonObject, context: JsonObject):
   if (!previous && review) return "A previous decision review cannot claim an undelivered decision.";
   if (previous && review) {
     const rows = (value: unknown): JsonObject[] => Array.isArray(value) ? value as JsonObject[] : [];
-    const allowed = new Set<unknown>([...rows(context.evidence), ...rows(follow?.observations)]
+    const ordinary = rows((follow?.ordinary_work as JsonObject | undefined)?.evidence);
+    const allowed = new Set<unknown>([...rows(context.evidence), ...rows(follow?.observations), ...ordinary]
       .map(row => row.evidence_ref));
     for (const row of rows(context.coverage_ledger)) for (const ref of Array.isArray(row.evidence_ids) ? row.evidence_ids : []) allowed.add(ref);
-    if ((review.evidence_refs as string[]).some(ref => !allowed.has(ref))) return "Previous-decision claims cite an undelivered evidence reference.";
+    const cited = review.evidence_refs as string[];
+    const subsequent = new Set([...rows(follow?.observations), ...ordinary].map(row => row.evidence_ref));
+    const planned = rows(follow?.planned_work);
+    const linked = new Set(planned.flatMap(work => [
+      ...(Array.isArray(work.observation_refs) ? work.observation_refs : []),
+      ...(Array.isArray(work.ordinary_evidence_refs) ? work.ordinary_evidence_refs : []),
+    ]));
+    let hasDeclaredWork = planned.length > 0;
+    if (sourceReview !== undefined) {
+      const source = requireJsonObject(sourceReview, "stride review evidence");
+      if (source.previous_decision_ref !== previous.evidence_ref || typeof source.has_declared_work !== "boolean"
+        || !Array.isArray(source.citations) || source.citations.length !== cited.length) {
+        return "Previous-decision evidence must be replayed against the current scoped source.";
+      }
+      hasDeclaredWork = source.has_declared_work;
+      allowed.clear(); subsequent.clear(); linked.clear();
+      for (const [index, value] of source.citations.entries()) {
+        const row = requireJsonObject(value, "stride review citation");
+        if (row.evidence_ref !== cited[index] || typeof row.available !== "boolean"
+          || typeof row.subsequent !== "boolean" || typeof row.declared_work !== "boolean"
+          || row.declared_work && !row.subsequent || row.subsequent && !row.available) {
+          return "Previous-decision evidence replay is inconsistent.";
+        }
+        if (row.available) allowed.add(row.evidence_ref);
+        if (row.subsequent) subsequent.add(row.evidence_ref);
+        if (row.declared_work) linked.add(row.evidence_ref);
+      }
+    }
+    if (cited.some(ref => !allowed.has(ref))) return "Previous-decision claims cite an undelivered or unavailable evidence reference.";
+    const claimsOutcome = [review.adoption, review.information_gain, review.goal_gain].some(value => value !== "unknown");
+    if (claimsOutcome && !cited.some(ref => subsequent.has(ref))) {
+      return "Previous-decision claims require subsequent evidence; earlier comparisons alone cannot establish execution or outcome.";
+    }
+    if (hasDeclaredWork && (review.adoption === "executed" || review.adoption === "partially_executed" || review.goal_gain !== "unknown")
+      && !cited.some(ref => linked.has(ref))) {
+      return "Execution and goal-gain claims require subsequent evidence for the declared work; unrelated activity is insufficient.";
+    }
   }
   const basis = context.explore_basis as JsonObject | undefined;
   const explore = decision.explore_review as JsonObject | undefined;
@@ -310,6 +356,7 @@ export function strideControlContract(context: JsonObject, obligationId: unknown
     decision_value_review: {...decisionValueReview},
     review_text_limit: decisionSchema.review_text_limit,
     previous_decision_ref: previous,
+    ...(follow ? {decision_followthrough: follow} : {}),
     previous_review_options: {adoption: decisionSchema.adoption_options, information_gain: decisionSchema.information_options, goal_gain: decisionSchema.gain_options},
     explore_basis: context.explore_basis ?? null, explore_dispositions: decisionSchema.explore_dispositions,
     minimal_example: example,
