@@ -190,7 +190,9 @@ const mapRow = (todo_id: string, extra: JsonObject = {}): JsonObject => ({
 });
 function goalMap(items: JsonObject[], extra: JsonObject = {}): JsonObject {
   return projectGoalTaskMap({schema_version: GOAL_TASK_MAP_REQUEST, goal_id: "goal_test",
-    source_truncated: false, items, ...extra});
+    source_truncated: false, items,
+    read_facts: {observed_at: "2026-10-01T00:00:00Z", source_read_at: "2026-10-01T00:00:00Z",
+      source_count: items.length}, ...extra});
 }
 const mapProjection = (response: JsonObject) => response.projection as JsonObject;
 
@@ -202,7 +204,12 @@ test("goal map composes topology and materialization instructions without emitti
       task_domain: [], private_notes: "must not escape"}),
     mapRow("todo_monitor", {is_monitor: true}),
   ], {goal_id: " \uFEFFgoal_test\uFEFF "});
-  assert.deepEqual(response, {
+  const envelope = mapProjection(response).projection_envelope as JsonObject;
+  assert.equal(envelope.fresh, true);
+  assert.equal(envelope.complete, true);
+  const legacy = structuredClone(response);
+  delete (legacy.projection as JsonObject).projection_envelope;
+  assert.deepEqual(legacy, {
     schema_version: "goal_task_map_result_v0",
     projection: {
       schema_version: "goal_task_map_v0", mode: "read_only", goal_id: " \uFEFFgoal_test\uFEFF ",
@@ -229,13 +236,29 @@ test("goal map refuses duplicate canonical render-fact IDs", () => {
 });
 
 test("goal map returns a complete empty map and preserves an empty Goal ID", () => {
-  assert.deepEqual(goalMap([], {goal_id: ""}), {
+  const response = goalMap([], {goal_id: ""});
+  assert.equal((mapProjection(response).projection_envelope as JsonObject).complete, true);
+  delete (response.projection as JsonObject).projection_envelope;
+  assert.deepEqual(response, {
     schema_version: "goal_task_map_result_v0",
     projection: {schema_version: "goal_task_map_v0", mode: "read_only", goal_id: "",
       limits: {node_limit: 120, emitted_node_count: 0, omitted_node_count: 0, source_truncated: false,
         missing_endpoint_count: 0, cycle_edge_count: 0, topology_complete: true}, nodes: [], edges: []},
     node_identity_prefixes: [], node_metadata_fields: [], edge_identities: [],
   });
+});
+
+test("goal map seals source age, unknown reads and unrenderable source coverage in the existing owner", () => {
+  const facts = {observed_at: "2026-10-01T00:06:00Z", source_read_at: "2026-10-01T00:00:00Z", source_count: 2};
+  const envelope = mapProjection(goalMap([mapRow("todo_visible")], {read_facts: facts})).projection_envelope as JsonObject;
+  assert.equal(envelope.fresh, false);
+  assert.equal(envelope.complete, false);
+  assert.deepEqual((envelope.coverage as JsonObject).omitted,
+    [{reason: "unrenderable_todos", count: 1, refs: []}]);
+  const unknown = mapProjection(goalMap([], {read_facts: {...facts, source_read_at: null, source_count: 0}})).projection_envelope as JsonObject;
+  assert.equal(unknown.fresh, false);
+  assert.equal((unknown.sources as JsonObject[])[0]!.read_status, "not_read");
+  assert.throws(() => goalMap([mapRow("todo_visible")], {read_facts: {...facts, source_count: 0}}), /source count/);
 });
 
 test("goal map carries missing endpoints, source truncation and dependency cycles into limits", () => {

@@ -87,13 +87,62 @@ def get(server, path="/api/chat/delivery-review?goal_id=release-demo", origin=No
     return response.status, body
 
 
+def test_http_review_exposes_source_freshness_and_map_coverage(workspace):
+    server, _, _ = workspace
+    status, review = get(server)
+    assert status == 200
+    envelope = review["projection_envelope"]
+    assert envelope["projection"] == "delivery_review"
+    assert envelope["fresh"]
+    task_map = review["goal_map"]["projection_envelope"]
+    assert task_map["projection"] == "goal_task_map"
+    assert task_map["fresh"] and task_map["complete"]
+    assert task_map["coverage"]["expected_count"] == 5
+    assert task_map["coverage"]["included_count"] == 5
+    assert task_map["sources"][0]["last_read_at"] <= task_map["observed_at"]
+
+
+def test_http_review_discloses_unreadable_map_without_hiding_other_components(workspace, monkeypatch):
+    server, _, _ = workspace
+
+    def unreadable(**_kwargs):
+        raise PermissionError("synthetic unavailable source")
+
+    monkeypatch.setattr("loopx.chat_status_api.list_goal_todos", unreadable)
+    status, review = get(server)
+    assert status == 200 and review["goal_map"] is None and review["graph"] is not None
+    envelope = review["projection_envelope"]
+    assert not envelope["fresh"] and not envelope["complete"]
+    assert "unreadable_sources" in envelope["alert_reasons"]
+    assert envelope["coverage"]["omitted"] == [{"reason": "unavailable_components", "count": 1, "refs": []}]
+
+
+def test_http_review_inherits_source_age_and_replay_keeps_observation(workspace, monkeypatch):
+    from datetime import datetime, timedelta
+
+    from loopx.control_plane.status import collection
+    from loopx.control_plane.projection_envelope_facts import serve_projection_envelope
+
+    server, _, _ = workspace
+    monkeypatch.setattr(collection, "now_utc_iso", lambda: "2026-10-01T00:00:00Z")
+    status, review = get(server)
+    assert status == 200
+    envelope = review["projection_envelope"]
+    assert not envelope["fresh"] and "stale_sources" in envelope["alert_reasons"]
+    assert review["goal_map"]["projection_envelope"]["fresh"]
+    later = datetime.fromisoformat(envelope["served_at"].replace("Z", "+00:00")) + timedelta(minutes=6)
+    replay = serve_projection_envelope(envelope, served_at=later.isoformat())
+    assert replay["observed_at"] == envelope["observed_at"]
+    assert replay["served_from_cache"] and not replay["fresh"]
+
+
 def test_real_http_review_matches_cli_sources_without_canonical_writes(workspace):
     server, registry, runtime = workspace
     state = registry.parent / "ACTIVE_GOAL_STATE.md"
     before = (registry.read_bytes(), state.read_bytes())
     status, review = get(server)
     assert status == 200
-    assert set(review) == {"ok", "goal_id", "observed_at", "graph", "goal_map", "acceptance"}
+    assert set(review) == {"ok", "goal_id", "observed_at", "graph", "goal_map", "acceptance", "projection_envelope"}
     goal_map = review["goal_map"]
     titles = {node["refs"]["todo_ids"][0]: node for node in goal_map["nodes"]}
     # The whole-Goal map is not limited to the bounded chain's two expanded gates.
@@ -189,6 +238,8 @@ def test_canonical_http_goal_map_survives_repeated_reads_and_runtime_restart(
             assert status == 200
             goal_map = review["goal_map"]
             assert goal_map is not None
+            envelope = goal_map.pop("projection_envelope")
+            assert envelope["fresh"] and envelope["complete"]
             assert {**goal_map,
                     "nodes": sorted(goal_map["nodes"], key=lambda node: node["node_id"]),
                     "edges": sorted(goal_map["edges"], key=lambda edge: edge["edge_id"])} == expected

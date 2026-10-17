@@ -13,13 +13,34 @@ from loopx.control_plane.todos.contract import (
 from loopx.control_plane.work_items import task_graph
 
 
-def project(rows, *, goal_id="graph-fixture", source_truncated=False, normalizer=normalize_todo_status):
+def project(rows, *, goal_id="graph-fixture", source_truncated=False, normalizer=normalize_todo_status,
+            source_read_at=None):
     return task_graph.build_goal_task_map(
         goal_id=goal_id, todos=rows, source_truncated=source_truncated,
         public_safe_compact_text=public_safe_compact_text,
         normalize_todo_status=normalizer, todo_done_for_status=todo_done_for_status,
         todo_status_open=TODO_STATUS_OPEN, monitor_task_class=TODO_TASK_CLASS_MONITOR,
+        source_read_at=source_read_at,
     )
+
+
+def test_map_preserves_source_age_and_unknown_or_partial_coverage(monkeypatch):
+    monkeypatch.setattr(task_graph, "now_utc_iso", lambda: "2026-10-01T00:06:00Z")
+    rows = [{"todo_id": f"todo_work_{index}", "text": f"Review work {index}"} for index in range(121)]
+    result = project(rows, source_read_at="2026-10-01T00:00:00Z")
+    envelope = result["projection_envelope"]
+    assert not envelope["fresh"] and not envelope["complete"]
+    assert envelope["sources"][0]["last_read_at"] == "2026-10-01T00:00:00Z"
+    assert envelope["coverage"]["expected_count"] == 121
+    assert envelope["coverage"]["included_count"] == 120
+    assert envelope["coverage"]["omitted"] == [{"reason": "map_node_limit", "count": 1, "refs": []}]
+    unknown = project(rows[:1])["projection_envelope"]
+    assert not unknown["fresh"] and unknown["alert"]
+    assert unknown["sources"][0]["read_status"] == "not_read"
+    partial = project(rows[:1], source_truncated=True,
+                      source_read_at="2026-10-01T00:06:00Z")["projection_envelope"]
+    assert partial["fresh"] and not partial["complete"]
+    assert partial["coverage"]["expected_count"] is None
 
 
 @pytest.mark.parametrize(("role", "task_class", "kind", "owner_visible"), [
