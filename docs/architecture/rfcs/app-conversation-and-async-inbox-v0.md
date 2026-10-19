@@ -113,6 +113,30 @@ messages are excluded. Listening is neither a delivery receipt nor task
 acceptance. Native binding/composition/HTTP regressions qualify the source read
 model, while each provider's installed liveness and result return remain separate.
 
+### Continue an original private conversation on the local App
+
+Settings → Lark offers **Continue original conversation** on an existing
+owner-private connection. Discovery uses Core's verified binding selector and
+requires its echoed identity; the URL then freezes that binding and exact
+existing Session. Missing, malformed, revoked, closed or unsupported targets
+remain unavailable. There is no fallback to ordinary steward/project history,
+Session creation, executor change or model reconfiguration on this entry.
+Group audiences retain their existing boundary.
+
+The App reuses its conversation history, single composer, stream recovery and
+queued-input owners. Quiet source refresh reads the verified compact index;
+only changed snapshots are read. Messages arriving from the original source
+become visible without navigation, and Web sends retain Web origin through the
+existing Core queue and fresh source admission. The connection list loads
+independently of App/credential catalogs, so a failed catalog does not hide an
+existing conversation or label it disconnected.
+
+Real Chat HTTP/SQLite/Core with a synthetic provider and model qualifies source
+selection, both input origins, denial/recovery and no replacement Session.
+Packaged browser evidence qualifies the local UI path separately. Live Lark
+return delivery, installed service adoption, split-root composition and
+Goal-less project peer handoff remain open; this checkpoint does not close them.
+
 Synthetic product previews: [desktop](../../assets/personal-workspace/private-project-conversations.png),
 [narrow](../../assets/personal-workspace/private-project-conversations-narrow.png),
 [revoked workspace](../../assets/personal-workspace/private-project-workspace-revoked.png).

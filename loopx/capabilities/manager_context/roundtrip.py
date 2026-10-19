@@ -910,7 +910,10 @@ def _drain_exact(root, registry, store, external_sender, *, now, cancelled):
                 next_state = _retry_state(
                     state,
                     now,
-                    error="original_route_or_return_delivery_unavailable",
+                    # Before a provider write, preserve the Core-classified
+                    # resolution cause without changing its retry lifecycle.
+                    error=exc.reason if isinstance(exc, ReturnResolutionBlocked)
+                    else "original_route_or_return_delivery_unavailable",
                 )
             try:
                 _write_exact_return_state(
@@ -1305,7 +1308,8 @@ def drain(root, registry, store, external_sender, *, now=None, cancelled=lambda:
                     {
                         "status": "retry_pending",
                         "attempts": attempts,
-                        "error": "original_route_or_return_delivery_unavailable",
+                        "error": exc.reason if isinstance(exc, ReturnResolutionBlocked)
+                        else "original_route_or_return_delivery_unavailable",
                         "retry_at": (
                             now + timedelta(seconds=min(300, 5 * 2 ** min(attempts, 6)))
                         ).isoformat(),

@@ -1002,9 +1002,12 @@ export function PersonalWorkspacePage({
     return () => cancelAnimationFrame(frame);
   }, [agentWorkActive, selectionScope, selectedWorkAgentId, selectedGoalTab]);
   const selectedWorkspaceRef = workspaceConversations?.selectedRef ?? null;
+  const originalConversation = workspaceConversations?.bound;
+  const originalTitle = originalConversation?.source?.project_title
+    ?? (locale === "zh-CN" ? "原会话" : "Original conversation");
   const selectedWorkspaceProject = workspaceConversations?.projects?.find((project) => project.project_ref === selectedWorkspaceRef) ?? null;
   // A workspace scope exists only inside the steward conversation tab.
-  const managerChatOpen = selectedWorkspaceRef !== null || selectedGoalTab === "chat";
+  const managerChatOpen = originalConversation !== undefined || selectedWorkspaceRef !== null || selectedGoalTab === "chat";
   const workspaceUnavailable = selectedWorkspaceRef !== null && workspaceConversations?.projects != null && !selectedWorkspaceProject;
   const workspaceTitle = selectedWorkspaceRef ? selectedWorkspaceProject?.title ?? t("workspace.unknownTitle") : null;
   function setSelectedGoalTab(view: WorkspaceGoalTab) {
@@ -1076,7 +1079,7 @@ export function PersonalWorkspacePage({
     setRecheckingRuntimes(true);
     callbacks.onRecheckRuntimes();
   }
-  const conversationKey = selectedWorkspaceRef
+  const conversationKey = originalConversation ? conversationContextKey({ kind: "bound", ...originalConversation.target }) : selectedWorkspaceRef
     ? conversationContextKey({ kind: "project", projectRef: selectedWorkspaceRef })
     : selectedGoalId ?? "manager";
   const composerDraftKey = `${conversationKey}:${selectedAgentId}`;
@@ -2281,7 +2284,7 @@ export function PersonalWorkspacePage({
   async function sendMessage(messageOverride?: string, intent: "send" | "steer" = "send") {
     const pendingImages = messageOverride ? [] : imageAttachments;
     const message = (messageOverride ?? composer).trim() || (pendingImages.length ? t("composer.imageAnalysisPrompt") : "");
-    if (!message || composerBlocked || conversationHistoryState?.sendBlocked) return;
+    if (!message || composerBlocked || workspaceUnavailable || (originalConversation && !originalConversation.session?.resumable) || conversationHistoryState?.sendBlocked) return;
     const previousSteering = readSteeringRequest(composerDraftKey);
     const retry = previousSteering && previousSteering.sessionId === conversationSessionId && previousSteering.text.trim() === message
       ? previousSteering : undefined;
@@ -2483,6 +2486,9 @@ export function PersonalWorkspacePage({
   const settingsPage = settingsOpen ? (
     <Suspense fallback={<p className="personal-lazy-loading" role="status">{t("common.loading")}</p>}>
       <WorkspaceSettingsPage
+        onOpenOriginalConversation={!readOnly && !rootGoalId && workspaceConversations?.onOpenOriginal ? target => {
+          closeSettings(); workspaceConversations.onOpenOriginal!(target);
+        } : undefined}
         callbacks={effectiveDrawerCallbacks}
         focusGoalConnection={Boolean(selection?.kind === "settings" && selection.goalId)}
         goalNotifications={model.goalNotifications ?? []}
@@ -2579,7 +2585,7 @@ export function PersonalWorkspacePage({
     }
   }, [attentionKeySignature, attentionNotificationsActive, attentionNotificationSupportState, t]);
 
-  const composerSuggestions = !selectedWorkspaceRef && (!conversationOpen || !conversationMessages.length) ? <details className="personal-composer-tools" key={conversationKey} onKeyDown={(event) => {
+  const composerSuggestions = !originalConversation && !selectedWorkspaceRef && (!conversationOpen || !conversationMessages.length) ? <details className="personal-composer-tools" key={conversationKey} onKeyDown={(event) => {
     if (event.key !== "Escape") return;
     event.currentTarget.open = false;
     event.currentTarget.querySelector("summary")?.focus();
@@ -2675,10 +2681,11 @@ export function PersonalWorkspacePage({
         <div className="personal-channel">
           <div>
           <ChannelHeader
+            originalConversationTitle={originalConversation ? `${originalConversation.source?.app_ref ?? "Lark"} · ${originalTitle}` : undefined}
             agents={agents}
             scopeUnavailable={rootUnavailable}
             agentWorkActive={agentWorkActive}
-            conversationScope={workspaceConversations && (workspaceConversations.projects?.length || workspaceConversations.readFailed || selectedWorkspaceRef) ? {
+            conversationScope={!originalConversation && workspaceConversations && (workspaceConversations.projects?.length || workspaceConversations.readFailed || selectedWorkspaceRef) ? {
               onChange: (value) => {
                 setActiveSessionRun(null);
                 workspaceConversations.onSelect(value === stewardScopeValue ? null : value);
@@ -2701,7 +2708,7 @@ export function PersonalWorkspacePage({
             onOpenGoalDetails={selectedGoal ? () => setSelection({ kind: "goal", item: selectedGoal }) : undefined}
             onOpenGoalCapabilities={selectedGoal && !readOnly ? () => openSettings({ goalId: selectedGoal.goalId, kind: "settings", tab: "capabilities" }) : undefined}
             onOpenManagerSettings={!readOnly ? () => openSettings({ kind: "settings", tab: "steward" }) : undefined}
-            onOpenConversationSettings={!readOnly ? () => openSettings({kind: "settings", tab: "conversation"}, true) : undefined}
+            onOpenConversationSettings={!readOnly && !originalConversation ? () => openSettings({kind: "settings", tab: "conversation"}, true) : undefined}
             onRefresh={callbacks.onRefresh && !runtimeSourceUnavailable ? () => void refreshWorkspace() : undefined}
             onOpenNavigation={() => setMobileSidebarOpen(true)}
             onOpenManagerChat={() => {
@@ -2716,7 +2723,7 @@ export function PersonalWorkspacePage({
             onSelectAgentModel={(modelId) => callbacks.onSelectAgentModel?.(selectedAgentId, modelId)}
             onSelectAgentReasoningEffort={(effort) => callbacks.onSelectAgentReasoningEffort?.(selectedAgentId, effort)}
             onReturnManagerHome={() => {
-              if (selectedWorkspaceRef) workspaceConversations?.onSelect(null);
+              if (selectedWorkspaceRef || originalConversation) workspaceConversations?.onSelect(null);
               setSelectedGoalTab("overview");
               setManagerConversationReceiptVisible(false);
               window.requestAnimationFrame(() => channelScrollRef.current?.scrollTo({ behavior: "smooth", top: 0 }));
@@ -2826,8 +2833,8 @@ export function PersonalWorkspacePage({
                 onViewAllOperations={() => setSelectedGoalTab("chat")} />
             ) : (
               <ChannelTimeline emptyState={workspaceTitle ? { title: workspaceTitle, description: t("workspace.empty") } : undefined} onReviewGoalDraft={readOnly ? undefined : reviewGoalDraft} onSuggestReply={readOnly ? undefined : suggestReply}
-                items={selectedWorkspaceRef ? managerChatItems.filter((item) => item.kind === "message") : managerChatItems}
-                onSelect={setSelection} selectedGoal={null} showManagerTeamResults={!selectedWorkspaceRef}
+                items={selectedWorkspaceRef || originalConversation ? managerChatItems.filter((item) => item.kind === "message") : managerChatItems}
+                onSelect={setSelection} selectedGoal={null} showManagerTeamResults={!selectedWorkspaceRef && !originalConversation}
                 onAdjustTurn={steeringTurnId ? focusTurnComposer : undefined}
                 onCancelPreparation={!readOnly && callbacks.onCancelConversationPreparation
                   ? () => callbacks.onCancelConversationPreparation!(conversationKey) : undefined}
@@ -2839,6 +2846,14 @@ export function PersonalWorkspacePage({
             </> : null}
           </div>
           {!rootUnavailable ? <div className="personal-composer-wrap" hidden={agentWorkActive}>
+            {originalConversation && !originalConversation.session?.resumable ? <div className="personal-history-notice" role={originalConversation.error ? "alert" : "status"}>
+              <span>{originalConversation.session
+                ? (locale === "zh-CN" ? "可以回看原记录；此执行器暂不支持继续原会话。" : "Original history is available; this executor cannot continue its Session.")
+                : originalConversation.error
+                ? (locale === "zh-CN" ? "原会话暂不可用。请检查飞书连接后重试。" : "Original conversation unavailable. Check the Lark connection and retry.")
+                : (locale === "zh-CN" ? "正在核验原会话…" : "Verifying the original conversation…")}</span>
+              {originalConversation.error ? <button type="button" onClick={originalConversation.retry}>{t("history.retry")}</button> : null}
+            </div> : null}
             {!readOnly && actionReadback.isError ? <div className="personal-history-notice" role="status" data-testid="personal-action-readback-error">
               <span>{t("proposal.readbackUnavailable")}</span><button type="button" disabled={actionReadback.isFetching}
                 onClick={() => void actionReadback.refetch()}>{t("proposal.readbackRetry")}</button>
@@ -2995,7 +3010,7 @@ export function PersonalWorkspacePage({
                 rows={1}
                 value={composer}
               />
-              <button aria-label={t("composer.send")} disabled={(!composer.trim() && imageAttachments.length === 0) || composerBlocked || workspaceUnavailable || conversationHistoryState?.sendBlocked} onClick={() => void sendMessage()} title={t("composer.sendMessageHint")} type="button"><Send size={18} /></button>
+              <button aria-label={t("composer.send")} disabled={(!composer.trim() && imageAttachments.length === 0) || composerBlocked || workspaceUnavailable || (originalConversation && !originalConversation.session?.resumable) || conversationHistoryState?.sendBlocked} onClick={() => void sendMessage()} title={t("composer.sendMessageHint")} type="button"><Send size={18} /></button>
             </div>
             {conversationOpen ? <div className="personal-composer-hint">{steering
               ? (locale === "zh-CN" ? "正在发送…" : "Sending…")

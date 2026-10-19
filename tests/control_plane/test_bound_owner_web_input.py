@@ -273,6 +273,57 @@ def test_http_bound_steward_keeps_web_provenance_at_coordination_root(bound_chat
         external_source_policy(store.root.parent, session, turn)
 
 
+def test_http_web_handoff_reports_missing_provider_source_without_retargeting(bound_chat):
+    from types import SimpleNamespace
+    from loopx.capabilities.manager_context import acknowledge
+    from loopx.capabilities.manager_context.roundtrip import drain, report, reply_status
+    from loopx.extensions.lark.manager_returns import LarkManagerReturnTransport
+    from loopx.extensions.lark.private_conversations import LarkPrivateConversations
+
+    store, runtime, _, _, post, open_bound, capture, canonical = bound_chat
+    fake = Path(runtime.codex_bin)
+    # Only model output is synthetic; HTTP admission, source grants, handoff,
+    # canonical inbox, Chat storage and the Lark return owner remain real.
+    needle = '"message": "Runtime response.",'
+    source = fake.read_text()
+    assert source.count(needle) == 1
+    fake.write_text(source.replace(needle, needle +
+        '\n            "context_handoff": {"goal_id": "goal-a", "agent_id": "agent-a"},'))
+    _, session = open_bound("steward")
+    sid = session["session_id"]
+    message = "Ask the registered worker to check this source and return here."
+    status, accepted = post(session, {"message": message, "client_turn_id": "local-worker-request"})
+    assert status == 202, accepted
+    turn = runtime.wait_for_turn(session_id=sid, turn_id=accepted["turn_id"], timeout_sec=15)
+    assert turn["status"] == "completed", turn
+    receipt = turn["response"]["context_handoff_receipt"]
+    assert receipt["status"] == "delivered"
+    assert turn["origin"] == "web" and canonical != store.root.parent
+    acknowledge(canonical, "goal-a", "agent-a", receipt["request_id"], "adopt", "Checked source",
+                registry=runtime.registry_path, caller_goal_ref=receipt.get("goal_ref"))
+    report(canonical, "goal-a", "agent-a", receipt["request_id"], "conclusion", "Checked the original source.",
+           registry=runtime.registry_path, caller_goal_ref=receipt.get("goal_ref"))
+
+    def forbidden_provider(*_):
+        pytest.fail("A Web request cannot fabricate a provider event or guess a prior message")
+
+    private = LarkPrivateConversations(controller=runtime, runtime_root=store.root.parent,
+                                      runner=forbidden_provider, cli_bin="synthetic-provider")
+    server = SimpleNamespace(registry_path=runtime.registry_path, lark_private_conversations=private,
+        lark_goal_topic_runtime=SimpleNamespace(snapshot_provider=forbidden_provider))
+    drain(canonical, runtime.registry_path, store, LarkManagerReturnTransport(server, canonical))
+    delivery = reply_status(canonical, receipt)[0]
+    assert delivery["status"] == "retry_pending"
+    assert delivery["error"] == "original_route_unavailable"
+    returned = [row for row in store.messages(sid) if row.get("origin") == "manager_followup"]
+    assert len(returned) == 1 and returned[0]["turn_id"] == turn["turn_id"]
+    status, replay = post(session, {"message": message, "client_turn_id": "local-worker-request"})
+    assert status == 202 and not replay["created"] and replay["turn_id"] == turn["turn_id"]
+    assert store.load_session(sid)["upstream_thread_id"] == session["upstream_thread_id"]
+    calls = [json.loads(line) for line in capture.read_text().splitlines()]
+    assert sum(row.get("method") == "turn/start" for row in calls) == 1
+
+
 @pytest.mark.parametrize("mutation", ["operator_ref", "provider_ref", "verified", "workspace", "revoked", "closed", "body_origin"])
 def test_local_input_denies_lost_source_and_client_supplied_identity(bound_chat, mutation):
     store, runtime, bindings, observed, post, open_bound, _, canonical = bound_chat

@@ -692,18 +692,32 @@ export async function recordProjectionExchange(options: {
 export type ConversationContext =
   | { kind: "manager" }
   | { kind: "goal"; goalId: string }
-  | { kind: "project"; projectRef: string };
+  | { kind: "project"; projectRef: string }
+  // A UI address for an existing source-owned Session, never a new Core channel.
+  | ({ kind: "bound" } & BoundConversationTarget);
+
+export type BoundConversationTarget = { bindingId: string; sessionId: string };
+
+/** Goal projections cannot answer a source-owned or ordinary workspace Chat. */
+export function conversationSupportsStatusProjection(context: ConversationContext) {
+  return context.kind === "manager" || context.kind === "goal";
+}
 
 // Goal ids are single path segments, so a key containing "/" never names a Goal.
 const PROJECT_CONVERSATION_KEY_PREFIX = "project/";
 
 export function conversationContextKey(context: ConversationContext): string {
   if (context.kind === "manager") return "manager";
+  if (context.kind === "bound") return `bound/${encodeURIComponent(context.bindingId)}/${encodeURIComponent(context.sessionId)}`;
   return context.kind === "goal" ? context.goalId : `${PROJECT_CONVERSATION_KEY_PREFIX}${context.projectRef}`;
 }
 
 export function conversationContextOfKey(key: string): ConversationContext {
   if (key === "manager") return { kind: "manager" };
+  if (key.startsWith("bound/")) {
+    const [, bindingId = "", sessionId = ""] = key.split("/");
+    return { kind: "bound", bindingId: decodeURIComponent(bindingId), sessionId: decodeURIComponent(sessionId) };
+  }
   if (key.startsWith(PROJECT_CONVERSATION_KEY_PREFIX)) {
     return { kind: "project", projectRef: key.slice(PROJECT_CONVERSATION_KEY_PREFIX.length) };
   }
@@ -712,6 +726,7 @@ export function conversationContextOfKey(key: string): ConversationContext {
 
 export function conversationChannelId(context: ConversationContext): string {
   if (context.kind === "manager") return "manager";
+  if (context.kind === "bound") return conversationContextKey(context);
   return context.kind === "goal" ? `goal.${context.goalId}` : `project.${context.projectRef}`;
 }
 
@@ -723,6 +738,17 @@ export async function createChatSession(
   agentModelId?: string,
   agentReasoningEffort?: string,
 ) {
+  if (context.kind === "bound") {
+    if (mode !== "resume_latest" || agentModelId || agentReasoningEffort) {
+      throw new Error("An original conversation cannot be replaced or reconfigured here.");
+    }
+    const session = await resolveBoundChatSession(context, signal);
+    if (!session.resumable || (agentId && agentId !== session.agent_id)) {
+      throw new Error("The original conversation is unavailable on its executor.");
+    }
+    return { ok: true as const, resumed: true, session_id: session.session_id,
+      agent_id: session.agent_id, goal_id: session.goal_id, session };
+  }
   return requestJson<{
     agent_id: string;
     goal_id: string | null;
@@ -792,8 +818,19 @@ export type ChatSessionSummary = {
 
 export type { ChatProject };
 
+const chatProjectsSchema = z.object({
+  ok: z.literal(true),
+  projects: z.array(z.object({
+    project_ref: z.string().min(1), title: z.string(),
+    grant: z.enum(["workspace_read", "workspace_write"]),
+    goal_workspace_ref: z.string().optional(),
+  })),
+});
+
 export async function fetchChatProjects(signal?: AbortSignal) {
-  return requestJson<{ok: true; projects: ChatProject[]}>("/api/chat/projects", {signal});
+  const parsed = chatProjectsSchema.safeParse(await requestJson<unknown>("/api/chat/projects", {signal}));
+  if (!parsed.success) throw new Error("The workspace list could not be read. Refresh to retry.");
+  return parsed.data;
 }
 
 /** ``chat_store`` Session modes; an omitted mode is a managed runtime Session. */
@@ -873,24 +910,58 @@ export type ChatSessionSnapshot = {
 };
 
 export async function fetchChatSession(sessionId: string, signal?: AbortSignal) {
-  return requestJson<ChatSessionSnapshot>(`/api/chat/sessions/${sessionId}`, { signal });
+  return requestJson<ChatSessionSnapshot>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, { signal });
 }
 
 export async function fetchChatSessions(options: {
   agentId?: string;
   channelId?: string;
   goalId?: string;
+  bound?: BoundConversationTarget;
   signal?: AbortSignal;
 }) {
   const query = new URLSearchParams();
-  if (options.agentId) query.set("agent_id", options.agentId);
-  if (options.channelId) query.set("channel_id", options.channelId);
-  if (options.goalId) query.set("goal_id", options.goalId);
-  return requestJson<{
+  if (options.bound) {
+    if (!/^[a-f0-9]{24}$/.test(options.bound.bindingId)
+      || !/^[A-Za-z0-9._-]{1,160}$/.test(options.bound.sessionId)) {
+      throw new Error("Invalid original conversation address.");
+    }
+    query.set("conversation_binding_id", options.bound.bindingId);
+  } else {
+    if (options.agentId) query.set("agent_id", options.agentId);
+    if (options.channelId) query.set("channel_id", options.channelId);
+    if (options.goalId) query.set("goal_id", options.goalId);
+  }
+  const listed = await requestJson<{
     ok: true;
     schema_version: "loopx_chat_session_list_v1";
+    conversation_binding_id?: string;
     sessions: ChatSessionSummary[];
   }>(`/api/chat/sessions?${query.toString()}`, { signal: options.signal });
+  if (!options.bound) return listed;
+  // An older service may ignore the selector and return unrelated ordinary
+  // history. The owner's echo is mandatory before any transcript is read.
+  if (listed.conversation_binding_id !== options.bound.bindingId) {
+    throw new Error("This service cannot verify the original conversation. Update LoopX and retry.");
+  }
+  const sessions = listed.sessions.filter(row => row.session_id === options.bound!.sessionId);
+  if (sessions.length !== 1) throw new Error("The original conversation is no longer available from this connection.");
+  return { ...listed, sessions };
+}
+
+export async function resolveBoundChatSession(target: BoundConversationTarget, signal?: AbortSignal) {
+  return (await fetchChatSessions({ bound: target, signal })).sessions[0];
+}
+
+/** Discovery chooses once; subsequent navigation freezes the exact Session. */
+export async function discoverBoundChatSession(bindingId: string, signal?: AbortSignal) {
+  if (!/^[a-f0-9]{24}$/.test(bindingId)) throw new Error("Invalid conversation connection.");
+  const listed = await requestJson<{ conversation_binding_id?: string; sessions: ChatSessionSummary[] }>(
+    `/api/chat/sessions?conversation_binding_id=${bindingId}`, { signal });
+  if (listed.conversation_binding_id !== bindingId) throw new Error("This service cannot verify the original conversation. Update LoopX and retry.");
+  const session = [...listed.sessions].sort((a, b) => b.last_activity_at.localeCompare(a.last_activity_at))[0];
+  if (!session || !/^[A-Za-z0-9._-]{1,160}$/.test(session.session_id)) throw new Error("No original conversation is available yet. Start it in Lark first.");
+  return session;
 }
 
 export function mergeChatSessionMessages(snapshots: ChatSessionSnapshot[]) {
@@ -920,13 +991,28 @@ export async function fetchChatHistory(options: {
   agentId?: string;
   channelId: string;
   goalId?: string;
+  bound?: BoundConversationTarget;
 }, previous?: ChatHistory): Promise<ChatHistory> {
-  const listed = previous ?? await fetchChatSessions({ ...options, signal: AbortSignal.timeout(5000) });
+  // Source authorization must be re-read even when recovering an older snapshot.
+  const listed = (!options.bound ? previous : undefined) ?? await fetchChatSessions({ ...options, signal: AbortSignal.timeout(5000) });
   const known = new Map(previous?.snapshots.map((snapshot) => [snapshot.session.session_id, snapshot]));
   // A failed historical read is not an empty transcript. Retrying only the
   // missing snapshots keeps this recovery read-only and bounds repeated work.
-  const missing = listed.sessions.filter((session) => !known.has(session.session_id));
-  const results = await Promise.allSettled(missing.map((session) => fetchChatSession(session.session_id, AbortSignal.timeout(5000))));
+  const missing = listed.sessions.filter((session) => {
+    const saved = known.get(session.session_id)?.session;
+    return !saved || (options.bound && (!session.transcript_revision
+      || session.transcript_revision !== saved.transcript_revision
+      || session.updated_at !== saved.updated_at || session.active_turn_id !== saved.active_turn_id
+      || session.status !== saved.status));
+  });
+  if (options.bound) for (const session of missing) known.delete(session.session_id);
+  const results = await Promise.allSettled(missing.map(async (session) => {
+    const snapshot = await fetchChatSession(session.session_id, AbortSignal.timeout(5000));
+    if (snapshot.session.session_id !== session.session_id || snapshot.session.agent_id !== session.agent_id) {
+      throw new Error("The original Session identity changed during history read.");
+    }
+    return snapshot;
+  }));
   for (const result of results) {
     if (result.status === "fulfilled") known.set(result.value.session.session_id, result.value);
   }
@@ -2536,8 +2622,8 @@ export type PrivateConversationStopRecovery = z.infer<typeof privateConversation
 const privateConversationsSchema = z.object({ok: z.literal(true), revision: z.number().int(),
   connections: z.array(privateConversationSchema), stop_recoveries: z.array(privateConversationStopRecoverySchema).default([])});
 export type PrivateConversation = z.infer<typeof privateConversationSchema>;
-export async function fetchPrivateConversations() {
-  return privateConversationsSchema.parse(await requestJson<unknown>("/api/chat/lark/private-conversations"));
+export async function fetchPrivateConversations(signal?: AbortSignal) {
+  return privateConversationsSchema.parse(await requestJson<unknown>("/api/chat/lark/private-conversations", { signal }));
 }
 export async function connectPrivateConversation(appRef: string, projectRef: string, executor: string, contextKind: "project" | "steward" = "project", projectGrant: "workspace_read" | "workspace_write" = "workspace_write", groupIds?: string[]) {
   return privateConversationsSchema.parse(await requestJson<unknown>("/api/chat/lark/private-conversations", {

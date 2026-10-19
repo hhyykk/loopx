@@ -76,7 +76,8 @@
     "smoke:conversation-returns-packaged": "LOOPX_PLAYWRIGHT_PACKAGE=\"$PWD/node_modules/playwright\" node smoke/conversation-return-browser-smoke.mjs",
     "smoke:workspace-scope-packaged": "LOOPX_PLAYWRIGHT_PACKAGE=\"$PWD/node_modules/playwright\" node smoke/workspace-scope-browser-smoke.mjs",
     "smoke:recent-completions": "tsc --ignoreConfig --target ES2022 --module CommonJS --moduleResolution Node --ignoreDeprecations 6.0 --resolveJsonModule --esModuleInterop --jsx react-jsx --skipLibCheck --strict --types node --outDir /tmp/loopx-recent-completions-smoke smoke/recent-completions-smoke.ts && NODE_PATH=\"$PWD/node_modules\" node /tmp/loopx-recent-completions-smoke/apps/presentation/dashboard/smoke/recent-completions-smoke.js",
-    "smoke:task-inspector-route": "LOOPX_PLAYWRIGHT_PACKAGE=\"$PWD/node_modules/playwright\" node smoke/task-inspector-route-smoke.mjs"
+    "smoke:task-inspector-route": "LOOPX_PLAYWRIGHT_PACKAGE=\"$PWD/node_modules/playwright\" node smoke/task-inspector-route-smoke.mjs",
+    "smoke:bound-conversation": "vite build --ssr smoke/bound-conversation-smoke.ts --outDir node_modules/.cache/loopx-bound-conversation --emptyOutDir && node node_modules/.cache/loopx-bound-conversation/bound-conversation-smoke.js"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

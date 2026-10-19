@@ -43,6 +43,10 @@ const searchSchema = z.object({
   todo: z.string().regex(/^[A-Za-z0-9._:-]{1,200}$/).optional().catch(undefined),
   // Scopes the steward conversation to a host-granted workspace; selecting a Goal clears it.
   workspace: z.string().regex(/^[A-Za-z0-9]{1,80}$/).optional().catch(undefined),
+  // Preserve malformed/partial addresses so they fail closed in the source
+  // reader instead of silently opening an ordinary steward conversation.
+  conversationBinding: z.unknown().transform(value => typeof value === "string" ? value : JSON.stringify(value)).optional(),
+  conversationSession: z.unknown().transform(value => typeof value === "string" ? value : JSON.stringify(value)).optional(),
   statusUrl: z.string().optional().default(""),
   view: z.enum(["conversation", "overview", "tasks", "files"]).optional(),
   reportSessionId: z.string().regex(/^[A-Za-z0-9._-]{1,160}$/).optional(),

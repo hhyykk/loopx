@@ -79,6 +79,24 @@ Lark listener 观测。该本地 hook 只读取缓存，不发起网络请求。
 异常原文。监听就绪不等于送达回执或任务验收。原生 binding、宿主组合和 HTTP 回归
 验证源码读模型；各 provider 的安装态监听及结果回传仍分别验收。
 
+### 在本机 App 继续原私聊会话
+
+设置 → Lark 在已有本人私聊连接上提供 **继续原会话**。发现过程使用 Core 已核验
+的 binding 选择器，并要求响应回显同一身份；之后 URL 固定该 binding 和确切的
+已有 Session。目标缺失、地址非法、撤权、会话关闭或服务不支持时明确不可用，
+不回退到普通管家/项目历史，不新建替代 Session，也不在这里切换执行器或模型。
+群受众保留原有边界。
+
+App 复用原对话历史、单输入框、流恢复和排队输入 owner。安静刷新读取经核验的
+紧凑索引，仅在变化时读取快照；原来源新增消息无需导航即可显示，Web 输入保留
+Web 来源，通过已有 Core 队列及新鲜来源准入。连接列表独立于 App/凭证目录加载，
+目录失败不会隐藏已有会话或将其标为未连接。
+
+真实 Chat HTTP/SQLite/Core 配合合成 provider 与模型，验证来源选择、两种输入
+来源、拒绝/恢复及不创建替代 Session；打包浏览器证据另行验证本机 UI 路径。
+真实 Lark 结果回传、安装态服务采用、分离运行根组合及无 Goal 项目的 peer 交办
+仍未关闭，不由此检查点代替。
+
 ![合成私聊工作区设置](../../assets/personal-workspace/private-project-conversations.png)
 ![窄屏私聊设置](../../assets/personal-workspace/private-project-conversations-narrow.png)
 ![工作区撤权读回](../../assets/personal-workspace/private-project-workspace-revoked.png)

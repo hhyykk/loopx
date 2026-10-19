@@ -60,6 +60,9 @@ export const stewardGroupTriggerScenario = {
       if (api.larkWrites[1]?.turn_trigger !== "addressed") throw new Error("Trigger not restored");
       if (context.errors.length) throw new Error(context.errors.join(" | "));
       return {coverageEntries: await context.close(), note: "Steward group trigger opt-in/readback/revocation and typed non-execution feedback; desktop and narrow screen; scripted provider state only"};
-    } catch (error) { await context.close(); throw error; }
+    } catch (error) {
+      await context.close();
+      throw new Error(`${error.message}; page errors=${context.errors.join(" | ")}`, {cause: error});
+    }
   },
 };

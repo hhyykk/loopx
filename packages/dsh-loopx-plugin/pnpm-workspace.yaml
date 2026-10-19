@@ -1,3 +1,11 @@
+packages:
+  - '.'
+
+# pnpm 9 reads the package.json projection; newer pnpm reads this one.
+# The frozen-version matrix keeps both consistent with the existing lock.
+overrides:
+  '@deepseek-ai/libreoffice-kit>fflate': 0.8.3
+
 allowBuilds:
   '@deepseek-ai/dsh-subprocess-local': false
   '@google/genai': false
