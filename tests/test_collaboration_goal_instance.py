@@ -374,14 +374,14 @@ def test_inbox_read_rejects_recreation_before_response_commit(
     replacement = tmp_path / "replacement"
     replacement.mkdir()
     (replacement / input_path.name).write_text("instance B", encoding="utf-8")
-    render_followthrough = links.receiver_followthrough
+    read_work = links.receiver_work_observations
 
     def recreate_before_input_read(root, registry_path, items):
-        rendered = render_followthrough(root, registry_path, items)
+        rendered = read_work(root, registry_path, items)
         _recreate(registry, repo=replacement)
         return rendered
 
-    monkeypatch.setattr(links, "receiver_followthrough", recreate_before_input_read)
+    monkeypatch.setattr(links, "receiver_work_observations", recreate_before_input_read)
 
     with pytest.raises(ValueError, match="historical_mutation_forbidden"):
         read_inbox(
@@ -448,13 +448,22 @@ def test_inbox_read_does_not_commit_peer_return_before_response_succeeds(
         caller_goal_ref=goal_ref,
     )
 
+    # A real incoming input requires Host enrichment before the peer read commits.
+    input_path = tmp_path / "input.txt"
+    input_path.write_text("Current instance input", encoding="utf-8")
+    incoming_brief = {
+        **_brief("Inspect the current input before acknowledging peer delivery"),
+        "inputs": [{"ref": input_path.name, "description": "Current source input"}],
+    }
+    request(tmp_path, registry, "delivery", "reviewer", "builder", "read-input", incoming_brief)
+
     def interrupt_response(*_args):
         if interruption == "goal_recreation":
             _recreate(registry)
             return None
         raise RuntimeError("response enrichment failed")
 
-    monkeypatch.setattr(links, "receiver_followthrough", interrupt_response)
+    monkeypatch.setattr(links, "receiver_work_observations", interrupt_response)
 
     expected_error = ValueError if interruption == "goal_recreation" else RuntimeError
     expected_message = (

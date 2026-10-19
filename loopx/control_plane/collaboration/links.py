@@ -9,7 +9,6 @@ from __future__ import annotations
 from ...control_plane.todos.list_readback import list_goal_todos
 from ..runtime.public_safety import public_safe_compact_text
 from ..todos.contract import TODO_ID_PATTERN
-from ..effect_runtime import effect_runtime_result
 from ..content_digest import ENVELOPED_SHA256_PATTERN
 from .inbox import _entry, _now, _receipt, _request_lock, _root, _write
 from .goal_instance_scope import collaboration_goal_scope, decide_collaboration_lifecycle
@@ -72,31 +71,19 @@ def read_linked_work(root, registry_path, item, todos_cache, *, include_core_det
     }
 
 
-def receiver_followthrough(root, registry_path, items):
-    """Compose one bounded read model for CLI and scoped MCP receivers.
-
-    Does not select work, create a Todo, infer links from prose or write a
-    decision on behalf of another Agent. The typed owner supplies advice.
-    """
+def receiver_work_observations(root, registry_path, items):
+    """Read the actual linked Core provider once per Goal instance."""
     todos_cache, observations = {}, []
     for item in items:
         work = read_linked_work(root, registry_path, item, todos_cache, include_core_details=True)
         observations.append({
-            "kind": item["inbox_state"],
-            "recorded_decision": item["recorded_decision"],
-            "linked_todos": work["linked_todos"],
-            "evidence_refs": work["evidence_refs"],
+            "kind": item["inbox_state"], "recorded_decision": item["recorded_decision"],
+            "linked_todos": work["linked_todos"], "evidence_refs": work["evidence_refs"],
             "evidence_unavailable": work["evidence_unavailable"],
         })
         if work["warnings"]:
             item.setdefault("warnings", []).extend(work["warnings"])
-    if items:
-        views = effect_runtime_result(
-            "collaboration.inbox.receiver_followthrough", {"observations": observations}
-        )["items"]
-        for item, view in zip(items, views, strict=True):
-            item["receiver_followthrough"] = view
-    return items
+    return observations
 
 
 def link(
