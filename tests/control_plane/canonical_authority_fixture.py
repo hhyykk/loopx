@@ -12,6 +12,15 @@ import subprocess
 import tempfile
 
 
+def assert_todo_read_unchanged(current, previous):
+    """Compare durable/read content while checking the separate observation scope."""
+    assert current["projection_envelope"]["schema_version"] == "loopx_projection_envelope_v0"
+    if "projection_envelope" in previous:
+        assert current["projection_envelope"]["coverage"] == previous["projection_envelope"]["coverage"]
+    assert {key: value for key, value in current.items() if key != "projection_envelope"} == {
+        key: value for key, value in previous.items() if key != "projection_envelope"}
+
+
 def initialize_canonical_authority(runtime_root: Path, goal_id: str, projection: dict, *, state_path: Path, provider: str = "file") -> dict:
     repository = Path(__file__).resolve().parents[2]
     module = repository / "loopx/control_plane/coordination/file_authority_store.ts"

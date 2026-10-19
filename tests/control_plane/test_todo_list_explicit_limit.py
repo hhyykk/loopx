@@ -201,8 +201,7 @@ def test_default_payload_keeps_the_pre_limit_shape(tmp_path: Path) -> None:
 
     payload = list_goal_todos(registry_path=registry_path, goal_id=GOAL_ID)
 
-    # The no-limit cold path is byte-identical to the pre---limit shape:
-    # no explicit-limit disclosure fields appear.
+    # The cold view retains its fields and adds the required read provenance.
     assert set(payload) == {
         "ok",
         "dry_run",
@@ -218,7 +217,9 @@ def test_default_payload_keeps_the_pre_limit_shape(tmp_path: Path) -> None:
         "project",
         "user_todos",
         "agent_todos",
+        "projection_envelope",
     }
+    assert payload["projection_envelope"]["coverage"]["expected_count"] == 16
     assert payload["todo_count"] == 16
     assert len(payload["todos"]) == 16
     for absent_key in (

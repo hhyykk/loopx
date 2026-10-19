@@ -6,7 +6,6 @@ from typing import Any
 
 from ..coordination.local_authority import (
     CanonicalTodoSnapshot,
-    canonical_todo_summary_fields,
     read_canonical_todos_if_promoted,
 )
 from ..goals.active_state_metadata import parse_state_frontmatter
@@ -91,11 +90,11 @@ def active_state_todo_fields(
                 goal = {**goal, **source_goal}
     # Inspect authority before the display file. A missing/stale projection is
     # not an empty Todo collection, and an unavailable provider must fail closed.
-    canonical_reader = todo_snapshot.read if todo_snapshot is not None else read_canonical_todos_if_promoted
-    canonical = (
-        canonical_reader(runtime_root=runtime_root, goal_id=goal_id)
-        if runtime_root is not None and goal_id else None
-    )
+    canonical = (None if runtime_root is None or not goal_id else
+        todo_snapshot.read(runtime_root=runtime_root, goal_id=goal_id) if todo_snapshot is not None else
+        read_canonical_todos_if_promoted(runtime_root=runtime_root, goal_id=goal_id,
+            include_summary=True, rollout_events=TodoResumeRolloutEvents(
+                rollout_events or [], runtime_root=runtime_root, goal_id=goal_id)))
     state_path = resolve_goal_local_path(goal.get("state_file"), goal, fallback_base=Path.cwd())
     if canonical is None and state_path is not None:
         from ..goals.legacy_event_source import require_no_legacy_todo_events
@@ -128,14 +127,7 @@ def active_state_todo_fields(
     if runtime_root is not None and goal_id:
         events = TodoResumeRolloutEvents(events, runtime_root=runtime_root, goal_id=goal_id)
     if canonical is not None:
-        fields = canonical_todo_summary_fields(
-            canonical["todos"],
-            rollout_events=events,
-            goal_acceptance_contract=canonical.get("goal_acceptance_contract"),
-            goal_acceptance_work_guards=canonical.get(
-                "goal_acceptance_work_guards"
-            ),
-        )
+        fields = canonical["_todo_fields"]
         # Canonical observation/successor transactions now support current
         # lease proof. Scheduling exposes due work; mutation admission still
         # validates the caller's proof and never falls back to the old writer.

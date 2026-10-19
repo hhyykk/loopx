@@ -1983,15 +1983,15 @@ def test_blocked_wait_transports_complete_lifecycle_facts_without_prose(
                        cadence="5m", expires_at="2026-01-02T00:00:00Z", watch_only=True)
     source = {"agent_todos": {"items": [waiting, target]}, "user_todos": {"items": []}}
     before = json.dumps(source, sort_keys=True)
-    invoke = effect_runtime._request_with_info
+    invoke = effect_runtime.effect_runtime_request
     requests = []
 
-    def observe_request(info, **kwargs):
-        if kwargs["method"] == "quota.settlement.read":
-            requests.append(kwargs["params"])
-        return invoke(info, **kwargs)
+    def observe_request(method, params, **kwargs):
+        if method == "quota.settlement.read":
+            requests.append(params)
+        return invoke(method, params, **kwargs)
 
-    monkeypatch.setattr(effect_runtime, "_request_with_info", observe_request)
+    monkeypatch.setattr(effect_runtime, "effect_runtime_request", observe_request)
     result = require_blocked_retry_wait(source, todo_id=TODO_ID, observed_at=observed,
                                        allow_turn_settlement_retry=kind == "implicit")
     assert len(requests) == 1

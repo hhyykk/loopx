@@ -4,7 +4,7 @@
 - 替代 / 关闭：无
 - Proposed by：LoopX maintainers
 - Date：2026-08-15
-- Last revised：2026-10-16
+- Last revised：2026-10-19
 - Scope：LoopX 控制面核心从 Python 到 TypeScript 的增量、replacement-first
   迁移；不长期维护两份语义实现
 - Tracking issue：[#3225](https://github.com/loopx-project/loopx/issues/3225)
@@ -37,6 +37,26 @@ Python 保留有界地址扫描、请求者注册检查和实时 `Delegations.re
 时间。完整性仅限 `requester_page`；不可读操作触发告警，展示/可用数量说明
 剩余页，重放保留原始观察时间。
 每页复用既有代码版本请求作用域；操作记录仍实时读取，下一页重新解析当前代码。
+
+
+### Todo 读取事务源码检查点
+
+`todo.read` 现由 `todos/read_projection.ts` 与 `todos/read_transaction.ts`
+组合 canonical provider 读取、完整源上的恢复与后继证据、standing decisions、
+两个角色的摘要、筛选与公共结果。普通 canonical 查询使用一次请求。
+大结果的连续页保留同一次观察和结果摘要；结果变化即拒绝，不拼接新旧页。
+依赖与闭合判断仍使用完整源。
+Python 保留 registry、文档／材料 IO、独立的 Vision-wait 消费者及兼容导出。
+被替代的摘要、筛选与结果协调已退役。持久化 completion 拼写使用共享 token 数据与兼容 codec，
+不再逐标量调用 RPC；实际生产调用者退出后，退役 `todo.summary.project`、
+`todo.completion_state.normalize` 与 `todo.completion_state.require_metadata`。
+事务在进程内执行既有语义 owner。
+
+CLI 查询结果携带查询范围内的 `projection_envelope`。读取不授予执行、验收、
+租约或修改权限。共享 wire 与私有快照预算不变。超大 Python 事实使用私有临时
+源，不增加持久化存储；完整结果通过摘要绑定的片段传输。仍保留的历史／源适配
+明确记录实际 IO 与跨运行时调用。源码／受控 IPC 证据不代表正常安装的 CLI／Host
+使用、完整命令性能、R3 采用或 D2／D3／默认交付资格。
 
 
 <a id="当前交付边界2026-10-02"></a>

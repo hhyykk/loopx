@@ -14,15 +14,12 @@ from typing import Any
 
 from ..goals.legacy_event_source import require_no_legacy_todo_events
 from .active_state_editing import TODO_SECTION_HEADINGS
-from .active_state_todo_parser import parse_active_state_todos, parse_todo_source
-from .list_projection import compact_explicit_limit_todo_summary
-from .succession_warning import public_todo_summary
 from .contract import (
     normalize_todo_claimed_by,
     normalize_todo_id,
     normalize_todo_status,
 )
-from .todo_summary import compact_evaluated_todo_group, compact_todo_group
+from .todo_summary import compact_evaluated_todo_group
 
 
 def empty_todo_summary(*, role: str) -> dict[str, Any]:
@@ -108,37 +105,20 @@ def goal_todo_summaries(
     limit: int | None,
     include_retained: bool = False,
 ) -> GoalTodoSummaries:
-    """Project todo summaries from active-state text plus its event projection.
-
-    The text is a parameter rather than a file read so a writer that still
-    holds the state-file lock can project the exact bytes it is about to
-    commit; ``list_goal_todos`` passes the on-disk text.
-    """
+    from .read_projection import prepare_todo_source_text, project_todo_read
+    from ..runtime.time import now_utc
 
     require_no_legacy_todo_events(goal or {}, state_path=state_path)
-    if include_retained:
-        active, archived, _sections = parse_todo_source(state_text, goal=goal, state_path=state_path)
-        markdown_fields = retained_todo_summary_fields(
-            [*active["user"], *active["agent"], *archived], rollout_events=rollout_events,
-        )
-    else:
-        markdown_fields = parse_active_state_todos(
-            state_text,
-            goal=goal,
-            state_path=state_path,
-            item_limit=None,
-            rollout_events=rollout_events,
-        )
-    return todo_summaries_from_fields(
-        fields=markdown_fields,
-        source="markdown_active_state",
-        rollout_events=rollout_events,
-        roles=roles,
-        status=status,
-        todo_id=todo_id,
-        agent_id=agent_id,
-        limit=limit,
-    )
+    facts = prepare_todo_source_text(goal, state_text, state_path, todo_id=todo_id, retained=include_retained)
+    now = now_utc()
+    projected = project_todo_read({"kind": "source_fields", **facts,
+        "rollout_events": list(rollout_events), "rollout_event_source": getattr(rollout_events, "source", None),
+        "observed_at": now.timestamp(), "evaluated_at": now.isoformat(),
+        "projection_query": {"roles": roles, "status": normalize_todo_status(status),
+            "todo_id": normalize_todo_id(todo_id) if todo_id else None,
+            "agent_id": normalize_todo_claimed_by(agent_id) if agent_id else None,
+            "limit": limit, "source_name": "markdown_active_state"}})["projection"]
+    return GoalTodoSummaries(**projected)
 
 
 def todo_summaries_from_fields(
@@ -152,41 +132,19 @@ def todo_summaries_from_fields(
     agent_id: str | None,
     limit: int | None,
 ) -> GoalTodoSummaries:
-    """Apply the shared Todo consumer semantics to an authority read model."""
+    from .read_projection import project_todo_read
+    from ..runtime.time import now_utc
 
-    summaries: dict[str, dict[str, Any]] = {}
-    todos: list[dict[str, Any]] = []
-    unfiltered_count = 0
-    uncapped_todo_count = 0
-    for item_role in roles:
-        key = f"{item_role}_todos"
-        raw_summary = fields.get(key) if isinstance(fields, dict) else None
-        unfiltered_count += len((raw_summary or {}).get("items") or [])
-        summary = filtered_todo_summary(
-            raw_summary,
-            role=item_role,
-            status=status,
-            todo_id=todo_id,
-            agent_id=agent_id,
-            item_limit=limit,
-        )
-        if limit is not None:
-            summary = compact_explicit_limit_todo_summary(
-                summary,
-                role=item_role,
-                item_limit=limit,
-            )
-        summary = public_todo_summary(summary)
-        summaries[key] = summary
-        todos.extend(summary.get("items") or [])
-        uncapped_todo_count += int(summary.get("total_count") or 0)
-    return GoalTodoSummaries(
-        source=source,
-        summaries=summaries,
-        todos=todos,
-        unfiltered_count=unfiltered_count,
-        uncapped_todo_count=uncapped_todo_count,
-    )
+    now = now_utc()
+    result = project_todo_read({"kind": "select", "fields": fields,
+        "field_evaluations": {f"{item_role}_todos": [getattr(item, "succession_evaluation", None)
+            for item in (fields.get(f"{item_role}_todos") or {}).get("items") or []] for item_role in roles},
+        "roles": roles, "status": normalize_todo_status(status),
+        "todo_id": normalize_todo_id(todo_id) if todo_id else None,
+        "agent_id": normalize_todo_claimed_by(agent_id) if agent_id else None,
+        "limit": limit, "source_name": source,
+        "observed_at": now.timestamp(), "evaluated_at": now.isoformat()})["projection"]
+    return GoalTodoSummaries(**result)
 
 
 def retained_todo_summary_fields(
@@ -194,25 +152,13 @@ def retained_todo_summary_fields(
     *,
     rollout_events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Feed retained source rows through the existing typed summary owner.
+    from .read_projection import source_todo_fields
 
-    History is an explicit cold read; active scheduler/attention summaries
-    continue to exclude archives. Preserve full text, evidence and source ids.
-    """
-    return {
-        f"{role}_todos": compact_todo_group(
-            [item for item in items if item.get("role") == role],
-            source_section=TODO_SECTION_HEADINGS[role],
-            role=role,
-            include_empty_source=True,
-            resume_source_items=items,
-            rollout_events=rollout_events,
-            item_limit=None,
-            text_limit=None,
-            include_content_revision=False,
-        )
-        for role in ("user", "agent")
-    }
+    return source_todo_fields([
+        {"role": role, "source_section": TODO_SECTION_HEADINGS[role],
+         "items": [item for item in items if item.get("role") == role],
+         "include_empty_source": True, "text_limit": None, "include_content_revision": False}
+        for role in ("user", "agent")], lineage=items, rollout_events=rollout_events)
 
 
 def exact_archived_todo_summaries(
@@ -226,43 +172,21 @@ def exact_archived_todo_summaries(
     agent_id: str | None,
     limit: int | None,
 ) -> GoalTodoSummaries | None:
-    """Project one exact retained Todo without widening normal active lists."""
+    from .read_projection import project_todo_read, prepare_todo_source_groups, legacy_lineage_facts
+    from ..runtime.time import now_utc
 
-    item = next(
-        (
-            dict(candidate)
-            for candidate in archived_items
-            if normalize_todo_id(candidate.get("todo_id")) == todo_id
-            and candidate.get("archive_state") == "archive"
-        ),
-        None,
-    )
-    if item is None:
-        return None
-    item_role = item.get("role")
-    if item_role not in {"user", "agent"} or item_role not in roles:
-        return None
-    summary = compact_todo_group(
-        [item],
-        source_section=str(item.get("source_section") or "Completed Work Archive"),
-        role=item_role,
-        include_empty_source=True,
-        resume_source_items=archived_items,
-        rollout_events=rollout_events,
-        item_limit=None,
-    )
-    if summary is None:
-        return None
-    return todo_summaries_from_fields(
-        fields={f"{item_role}_todos": summary},
-        source=source,
-        rollout_events=rollout_events,
-        roles=roles,
-        status=status,
-        todo_id=todo_id,
-        agent_id=agent_id,
-        limit=limit,
-    )
+    lineage, facts = legacy_lineage_facts(archived_items)
+    groups = [{"role": role, "source_section": "Completed Work Archive", "include_empty_source": True,
+        "items": [row for row in archived_items if row.get("role") == role]} for role in ("user", "agent")]
+    now = now_utc()
+    projected = project_todo_read({"kind": "source_fields", "groups": prepare_todo_source_groups(groups, lineage=archived_items),
+        "lineage": lineage, "lineage_facts": facts, "rollout_events": list(rollout_events),
+        "rollout_event_source": getattr(rollout_events, "source", None),
+        "observed_at": now.timestamp(), "evaluated_at": now.isoformat(),
+        "projection_query": {"exact_archive": True, "roles": roles, "status": normalize_todo_status(status),
+            "todo_id": normalize_todo_id(todo_id), "agent_id": normalize_todo_claimed_by(agent_id) if agent_id else None,
+            "limit": limit, "source_name": source}})["projection"]
+    return GoalTodoSummaries(**projected) if projected is not None else None
 
 def project_goal_todo_items(
     goal: dict[str, Any] | None,

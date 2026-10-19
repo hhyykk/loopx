@@ -4,7 +4,7 @@
 - Supersedes / closes: none
 - Proposed by: LoopX maintainers
 - Date: 2026-08-15
-- Last revised: 2026-10-16
+- Last revised: 2026-10-19
 - Scope: an incremental, replacement-first migration of the LoopX control-plane
   core from Python to TypeScript without maintaining two semantic
   implementations
@@ -44,6 +44,31 @@ the existing `projection_envelope.ts` owner. Completeness is scoped to
 disclose remaining pages. Replay preserves the original observation time.
 Each page reuses the existing executable-revision request scope; operation
 records remain live reads, and the next page resolves the current code again.
+
+
+### Todo read transaction source checkpoint
+
+`todo.read` now composes canonical provider reads, full-source resume and
+succession evidence, standing decisions, both role summaries, selection and the
+public result through `todos/read_projection.ts` and `todos/read_transaction.ts`.
+Ordinary canonical queries use one request. Large result continuations retain
+one observation and result digest; changed results refuse rather than combining
+pages. Dependency and closure decisions still use the complete source.
+Python retains registry, document/material IO, independent Vision-wait consumers
+and compatibility exports. Its replaced summary, filter and result coordination
+is retired. Persisted completion spellings use shared token data and compatibility codecs
+without scalar RPCs;
+`todo.summary.project`, `todo.completion_state.normalize` and
+`todo.completion_state.require_metadata` are retired after their production
+callers exit. Existing semantic owners execute in process inside the transaction.
+
+CLI query results carry a query-scoped `projection_envelope`. A read grants no
+execution, acceptance, lease or mutation authority. The shared wire and private
+snapshot budgets are unchanged. Oversized Python facts use an owned temporary
+source, not another durable store; complete results use digest-bound pieces.
+Remaining historical/source adapters still name their actual IO and crossings.
+Source/controlled-IPC evidence does not qualify normal installed CLI/Host use,
+full-command performance, R3 adoption or D2/D3/default delivery.
 
 
 <a id="current-delivery-frontier-2026-10-02"></a>

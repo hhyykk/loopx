@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agents.agent_lane_recommendation import build_agent_lane_next_action
-from ..coordination.local_authority import read_canonical_todos_if_promoted, canonical_todo_summary_fields
+from ..coordination.local_authority import read_canonical_todos_if_promoted
 from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
 from ..todos.active_state_todo_parser import parse_active_state_todos
 from ..todos.contract import normalize_todo_id
@@ -48,12 +48,9 @@ def load_refresh_planning_source(
     that task snapshot. Provider failures propagate rather than using prose.
     """
     events = load_rollout_events(rollout_event_log_path(runtime_root, goal_id))
-    canonical = read_canonical_todos_if_promoted(runtime_root=runtime_root, goal_id=goal_id)
-    fields = canonical_todo_summary_fields(
-        canonical["todos"], rollout_events=events,
-        goal_acceptance_contract=canonical.get("goal_acceptance_contract"),
-        goal_acceptance_work_guards=canonical.get("goal_acceptance_work_guards"),
-    ) if canonical is not None else None
+    canonical = read_canonical_todos_if_promoted(runtime_root=runtime_root, goal_id=goal_id,
+        include_summary=True, rollout_events=events)
+    fields = canonical["_todo_fields"] if canonical is not None else None
     try:
         text = state_path.read_text(encoding="utf-8")
     except FileNotFoundError:
