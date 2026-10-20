@@ -2,10 +2,11 @@
 // Fast source-level contract test for the bilingual static Blog catalog.
 
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deepStrictEqual } from "node:assert/strict";
+import { deepStrictEqual, rejects } from "node:assert/strict";
+import { tmpdir } from "node:os";
 import {
   comparePublicationDates,
   sortBlogIndex,
@@ -26,6 +27,30 @@ async function collectArticleSlugs(localeDir, { exclude = [] } = {}) {
 
 function assertIncludes(html, value, message) {
   if (!html.includes(value)) throw new Error(message);
+}
+
+function hasAnchorToHref(html, href, sourceHref) {
+  const expectedUrl = new URL(href, sourceHref).href;
+  const anchors = html.matchAll(/<a(?=[\s/>])((?:[^>"']|"[^"]*"|'[^']*')*)>/gi);
+  for (const [, attributes] of anchors) {
+    const parsedAttributes = attributes.matchAll(
+      /\s+([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g,
+    );
+    let linkHref = null;
+    for (const [, name, doubleQuoted, singleQuoted, unquoted] of parsedAttributes) {
+      if (name.toLowerCase() === "href") {
+        linkHref = doubleQuoted ?? singleQuoted ?? unquoted ?? null;
+        break;
+      }
+    }
+    if (linkHref === null) continue;
+    try {
+      if (new URL(linkHref, sourceHref).href === expectedUrl) return true;
+    } catch {
+      // Invalid URLs cannot satisfy the paired-edition navigation requirement.
+    }
+  }
+  return false;
 }
 
 function sectionIds(html) {
@@ -99,7 +124,9 @@ export async function validateBilingualBlog(blogDir) {
       assertIncludes(articleHtml, `<html lang="${locale.language}">`, `Blog article language drifted: ${slug}`);
       assertIncludes(articleHtml, "<h1>", `Blog article must contain a visible title: ${slug}`);
       assertIncludes(articleHtml, `rel="canonical" href="${locale.canonicalHref(slug)}"`, `Blog canonical URL drifted: ${slug}`);
-      assertIncludes(articleHtml, `href="${locale.counterpartHref(slug)}"`, `Blog article must link its paired edition: ${slug}`);
+      if (!hasAnchorToHref(articleHtml, locale.counterpartHref(slug), locale.canonicalHref(slug))) {
+        throw new Error(`Blog article must link its paired edition: ${slug}`);
+      }
       for (const hreflang of ["en", "zh-CN", "x-default"]) {
         assertIncludes(articleHtml, `hreflang="${hreflang}"`, `Blog article is missing ${hreflang}: ${slug}`);
       }
@@ -118,7 +145,63 @@ export async function validateBilingualBlog(blogDir) {
     }
   }
 
+  await validateEventClockLabels(blogDir);
   return { articleSlugs: englishSlugs };
+}
+
+// A primary chart annotation must name the same event clock the article
+// declares. These long-horizon scores are aligned to each submission, so a
+// figure must not assert a feedback-return latency the prose never claims, and
+// the measured numbers stay in both the chart and the article so a label edit
+// cannot silently drop the measurement.
+const EVENT_CLOCK_LABELS = [
+  {
+    slug: "edgebench-long-horizon-repairs",
+    directory: "",
+    figure: "images/edgebench-long-horizon-repairs/score-time-en.svg",
+    annotation: "First submission: native 13.6 min, LoopX 48.2 min",
+    rejected: "First feedback",
+  },
+  {
+    slug: "edgebench-long-horizon-repairs",
+    directory: "zh",
+    figure: "images/edgebench-long-horizon-repairs/score-time.svg",
+    annotation: "首次提交：原生 13.6 分钟，LoopX 48.2 分钟",
+    rejected: "首次反馈",
+  },
+];
+const EVENT_CLOCK_VALUES = ["13.6", "48.2"];
+
+async function validateEventClockLabels(blogDir) {
+  for (const contract of EVENT_CLOCK_LABELS) {
+    const figure = await readFile(resolve(blogDir, contract.figure), "utf8");
+    assertIncludes(
+      figure,
+      contract.annotation,
+      `Primary chart must name the declared event clock: ${contract.figure}`,
+    );
+    if (figure.includes(contract.rejected)) {
+      throw new Error(
+        `Primary chart must not assert a feedback clock: ${contract.figure}`,
+      );
+    }
+    const article = await readFile(
+      resolve(blogDir, contract.directory, contract.slug, "index.html"),
+      "utf8",
+    );
+    for (const value of EVENT_CLOCK_VALUES) {
+      assertIncludes(
+        figure,
+        value,
+        `Primary chart must keep its measured value: ${contract.figure} ${value}`,
+      );
+      assertIncludes(
+        article,
+        value,
+        `Article must state the same measured value as its chart: ${contract.slug} ${value}`,
+      );
+    }
+  }
 }
 
 // Minimal element model for the sorting module. It keeps only the two browser
@@ -171,12 +254,77 @@ function fakeBlogIndex(order, { focusedSlug = null } = {}) {
   return index;
 }
 
+async function assertPairedLinkRejected(blogDir, slug, anchor, message) {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "loopx-blog-paired-link-"));
+  const fixtureBlog = join(temporaryRoot, "blog");
+  try {
+    await cp(blogDir, fixtureBlog, { recursive: true });
+    const articlePath = resolve(fixtureBlog, slug, "index.html");
+    const html = await readFile(articlePath, "utf8");
+    const pairedAnchor = `<a href="../zh/${slug}/" lang="zh-CN">`;
+    if (!html.includes(pairedAnchor)) {
+      throw new Error(`Could not locate the paired anchor in ${slug}`);
+    }
+    await writeFile(articlePath, html.replace(pairedAnchor, anchor));
+    await rejects(
+      () => validateBilingualBlog(fixtureBlog),
+      /Blog article must link its paired edition/,
+      message,
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertClockLabelRejected(blogDir, { figure, declared, regressed }, message) {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "loopx-blog-event-clock-"));
+  const fixtureBlog = join(temporaryRoot, "blog");
+  try {
+    await cp(blogDir, fixtureBlog, { recursive: true });
+    const figurePath = resolve(fixtureBlog, figure);
+    const source = await readFile(figurePath, "utf8");
+    if (!source.includes(declared)) {
+      throw new Error(`Could not locate the declared event clock in ${figure}`);
+    }
+    await writeFile(figurePath, source.replace(declared, regressed));
+    await rejects(
+      () => validateBilingualBlog(fixtureBlog),
+      /Primary chart (must name the declared event clock|must not assert a feedback clock)/,
+      message,
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
 const modulePath = fileURLToPath(import.meta.url);
 if (process.argv[1] && resolve(process.argv[1]) === modulePath) {
+  const articleUrl = "https://loopx-project.github.io/loopx/blog/example/";
+  const counterpartUrl = "https://loopx-project.github.io/loopx/blog/zh/example/";
+  for (const href of ["../zh/example/", "../../blog/zh/example/", counterpartUrl]) {
+    deepStrictEqual(hasAnchorToHref(`<a href="${href}">中文</a>`, counterpartUrl, articleUrl), true);
+  }
+  for (const href of ["../zh/other/", "https://example.invalid/loopx/blog/zh/example/", "http://["]) {
+    deepStrictEqual(hasAnchorToHref(`<a href="${href}">中文</a>`, counterpartUrl, articleUrl), false);
+  }
+  deepStrictEqual(hasAnchorToHref(`<link href="${counterpartUrl}" rel="alternate">`, counterpartUrl, articleUrl), false);
+  deepStrictEqual(hasAnchorToHref(`<a data-href="${counterpartUrl}">中文</a>`, counterpartUrl, articleUrl), false);
   // Independent expectations for unsorted input, partial dates, ties and undated posts.
   const dates = ["2026-09", "", "2026-09-15", "2026-10-02", "2026-09-26"];
   deepStrictEqual(dates.sort(comparePublicationDates), ["2026-10-02", "2026-09-26", "2026-09-15", "2026-09", ""]);
   deepStrictEqual(comparePublicationDates("2026-10-02", "2026-10-02"), 0);
+  const englishArticle = "https://loopx-project.github.io/loopx/blog/example/";
+  const relativeChineseArticle = '<a href="../zh/example/" lang="zh-CN">中文</a>';
+  deepStrictEqual(
+    hasAnchorToHref(relativeChineseArticle, "../../blog/zh/example/", englishArticle),
+    true,
+    "Equivalent relative paths must resolve to the paired edition",
+  );
+  deepStrictEqual(
+    hasAnchorToHref('<a href="../zh/another/">中文</a>', "../../blog/zh/example/", englishArticle),
+    false,
+    "A link to a different article must not satisfy the paired-edition check",
+  );
   // A module response that arrives after keyboard navigation started must not
   // move an already ordered catalog or drop the focused article link.
   const ordered = fakeBlogIndex(
@@ -204,5 +352,36 @@ if (process.argv[1] && resolve(process.argv[1]) === modulePath) {
   const repoRoot = resolve(dirname(modulePath), "..");
   const blogDir = resolve(repoRoot, "apps/presentation/site/public/blog");
   const { articleSlugs } = await validateBilingualBlog(blogDir);
+  const pairedSlug = "edgebench-feedback-and-memory";
+  await assertPairedLinkRejected(
+    blogDir,
+    pairedSlug,
+    `<a data-href="../zh/${pairedSlug}/" lang="zh-CN">中文</a>`,
+    "A data-href attribute must not substitute for a navigable paired link",
+  );
+  await assertPairedLinkRejected(
+    blogDir,
+    pairedSlug,
+    `<a href="../zh/another/" data-href="../zh/${pairedSlug}/" lang="zh-CN">中文</a>`,
+    "A correct data-href must not hide an incorrect navigable href",
+  );
+  await assertClockLabelRejected(
+    blogDir,
+    {
+      figure: "images/edgebench-long-horizon-repairs/score-time-en.svg",
+      declared: "First submission: native 13.6 min, LoopX 48.2 min",
+      regressed: "First feedback: native 13.6 min, LoopX 48.2 min",
+    },
+    "An English chart that restores the feedback clock must fail the paired label check",
+  );
+  await assertClockLabelRejected(
+    blogDir,
+    {
+      figure: "images/edgebench-long-horizon-repairs/score-time.svg",
+      declared: "首次提交：原生 13.6 分钟，LoopX 48.2 分钟",
+      regressed: "首次反馈：原生 13.6 分钟，LoopX 48.2 分钟",
+    },
+    "中文主图恢复反馈口径也必须被配对标签检查拦下",
+  );
   console.log(`blog-bilingual-index-smoke: ok (${articleSlugs.length} paired articles)`);
 }

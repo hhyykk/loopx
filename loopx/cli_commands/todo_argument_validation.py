@@ -139,6 +139,18 @@ _TODO_ADD_UNSUPPORTED_FIELDS = (
 )
 _TODO_OPTION_FLAGS = {field: flag for flag, field in TODO_OPTION_FIELDS}
 
+# The same strict subset drives validation and action help. Complex lifecycle
+# commands retain full help until their conditional grammar is centralized.
+TODO_ACTION_FIELDS = {
+    "list": frozenset({"role", "todo_id", "status", "agent_id", "todo_limit", "todo_thin", "state_file", "project", "dry_run"}),
+    "receipt": frozenset({"operation_id"}),
+    "result-read": frozenset({"todo_id"}),
+    "plan": frozenset({"text", "agent_id", "project"}),
+    "project-markdown": frozenset({"state_file", "execute", "provider_revision", "project"}),
+    "claim": frozenset({"role", "todo_id", "claimed_by", "agent_id", "state_file",
+                        "claim_operation_id", "task_lease_idempotency_key", "task_lease_expected_version", "project", "dry_run"}),
+}
+
 
 def register_todo_linkage_arguments(
     todo_parser: argparse.ArgumentParser,
@@ -288,15 +300,7 @@ def _validate_todo_option_subset(args: argparse.Namespace, allowed_fields: Itera
 def validate_todo_list_options(args: argparse.Namespace) -> None:
     _validate_todo_option_subset(
         args,
-        {
-            "role",
-            "todo_id",
-            "status",
-            "agent_id",
-            "todo_limit",
-            "todo_thin",
-            "state_file",
-        },
+        TODO_ACTION_FIELDS["list"],
         "todo list only accepts --goal-id, optional --role, --status, --todo-id, "
         "--agent-id, --limit, --thin, --project, --state-file, --dry-run, and "
         "--format; "
@@ -306,7 +310,7 @@ def validate_todo_list_options(args: argparse.Namespace) -> None:
 
 def validate_todo_receipt_options(args: argparse.Namespace) -> None:
     _validate_todo_option_subset(
-        args, {"operation_id"},
+        args, TODO_ACTION_FIELDS["receipt"],
         "todo receipt only accepts --goal-id, --operation-id, and --format; unsupported: ",
     )
     if not args.operation_id:
@@ -317,14 +321,14 @@ def validate_todo_result_read_options(args: argparse.Namespace) -> None:
     if not args.todo_id:
         raise ValueError("todo result-read requires --todo-id")
     _validate_todo_option_subset(
-        args, {"todo_id"},
+        args, TODO_ACTION_FIELDS["result-read"],
         "todo result-read only accepts --goal-id, --todo-id, and --format; unsupported: ",
     )
 
 
 def validate_todo_plan_options(args: argparse.Namespace) -> None:
     _validate_todo_option_subset(
-        args, {"text", "agent_id"},
+        args, TODO_ACTION_FIELDS["plan"],
         "todo plan only accepts --goal-id, --agent-id, --text, --project and --format; unsupported: ",
     )
     if not args.text or not args.agent_id:
@@ -336,7 +340,7 @@ def validate_todo_project_markdown_options(args: argparse.Namespace) -> None:
         raise ValueError("todo project-markdown requires --provider-revision")
     _validate_todo_option_subset(
         args,
-        {"state_file", "execute", "provider_revision"},
+        TODO_ACTION_FIELDS["project-markdown"],
         "todo project-markdown only accepts --goal-id, --provider-revision, "
         "--project, --state-file, --execute, and "
         "--format; unsupported: ",
@@ -354,10 +358,7 @@ def validate_todo_add_options(args: argparse.Namespace) -> None:
         raise ValueError("todo add does not support --successor-todo-id; use todo update/complete to link existing successor work")
 
 
-_TODO_CLAIM_FIELDS = frozenset({
-    "role", "todo_id", "claimed_by", "agent_id", "state_file",
-    "claim_operation_id", "task_lease_idempotency_key", "task_lease_expected_version",
-})
+_TODO_CLAIM_FIELDS = TODO_ACTION_FIELDS["claim"]
 
 
 class TodoClaimArgumentError(ValueError):
@@ -498,6 +499,10 @@ def validate_todo_complete_options(args: argparse.Namespace) -> None:
         )
     if args.completion_identity_key and not args.no_follow_up:
         raise ValueError("--completion-identity-key is only valid with --no-follow-up")
+    if args.completion_identity_key and (args.note or args.evidence):
+        raise ValueError(
+            "--completion-identity-key reentry preserves the original note and evidence"
+        )
     if any(getattr(args, field) for field in ("task_repository", "bound_agent", "goal_bound", "blocks_agent", "clear_blocks_agent", "excluded_agents", "clear_excluded_agents", "global_gate", "clear_global_gate", "unblocks_todo_id", "resume_when")):
         raise ValueError("todo complete does not update current todo routing metadata; use todo update first")
     if any(getattr(args, field) for field in ("monitor_target_key", "cadence", "next_due_at", "expires_at")):
@@ -508,7 +513,11 @@ def validate_todo_complete_options(args: argparse.Namespace) -> None:
         raise ValueError("--no-follow-up cannot be combined with successor todos")
     if args.successor_todo_ids and (args.next_agent_todo or args.next_user_todo):
         raise ValueError("--successor-todo-id links existing work and cannot be combined with --next-agent-todo or --next-user-todo")
-    if args.no_follow_up and not (args.note or args.evidence):
+    if (
+        args.no_follow_up
+        and not args.completion_identity_key
+        and not (args.note or args.evidence)
+    ):
         raise ValueError("--no-follow-up requires --note or --evidence")
     if args.continuation_policy:
         raise ValueError("todo complete does not update --continuation-policy; use todo update first")

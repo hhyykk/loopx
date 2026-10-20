@@ -16,6 +16,8 @@ from ..control_plane.runtime.public_safety import SECRET_LIKE_SURFACE_PATTERN
 from urllib.parse import parse_qsl, urlparse
 
 from ..file_lock import exclusive_file_lock
+# Public extension presentation utility; keep path classification single-owned.
+from ..public_safe_text import find_public_safe_local_path as find_public_safe_local_path
 from .runtime import (
     MAX_EXTENSION_RESPONSE_BYTES,
     _resolved_active_extension,
@@ -89,7 +91,11 @@ import importlib
 import json
 import sys
 
-request = json.load(sys.stdin)
+# The transport owner writes and reads UTF-8 bytes, and this helper runs under
+# `python -I`, which ignores PYTHONIOENCODING/PYTHONUTF8: its text streams fall
+# back to the host locale codec (`cp936` on a zh-CN Windows host), so the JSON
+# payload must be decoded and encoded as bytes here instead.
+request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
 reference = request["reference"]
 module_name, attribute_name = reference.split(":", 1)
 try:
@@ -111,7 +117,9 @@ else:
                 "status": "rejected",
                 "error": str(exc)[:1000],
             }
-json.dump(response, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+sys.stdout.buffer.write(
+    json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+)
 """
 
 

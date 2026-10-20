@@ -7,13 +7,95 @@ import {parseIsoTimestamp} from "../runtime_timestamp.ts";
 
 // GitHub owns these input states; closeout statuses are local to this read model.
 type ReviewState = "PENDING" | "COMMENTED" | "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED";
-type Review = {id: number; login: string; state: ReviewState; head: string; time: number;
-  submittedAt: string | null; url: string};
+type Opinion = {id: number; login: string; state: ReviewState; head: string; time: number};
+type Review = Opinion & {submittedAt: string | null; url: string};
 const states = new Set<ReviewState>(["PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED"]);
+// GitHub associations, not a reviewer-name allowlist or evidence of approval.
+const repositoryReviewers = new Set(["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]);
 function fail(message: string): never { throw new EffectRuntimeRequestError(message); }
 function oid(value: unknown): string {
   const result = requireNonEmptyString(value, "review commit").toLowerCase();
   return /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result) ? result : fail("review commit must be a full SHA");
+}
+
+/** A submitted formal opinion retires only that reviewer's prior opinion.
+ * Ordinary comments and pending reviews cannot retire an earned conclusion. */
+function effectiveOpinions<T extends Opinion>(reviews: readonly T[], author: string | null,
+  conclusions: ReadonlyMap<number, JsonObject>): T[] {
+  const latest = new Map<string, T>();
+  for (const row of [...reviews].sort((a, b) => a.time - b.time || a.id - b.id)) {
+    const conclusion = conclusions.get(row.id)!;
+    const authorFallback = row.state === "COMMENTED" && row.login.toLowerCase() === author
+      && conclusion.valid === true && ["APPROVE", "REQUEST_CHANGES"].includes(String(conclusion.verdict));
+    if (row.state !== "PENDING" && (row.state !== "COMMENTED" || authorFallback)) latest.set(row.login.toLowerCase(), row);
+  }
+  return [...latest.values()];
+}
+
+/** Submitted review activity covers duplicate work, independently of whether
+ * its body earns a qualified approval. Comments here are formal review events;
+ * issue comments do not enter this history. Dismissal retires only that actor. */
+function independentReview(reviews: readonly (Opinion & {source: JsonObject})[],
+  complete: boolean, author: string | null, head: string): JsonObject | undefined {
+  if (!complete || !author) return;
+  const latest = new Map<string, Opinion & {source: JsonObject}>();
+  const seen = new Set<number>();
+  for (const row of reviews) {
+    const source = row.source;
+    const id = source.review_id;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || seen.has(id)
+      || !row.login || row.login !== row.login.trim()) return;
+    seen.add(id);
+    if (row.state === "PENDING") continue;
+    const submitted = typeof source.submitted_at === "string" ? parseIsoTimestamp(source.submitted_at) : null;
+    if (!submitted || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(row.head)) return;
+    const candidate = {...row, id, time: submitted.getTime()};
+    const previous = latest.get(row.login);
+    if (!previous || candidate.time > previous.time || candidate.time === previous.time && id > previous.id) {
+      latest.set(row.login, candidate);
+    }
+  }
+  const selected = [...latest.values()].filter(row => row.login !== author && row.head === head
+    && row.state !== "DISMISSED" && row.source.is_bot === false
+    && typeof row.source.association === "string" && repositoryReviewers.has(row.source.association)
+    && typeof row.source.url === "string"
+    && row.source.url.trim()).sort((a, b) => b.time - a.time || b.id - a.id)[0];
+  if (selected) return {reviewer: selected.login, association: selected.source.association,
+    state: selected.state, head_oid: head, review_id: selected.id, url: selected.source.url,
+    submitted_at: selected.source.submitted_at, source_complete: true,
+    grants_approval: false, grants_merge_authority: false};
+}
+
+/** Bodies are qualified by the adapter; history precedence has one typed owner.
+ * Queue indices are local positions, never GitHub review identifiers. */
+export function selectPrReviewConclusion(value: unknown): JsonObject {
+  const request = requireJsonObject(value, "review conclusion selection");
+  if (!Array.isArray(request.reviews) || !request.reviews.length) return fail("review history must be nonempty");
+  const history = request.reviews;
+  const conclusions = new Map<number, JsonObject>();
+  const reviews = history.map((value, index) => {
+    const row = requireJsonObject(value, "review opinion");
+    const state = row.state as ReviewState;
+    if (!states.has(state)) return fail("unknown GitHub review state");
+    if (typeof row.time !== "number" || !Number.isFinite(row.time)) return fail("review time must be finite");
+    if (typeof row.head !== "string" || typeof row.login !== "string") return fail("review identity must be strings");
+    // The adapter supplies newest-first rows; equal-time ties retain its order.
+    const id = history.length - index;
+    conclusions.set(id, requireJsonObject(row.conclusion, "qualified review conclusion"));
+    return {id, login: row.login.toLowerCase(), state, head: row.head.toLowerCase(), time: row.time, source: row};
+  });
+  const author = typeof request.author === "string" ? request.author.toLowerCase() : null;
+  const head = requireNonEmptyString(request.head, "current head").toLowerCase();
+  const effective = effectiveOpinions(reviews, author, conclusions)
+    .sort((a, b) => b.time - a.time || b.id - a.id);
+  // Unformatted dissent remains dissent. A different reviewer's later approval
+  // cannot erase it; complete closeout still reconciles blockers on older heads.
+  const selected = effective.find(row => row.head === head && (row.state === "CHANGES_REQUESTED"
+    || conclusions.get(row.id)!.valid === true && conclusions.get(row.id)!.verdict === "REQUEST_CHANGES"))
+    ?? effective.find(row => row.head === head && conclusions.get(row.id)!.valid === true)
+    ?? effective[0] ?? reviews[0];
+  const independent = independentReview(reviews, request.reviews_complete === true, author, head);
+  return {index: history.length - selected.id, ...(independent ? {independent_review: independent} : {})};
 }
 
 export function planPrReviewApprovalCloseout(value: unknown): JsonObject {
@@ -65,19 +147,13 @@ export function planPrReviewApprovalCloseout(value: unknown): JsonObject {
   if (conclusions.size !== reviews.length) return fail("review conclusions are incomplete");
   const author = typeof pr.author === "object" && pr.author !== null
     ? requireNonEmptyString(requireJsonObject(pr.author, "PR author").login, "PR author login").toLowerCase() : null;
-  const latest = new Map<string, Review>();
-  for (const row of reviews.sort((a, b) => a.time - b.time || a.id - b.id)) {
-    const conclusion = conclusions.get(row.id)!;
-    const authorFallback = row.state === "COMMENTED" && row.login.toLowerCase() === author
-      && conclusion.valid === true && ["APPROVE", "REQUEST_CHANGES"].includes(String(conclusion.verdict));
-    if (row.state !== "PENDING" && (row.state !== "COMMENTED" || authorFallback)) latest.set(row.login.toLowerCase(), row);
-  }
-  const approvalReview = [...latest.values()].filter(row => row.head === match[2]
+  const effective = effectiveOpinions(reviews, author, conclusions);
+  const approvalReview = effective.filter(row => row.head === match[2]
     && conclusions.get(row.id)!.valid === true && conclusions.get(row.id)!.verdict === "APPROVE"
     && (row.state === "APPROVED" || (row.state === "COMMENTED" && row.login.toLowerCase() === author)))
     .sort((a, b) => b.time - a.time || b.id - a.id)[0];
   if (!approvalReview) holds.push("exact_head_approval_missing");
-  const blockers = [...latest.values()].filter(row => row.state === "CHANGES_REQUESTED")
+  const blockers = effective.filter(row => row.state === "CHANGES_REQUESTED")
     .sort((a, b) => a.id - b.id).map(row => ({review_id: row.id, reviewer: row.login,
       review_head: row.head, review_url: row.url, on_approved_head: row.head === match[2]}));
   if (request.reviews_complete === true && !blockers.length && pr.reviewDecision === "CHANGES_REQUESTED") {

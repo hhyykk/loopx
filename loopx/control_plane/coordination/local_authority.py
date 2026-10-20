@@ -7,10 +7,12 @@ fails closed instead of consulting the legacy Markdown projection.
 
 from __future__ import annotations
 
+from ..goals.acceptance_readback import configured_checks
+
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from uuid import uuid4
 
 from ...agent_registry import registered_agent_ids_from_registry
@@ -27,7 +29,6 @@ from .coordination_state_contract import (
     TODO_ITEM_SCHEMA_VERSION,
 )
 from .canonical_snapshot import read_canonical_snapshot
-from .legacy_writer_fence import legacy_coordination_writer_fence_path
 
 
 LOCAL_COORDINATION_TODO_LIST_TIMEOUT_SECONDS = 15.0
@@ -37,7 +38,7 @@ LOCAL_COORDINATION_TODO_CLAIM_WITNESSED_REQUEST_SCHEMA = (
 LOCAL_COORDINATION_TODO_CLAIM_METHOD = "coordination.local_authority.todo_claim"
 
 
-LOCAL_AUTHORITY_SOURCES = ("file_v0", "sqlite_v0")
+LOCAL_AUTHORITY_SOURCES = ("file_v0", "sqlite_v0", "postgresql_v0")
 
 
 class LocalCoordinationAuthorityUnavailable(RuntimeError):
@@ -68,7 +69,63 @@ class LocalCoordinationAuthorityRejection(
         super().__init__(message, code=code, payload=payload)
 
 
+class CanonicalAuthorityRequired(LocalCoordinationAuthorityRejection):
+    """A normal write targeted a Goal that has not completed authority migration."""
+
+    def __init__(
+        self,
+        *,
+        goal_id: str,
+        operation: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        evidence = {
+            "goal_id": goal_id,
+            "operation": operation,
+            "write_admitted": False,
+            "decision_read_from_provider": False,
+            "legacy_fallback_used": False,
+            "recovery": {
+                "action": "migrate_goal_authority",
+                "backup_required": True,
+            },
+            **dict(payload or {}),
+        }
+        super().__init__(
+            "Canonical authority is required; back up and migrate this Goal before retrying",
+            code="canonical_authority_required",
+            payload=evidence,
+        )
+
+
+def raise_canonical_write_failure(
+    payload: Mapping[str, Any],
+    *,
+    goal_id: str,
+    operation: str,
+) -> None:
+    """Map native route admission once without re-reading promotion state."""
+
+    if (
+        payload.get("reason_code") == "canonical_authority_required"
+        or payload.get("error_code") == "canonical_authority_required"
+    ):
+        raise CanonicalAuthorityRequired(
+            goal_id=goal_id,
+            operation=operation,
+            payload=payload,
+        )
+
+
+def require_canonical_authority(*, goal_id: str, operation: str) -> NoReturn:
+    """Fail a compatibility-only path that has no native request to dispatch."""
+
+    raise CanonicalAuthorityRequired(goal_id=goal_id, operation=operation)
+
+
 def local_authority_is_promoted(*, runtime_root: Path, goal_id: str) -> bool:
+    from .legacy_writer_fence import legacy_coordination_writer_fence_path
+
     fence_path = legacy_coordination_writer_fence_path(
         runtime_root=runtime_root,
         goal_id=goal_id,
@@ -101,11 +158,8 @@ def claim_canonical_todo_if_promoted(
     task_lease_expected_version: int | None = None,
     project: Path | None = None,
     state_file: Path | None = None,
-) -> dict[str, Any] | None:
-    """Route a post-cutover claim to the TypeScript transaction owner."""
-
-    if not local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
-        return None
+) -> dict[str, Any]:
+    """Route a claim to the canonical TypeScript transaction owner."""
     with authority_registry_source(registry_path) as registry_source:
         registered = registered_agent_ids_from_registry(registry_path, goal_id)
     result = effect_runtime_result(
@@ -146,6 +200,11 @@ def claim_canonical_todo_if_promoted(
             payload={"source_authority": "file_v0"},
         )
     payload = dict(result)
+    raise_canonical_write_failure(
+        payload,
+        goal_id=goal_id,
+        operation="todo_claim",
+    )
     accepted = {"applied", "recovered", "replayed", "no_change", "planned"}
     if (
         payload.get("status") == "failed"
@@ -346,7 +405,7 @@ def canonical_todo_summary_fields(
     todos = canonical_todo_items(todos)
     # These are native authority decisions, not persisted Todo fields. Keep the
     # records visible while every summary/selection uses the same work guard.
-    if goal_acceptance_contract and goal_acceptance_contract.get("enabled") is True:
+    if goal_acceptance_contract and configured_checks(goal_acceptance_contract) is not None:
         guards = goal_acceptance_work_guards or {}
         todos = [{**item, "goal_acceptance_guard": guards[item["todo_id"]]}
             if item.get("todo_id") in guards else item for item in todos]
@@ -370,7 +429,7 @@ def canonical_todo_summary_fields(
         )
         if summary:
             if role == "agent":
-                if goal_acceptance_contract and goal_acceptance_contract.get("enabled") is True:
+                if goal_acceptance_contract and (configured_checks(goal_acceptance_contract) is not None or goal_acceptance_contract.get("outcome_requirements")):
                     summary["goal_acceptance_contract"] = goal_acceptance_contract
                 archived_done = count_advancement_todos(
                     [

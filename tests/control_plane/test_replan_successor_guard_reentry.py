@@ -13,15 +13,18 @@ import loopx
 from canonical_authority_fixture import initialize_canonical_authority, isolate_sqlite_runtime
 from test_replan_successor_durable_ack import AGENT, GOAL, history
 
+from loopx.capabilities.machine_configuration.builtins import build_builtin_machine_configuration_registry
+from loopx.capabilities.machine_configuration.store import configure_machine_configuration
 from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
 from loopx.control_plane.goals.goal_vision import compact_goal_vision_packet, normalize_goal_vision_packet
+from loopx.goal_mode_mcp import GoalModeMCPConfig, GoalModeMCPControlPlane
 
 
 TURN = "turn-periodic-successor-review"
 ROOT = Path(loopx.__file__).resolve().parents[1]
 
 
-def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, *, later_vision: bool = False, future_monitor: bool = True):
+def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, *, later_vision: bool = False, future_monitor: bool = True, initial_todos: list[dict] | None = None, handoff_mode: str = "soft_claim"):
     if provider == "sqlite":
         isolate_sqlite_runtime(tmp_path, monkeypatch)
     project, runtime = tmp_path / "project", tmp_path / "runtime"
@@ -64,7 +67,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, *, 
         "coordination": {"agent_model": "peer_v1", "registered_agents": [AGENT, "different-agent"]},
     }]}))
     initialize_canonical_authority(runtime, GOAL, build_todo_runtime_shadow_projection(
-        goal_id=GOAL, todos=[], handoff_mode="soft_claim", leases=[],
+        goal_id=GOAL, todos=initial_todos or [], handoff_mode=handoff_mode, leases=[],
     ), state_path=state, provider=provider)
 
     def call(*args: str, expected_code: int = 0) -> dict:
@@ -95,6 +98,109 @@ def _add(call, obligation_id: str):
         "--text", "Independently verify the source artifact", "--task-class", "advancement_task",
         "--action-kind", "validate", "--target-key", "independent-source-artifact",
         "--operation-id", "periodic-source-successor", "--replan-obligation-id", obligation_id)
+
+
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
+def test_machine_default_stride_due_allows_evidence_linked_terminal_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str,
+) -> None:
+    call, runtime, index = _fixture(tmp_path, monkeypatch, provider, future_monitor=False)
+    assert "stride_strategy" not in json.loads((tmp_path / "registry.json").read_text())["goals"][0].get("execution_profile", {})
+    owner = build_builtin_machine_configuration_registry()
+    configuration = {"schema_version": "loopx_machine_configuration_v0", "namespaces": {
+        "todo_replan_cadence": {"schema_version": "todo_replan_cadence_machine_defaults_v2",
+            "count_unit": "completed_todos", "count": 1,
+            "stride_strategy": "evidence_conditioned_v1"}}}
+    preview = configure_machine_configuration(
+        runtime_root=runtime, registry=owner, configuration=configuration)
+    configure_machine_configuration(
+        runtime_root=runtime, registry=owner, configuration=configuration,
+        execute=True, expected_plan_revision=preview["plan_revision"])
+
+    turn = "machine-default-terminal-review"
+    guard = _guard(call, turn)
+    obligation = guard["autonomous_replan_obligation"]
+    assert "periodic_review_due" in {trigger["kind"] for trigger in obligation["triggers"]}
+    control = guard["replan_action_packet"]["stride_control"]
+    assert control["strategy_version"] == "evidence_conditioned_v1"
+    common = ("refresh-state", "--goal-id", GOAL, "--agent-id", AGENT,
+        "--replan-obligation-id", obligation["obligation_id"], "--turn-instance-id", turn,
+        "--classification", "source_review", "--delivery-batch-scale", "single_surface",
+        "--delivery-outcome", "outcome_gap", "--progress-result-class", "blocked",
+        "--progress-blocker-id", "fixture:unverified-source",
+        "--progress-evidence-id", "fixture:provenance-refusal",
+        "--no-global-sync", "--suppress-external-sinks")
+    before = index.read_bytes()
+    rejected = call(*common, expected_code=1)
+    assert "stride_decision" in rejected["error"]
+    assert index.read_bytes() == before
+
+    decision = {
+        "schema_version": "stride_decision_v2", "strategy_version": "evidence_conditioned_v1",
+        "reference_context_id": control["reference_context_id"],
+        "reference_obligation_id": obligation["obligation_id"],
+        "basis": "uncertain_evidence", "action": "verify",
+        "axes": {
+            "work_slice": {"plan": "Complete the source provenance check.",
+                "reason": "The pending decision needs one independent result."},
+            "route_distance": {"plan": "Retain the current method while checking provenance.",
+                "reason": "No result yet supports replacing the route."},
+            "validation_scope": {"plan": "Check the source and a contrary case.",
+                "reason": "Both outcomes distinguish a valid source from a false lead."}},
+        "next_probe": {"scope": "One complete provenance verification.",
+            "prediction": "Only checked source evidence supports continuation.",
+            "adoption_criterion": "Adopt only after the checked source meets acceptance.",
+            "cost_bound": "One source and its contrary case.",
+            "minimum_evidence": "A checked source result and contrary-case result."}}
+    packet = {"schema_version": "goal_vision_replan_contract_v0",
+        "state": "vision_patch_proposed",
+        "vision_patch": {"acceptance_summary": "The source outcome remains unproven."},
+        "path_delta": {"schema_version": "goal_path_delta_v0", "outcome": "stop",
+            "prior_assumption": "The source might support the next decision.",
+            "observed_reality": "The source still lacks independent validation.",
+            "retained": ["Original source acceptance"],
+            "changed": ["Stop this route until the source is checked"],
+            "evidence_refs": ["evidence:source-provenance-review"]},
+        "stride_decision": decision}
+    packet_path = tmp_path / "terminal-review.json"
+    packet_path.write_text(json.dumps(packet))
+    accepted = call(*common, "--agent-vision-json", str(packet_path))
+    assert accepted["autonomous_replan_ack"]["semantic_delta"]["accepted"] is True
+    assert json.loads(Path(accepted["json_path"]).read_text())["agent_vision"]["stride_decision"] == decision
+
+
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
+@pytest.mark.parametrize("objective", [
+    "Deliver the independently accepted source outcome.",
+    "Read /home/runner/work/task.md and preserve the accepted quality target.",
+])
+def test_real_mcp_replan_delivers_objective_and_evidence_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, objective: str,
+) -> None:
+    _fixture(tmp_path, monkeypatch, provider, later_vision=True)
+    state = tmp_path / "project/ACTIVE_GOAL_STATE.md"
+    state.write_text(state.read_text().replace(
+        "Deliver the independently accepted source outcome.", objective))
+    control = GoalModeMCPControlPlane(
+        GoalModeMCPConfig(server_name="synthetic-replan", runtime_profile="claude_code",
+                          legacy_host_surface="claude_code"),
+        lambda: {"goal_id": GOAL, "agent_id": AGENT, "registry": str(tmp_path / "registry.json")},
+    )
+    # Select the test checkout's real CLI, rather than an unrelated global install.
+    control.command_prefix = lambda: [sys.executable, "-m", "loopx.cli"]
+    packet = json.loads(control.should_run())
+    assert packet["ok"] is True
+    assert packet["decision"] == "autonomous_replan_required"
+    guidance = " ".join(packet["replan_action_packet"]["planning_guidance"])
+    assert "provisional agent-created candidate rules" in guidance
+    assert "Do not relax frozen acceptance" in guidance
+    assert "executed path and current artifact" in guidance
+    assert "scope negative results to tested conditions" in guidance
+    assert packet["autonomous_replan_obligation"]["required"] is True
+    core = packet["autonomous_replan_obligation"]["replan_context"]["core_goal"]
+    assert core["objective"] == objective
+    assert core["objective_source"] == "active_state"
+    assert packet["interaction_contract"]["cli_channel"]["spend_allowed_now"] is False
 
 
 @pytest.mark.parametrize("provider", ["file", "sqlite"])
@@ -234,16 +340,20 @@ def test_invalidated_successor_cannot_rebind_or_close_original_turn(
     original = _guard(call)
     identity = original["heartbeat_receipt"]["settlement_identity"]
     added = _add(call, identity["replan_obligation_id"])
-    prior_actions = _guard(call)["interaction_contract"]["cli_channel"]["next_cli_actions"]
+    prior_guard = _guard(call)
+    prior_actions = prior_guard["interaction_contract"]["cli_channel"]["next_cli_actions"]
     edit = {"wrong_owner": ["--claimed-by", "different-agent"],
             "deferred": ["--status", "deferred", "--resume-when", "resume_at:2099-01-01T00:00:00Z"],
             "unclaimed": ["--clear-claim"]}[invalidation]
     call("todo", "update", "--goal-id", GOAL, "--agent-id", AGENT,
          "--todo-id", added["todo_id"], *edit)
-    # Invalidation may leave the original duty open, which is a legal guard
-    # read. It must not grant successor settlement from a stale creation ACK.
-    guarded = _guard(call, expected_code=1 if later_vision and invalidation == "unclaimed" else 0)
+    # An unclaimed successor loses its original-lane proof. Fail closed while
+    # retaining the original receipt; a stale creation ACK cannot settle it.
+    guarded = _guard(call, expected_code=1 if invalidation == "unclaimed" else 0)
     assert guarded["heartbeat_receipt"]["settlement_identity"] == identity
+    if invalidation == "unclaimed":
+        assert "settlement identity conflicts" in guarded["reason"]
+        assert guarded["heartbeat_receipt"]["event_id"] == prior_guard["heartbeat_receipt"]["event_id"]
     assert guarded.get("selected_todo") is None
     assert (guarded.get("autonomous_replan_obligation") or {}).get("resolution_mode") != "receipt_bound_replan_settlement"
     assert (guarded.get("replan_action_packet") or {}).get("settlement_only") is not True
@@ -277,6 +387,13 @@ def test_later_vision_replan_can_close_covered_frontier_and_settle_once(
     # A real empty-frontier CLI wake still receives the scoped next-step review.
     assert any("An empty Todo queue is not a scope limit" in item
                for item in guard["replan_action_packet"]["planning_guidance"])
+    # The real provider/CLI entry delivers objective and evidence advice while
+    # retaining the same independently covered frontier and single-debit path.
+    guidance = " ".join(guard["replan_action_packet"]["planning_guidance"])
+    assert "provisional agent-created candidate rules" in guidance
+    assert "Do not relax frozen acceptance" in guidance
+    assert "executed path and current artifact" in guidance
+    assert "scope negative results to tested conditions" in guidance
     binding = ("--goal-id", GOAL, "--agent-id", AGENT,
                "--turn-instance-id", TURN, "--replan-obligation-id", identity["replan_obligation_id"])
     vision = tmp_path / "covered-vision.json"

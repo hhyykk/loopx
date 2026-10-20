@@ -10,11 +10,13 @@ import signal
 import subprocess
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 
 from benchmark.runtime.codex import Execution, prepare_codex_home, process_environment
+
+PHASE_WORK_RESERVE_SECONDS = 160
 
 
 def read_json(text: str) -> dict:
@@ -36,7 +38,8 @@ def loopx_command(env: dict[str, str]) -> list[str]:
     ]
 
 
-def heartbeat_body(env: dict[str, str], turn_id: str, *, native_goal: bool) -> str:
+def heartbeat_body(env: dict[str, str], turn_id: str, *, native_goal: bool,
+                   decision_handoff_socket: str | None = None) -> str:
     command = loopx_command(env) + [
         "heartbeat-prompt",
         "--thin",
@@ -57,13 +60,17 @@ def heartbeat_body(env: dict[str, str], turn_id: str, *, native_goal: bool) -> s
         command += ["--turn-instance-id", turn_id]
     if env.get("LOOPX_TURN_ENVELOPE", "0") not in {"0", "1"}:
         raise ValueError("LOOPX_TURN_ENVELOPE must be 0 or 1")
-    if env.get("LOOPX_TURN_ENVELOPE") == "1":
+    if env.get("LOOPX_TURN_ENVELOPE") == "1" or decision_handoff_socket is not None:
         if native_goal:
             raise ValueError("TurnEnvelope capture requires a host-owned heartbeat Turn")
         # Wake identity comes from this worker, never from model-authored text.
         root = Path(env["LOOPX_WAKE_LOG_DIR"]) / turn_id / "decisions"
         root.mkdir(mode=0o700, exist_ok=False)
         command += ["--decision-output-root", str(root)]
+        if env.get("LOOPX_TURN_ENVELOPE") == "1":
+            command += ["--turn-envelope"]
+        if decision_handoff_socket is not None:
+            command += ["--decision-handoff-socket", decision_handoff_socket]
     result = subprocess.run(
         command,
         cwd=env["LOOPX_PROJECT"],
@@ -78,42 +85,99 @@ def heartbeat_body(env: dict[str, str], turn_id: str, *, native_goal: bool) -> s
         raise RuntimeError("formal LoopX heartbeat renderer is not ready")
     if not native_goal and payload.get("turn_instance_id") != turn_id:
         raise RuntimeError("heartbeat Turn identity mismatch")
-    return payload["task_body"].replace(
+    body = payload["task_body"].replace(
         "$HOME/.codex/loopx/registry.global.json", env["LOOPX_REGISTRY"]
     )
+    if env.get("LOOPX_RESEARCH_LOOP") == "1":
+        from .research_loop import research_execution_guidance
+
+        body += research_execution_guidance()
+    return body
 
 
 @contextmanager
-def child_process(command: list[str], *, env: dict[str, str], stdout, stderr):
-    process = subprocess.Popen(
-        command,
-        cwd=env["LOOPX_PROJECT"],
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=stdout,
-        stderr=stderr,
-        text=True,
-        start_new_session=True,
-    )
+def child_process(command: list[str], *, env: dict[str, str], stdout, stderr,
+                  goal_admission=None, check_current_launch=None):
+    process = None
     try:
+        if check_current_launch is not None and goal_admission is None:
+            raise ValueError("current Host launch check requires its original Goal admission")
+        if check_current_launch is not None:
+            goal_admission = goal_admission.with_launch_decision(check_current_launch)
+        # Session selection may precede rendering/capture. Serialize only actual
+        # launch with the existing Goal lifetime owner, never the whole model run.
+        with (goal_admission.launch_lifetime(operation="codex_agent_host_launch")
+              if goal_admission is not None else nullcontext()):
+            process = subprocess.Popen(
+                command,
+                cwd=env["LOOPX_PROJECT"],
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=stdout,
+                stderr=stderr,
+                text=True,
+                start_new_session=True,
+            )
         yield process
     finally:
-        # Reap descendants even when their leader exited or Harbor cancelled us.
-        try:
-            # Python's standard SIGINT handler lets the Turn host's finally
-            # path reap its separately grouped Codex child before forced kill.
-            os.killpg(process.pid, signal.SIGINT)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait(timeout=10)
+        if process is not None:
+            _reap_child_process(process)
+
+
+def heartbeat_launch_check(env, session_wake, *, original_quota=None):
+    """Carry the Host's real Turn inputs into the product's current quota owner."""
+    if session_wake is None:
+        return None  # Plain/native-Goal transports have no LoopX heartbeat owner.
+    from loopx.cli_commands.turn_decision import current_heartbeat_host_launch_decision
+
+    def check(registry_path):
+        return current_heartbeat_host_launch_decision(
+            registry_path=registry_path, runtime_root=Path(env["LOOPX_RUNTIME_ROOT"]),
+            project=Path(env["LOOPX_PROJECT"]), goal_id=env["LOOPX_GOAL_ID"],
+            agent_id=env["LOOPX_AGENT_ID"], turn_instance_id=env["LOOPX_TURN"],
+            original_quota=original_quota, goal_ref=session_wake.goal_ref,
+        )
+    return check
+
+
+def _reap_child_process(process):
+    """Reap the process group created by child_process, including descendants."""
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=10)
+
+
+def interrupt_checkpoint_process(process, *, timeout: float = 10) -> int:
+    """Close an owned native CLI before inspecting a mid-wake checkpoint.
+
+    A held tool response is not a native execution barrier: the native tool can
+    yield and schedule more inference. Require graceful leader exit so native
+    history can flush, then reap its group. An unacknowledged interruption is a
+    missed capture, not a completed cursor or permission to continue elsewhere.
+    This does not freeze independent workspace writers.
+    """
+    import math
+
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("checkpoint interruption requires a finite positive timeout")
+    if (not isinstance(process, subprocess.Popen) or process.poll() is not None or
+            os.getpgid(process.pid) != process.pid or os.getsid(process.pid) != process.pid):
+        raise ValueError("checkpoint interruption requires a live owned child process group")
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+        return process.wait(timeout=timeout)
+    finally:
+        _reap_child_process(process)
 
 
 def turn_command(
@@ -164,14 +228,53 @@ def turn_command(
     ]
 
 
+NATIVE_GOAL_CONTINUE_RESERVE_SECONDS = 300
+
+
+def native_goal_rounds(run_round, *, budget_seconds, continue_after_complete, clock=time.monotonic,
+                       reserve_seconds=NATIVE_GOAL_CONTINUE_RESERVE_SECONDS):
+    """Drive one native Goal and, when opted in, continuation Goals until the budget ends.
+
+    ``run_round(objective_suffix, timeout_sec)`` runs one Goal to a terminal status and
+    returns that status. Returns ``(rounds, outcome)`` where outcome is ``complete``,
+    ``budget_exhausted`` (a Goal was still active at the budget edge) or ``stopped``.
+    """
+    from loopx.capabilities.benchmark_toolkit.native_codex_goal import NativeGoalDeadlineExceeded
+
+    deadline = None if budget_seconds is None else clock() + budget_seconds
+    rounds = 0
+    suffix = ""
+    while True:
+        remaining = None if deadline is None else deadline - clock()
+        if remaining is not None and remaining <= 0:
+            return rounds, "budget_exhausted"
+        try:
+            status = run_round(suffix, remaining)
+        except NativeGoalDeadlineExceeded:
+            return rounds + 1, "budget_exhausted"
+        rounds += 1
+        if status != "complete" or not continue_after_complete:
+            return rounds, ("complete" if status == "complete" else "stopped")
+        remaining = None if deadline is None else deadline - clock()
+        if remaining is not None and remaining <= reserve_seconds:
+            return rounds, "complete"
+        suffix = (
+            f"\n\nContinuation {rounds}: the time budget is not exhausted "
+            f"({int(remaining) if remaining is not None else 'unbounded'} seconds remain). "
+            "The previous Goal declared completion; continue researching and improving the "
+            "best validated candidate with the remaining budget: pick the next useful "
+            "experiment, validate it, and submit only if it improves on the accepted best."
+        )
+
+
 def run_native_goal(
     env: dict[str, str], execution: Execution, body: str, receipt: dict, stderr
 ) -> None:
     from loopx.capabilities.benchmark_toolkit.native_codex_goal import (
         NativeGoalConfig,
-        NativeGoalDeadlineExceeded,
         StdioNativeGoalTransport,
         compact_native_goal_receipt,
+        refresh_native_goal_status,
         run_native_goal_until_terminal,
     )
 
@@ -182,11 +285,13 @@ def run_native_goal(
         )
 
         required_skills = NATIVE_CODEX_PROFILE_REQUIRED_SKILL_IDS
+    if env.get("LOOPX_NATIVE_GOAL_CONTINUE", "0") not in {"0", "1"}:
+        raise ValueError("LOOPX_NATIVE_GOAL_CONTINUE must be 0 or 1")
+    continue_after_complete = env.get("LOOPX_NATIVE_GOAL_CONTINUE") == "1"
 
     observed = []
-    config = NativeGoalConfig(
+    base = dict(
         cwd=env["LOOPX_PROJECT"],
-        objective=body,
         task_instruction=Path(env["LOOPX_TASK_DOC"]).read_text(encoding="utf-8"),
         model=env["MODEL_NAME"],
         effort=env["REASONING_EFFORT"],
@@ -198,16 +303,26 @@ def run_native_goal(
         [env["CODEX_BIN"], "app-server"], env=env, stdout=subprocess.PIPE, stderr=stderr
     ) as process:
         transport = StdioNativeGoalTransport(process, response_timeout_sec=120)
-        try:
-            run_native_goal_until_terminal(
-                transport,
-                config,
-                timeout_sec=execution.timeout_seconds,
-                on_turn_started=observed.append,
+
+        def run_round(suffix, timeout_sec):
+            turn = run_native_goal_until_terminal(
+                transport, NativeGoalConfig(objective=body + suffix, **base),
+                timeout_sec=timeout_sec, on_turn_started=observed.append,
             )
+            return turn.post_goal_status or refresh_native_goal_status(transport, turn)
+
+        try:
+            rounds, outcome = native_goal_rounds(
+                run_round, budget_seconds=execution.timeout_seconds,
+                continue_after_complete=continue_after_complete,
+            )
+            receipt["native_goal_rounds"] = rounds
+            receipt["native_goal_outcome"] = outcome
+            if outcome == "budget_exhausted":
+                # Reaching the budget with an active Goal is normal exhaustion for
+                # a native-Goal worker, not a runner failure.
+                receipt["budget_exhausted"] = True
             receipt["ok"] = True
-        except NativeGoalDeadlineExceeded:
-            receipt["timed_out"] = True
         finally:
             if observed:
                 receipt["native_goal"] = compact_native_goal_receipt(observed[0])
@@ -239,6 +354,18 @@ def native_command(env, execution, stage, wake, session_wake):
     return command
 
 
+class _InertCheckpointWake:
+    """No checkpoint listener: plain, native-Goal, Turn and loopx-goal wakes."""
+
+    socket_path = None
+    listener = None
+
+
+def _error_tail(exc: BaseException) -> dict[str, str]:
+    """Private wake evidence: the class plus a bounded message, never a traceback."""
+    return {"error_kind": type(exc).__name__, "error": " ".join(str(exc).split())[:500]}
+
+
 def run_once(env: dict[str, str]) -> dict:
     if env.get("LOOPX_TURN_ENVELOPE", "0") not in {"0", "1"}:
         raise ValueError("LOOPX_TURN_ENVELOPE must be 0 or 1")
@@ -267,13 +394,15 @@ def run_once(env: dict[str, str]) -> dict:
         "mode": execution.mode,
         "context": execution.context,
         "task_entry": execution.task_entry,
-        **({"turn_envelope": True} if execution.turn_envelope else {}),
+        **({"turn_envelope": True, "turn_envelope_source": "explicit"}
+           if execution.turn_envelope else {}),
         "stage": stage,
         "home_scope": "trial",
         "ok": False,
         "timed_out": False,
     }
     session_wake = None
+    checkpoint_context = ExitStack()
     pending_path = (
         Path(env.get("LOOPX_RUNTIME_ROOT", str(home))) / "benchmark-pending-turn.json"
     )
@@ -282,13 +411,16 @@ def run_once(env: dict[str, str]) -> dict:
             remaining = float(env["LOOPX_PHASE_DEADLINE_EPOCH"]) - time.time()
             # Reserve startup and settlement on every wake, then allow the
             # remaining time for work instead of reusing the initial timeout.
-            if remaining <= 160:
+            if remaining <= PHASE_WORK_RESERVE_SECONDS:
                 receipt.update(ok=True, budget_exhausted=True, host_invoked=False)
                 return receipt
             execution = replace(
-                execution, timeout_seconds=(remaining - 160 if execution.timeout_seconds is None
-                                             else min(execution.timeout_seconds, remaining - 160))
+                execution, timeout_seconds=(remaining - PHASE_WORK_RESERVE_SECONDS if execution.timeout_seconds is None
+                                             else min(execution.timeout_seconds, remaining - PHASE_WORK_RESERVE_SECONDS))
             )
+        if env.get("LOOPX_WARM_START"):
+            from benchmark.runtime.sforge_warm_start import finish_preparation
+            receipt["warm_preparation"] = finish_preparation(env)
         prepare_codex_home(
             home,
             execution=execution,
@@ -299,17 +431,30 @@ def run_once(env: dict[str, str]) -> dict:
             api_key=env.get("OPENAI_API_KEY", ""),
             wire_api=env.get("CODEX_WIRE_API", "responses"),
             skills=Path(env["LOOPX_SHARED_SKILLS"]) if execution.uses_loopx else None,
+            web_search=env.get("LOOPX_WEB_SEARCH", "disabled"),
+            model_catalog=(
+                Path(env["LOOPX_MODEL_CATALOG"]) if env.get("LOOPX_MODEL_CATALOG") else None
+            ),
         )
+        if execution.mode == "heartbeat":
+            # Checkpoint capture needs the LoopX control plane, which only
+            # heartbeat workers stage; other modes must not import it.
+            from benchmark.runtime.checkpoint_wake import CheckpointWake
+
+            checkpoint_wake = checkpoint_context.enter_context(CheckpointWake(env, receipt))
+        else:
+            checkpoint_wake = _InertCheckpointWake()
         body = "Finish the task."
         if stage == "plan":
-            from benchmark.runtime.planning import task_plan_packet
+            from benchmark.runtime.planning import render_planning_prompt, task_plan_packet
 
             planning_before = task_plan_packet(env, loopx_command(env))
-            body = "$loopx\n\nHost-supplied planning checkpoint:\n" + json.dumps(planning_before, ensure_ascii=False)
+            body = render_planning_prompt(planning_before, env)
             (wake / "planning-input.json").write_text(body, encoding="utf-8")
             (wake / "planning-schema.json").write_text(json.dumps(planning_before["result_schema"]))
         elif execution.mode in {"heartbeat", "loopx-goal"}:
-            body = heartbeat_body(env, turn_id, native_goal=execution.native_goal)
+            body = heartbeat_body(env, turn_id, native_goal=execution.native_goal,
+                                  decision_handoff_socket=checkpoint_wake.socket_path)
         elif execution.mode == "plain":
             body = Path(env["LOOPX_TASK_DOC"]).read_text(encoding="utf-8")
         session_wake = None
@@ -317,6 +462,15 @@ def run_once(env: dict[str, str]) -> dict:
             from benchmark.runtime.sessions import BenchmarkSessionWake
 
             session_wake = BenchmarkSessionWake(env, execution, receipt)
+            receipt["host_invoked"] = False
+            if stage == "execute" and execution.mode == "heartbeat" and env.get("LOOPX_WARM_START"):
+                from benchmark.runtime.checkpoint_session_refresh import prepare_session_refresh
+
+                body = prepare_session_refresh(env, session_wake, wake) + body
+        if stage == "execute" and execution.mode == "heartbeat" and env.get("LOOPX_CHECKPOINT_REQUEST"):
+            from benchmark.runtime.checkpoint import capture_before_replan
+
+            body = capture_before_replan(env, receipt, body)
         with (wake / "stderr.log").open("w") as stderr:
             if execution.native_goal and stage == "execute":
                 run_native_goal(env, execution, body, receipt, stderr)
@@ -340,18 +494,26 @@ def run_once(env: dict[str, str]) -> dict:
                     else native_command(env, execution, stage, wake, session_wake)
                 )
                 with (wake / "stdout.jsonl").open("w") as stdout:
-                    with child_process(
-                        command, env=env, stdout=stdout, stderr=stderr
-                    ) as process:
-                        allowance = 150 if execution.mode == "turn" and stage == "execute" else 0
-                        timeout = (float(env["LOOPX_PLANNING_TIMEOUT_SEC"]) if stage == "plan"
-                                   else None if execution.timeout_seconds is None
+                    allowance = 150 if execution.mode == "turn" and stage == "execute" else 0
+                    if stage == "plan":
+                        # Planning and execution consume the same phase budget.
+                        timeout = max(0, float(env["LOOPX_PHASE_DEADLINE_EPOCH"]) - time.time())
+                    else:
+                        timeout = (None if execution.timeout_seconds is None
                                    else execution.timeout_seconds + allowance)
-                        process.communicate(
-                            input=body, timeout=timeout
-                        )
-                        receipt["return_code"] = process.returncode
-                        receipt["ok"] = process.returncode == 0
+                    if checkpoint_wake.listener is not None:
+                        receipt["return_code"] = checkpoint_wake.run(
+                            execution, body, wake, session_wake, stdout, stderr, timeout)
+                        receipt["ok"] = receipt["return_code"] == 0
+                    else:
+                        with child_process(command, env=env, stdout=stdout, stderr=stderr,
+                                goal_admission=session_wake.admission if session_wake is not None else None,
+                                check_current_launch=heartbeat_launch_check(env, session_wake)) as process:
+                            if session_wake is not None:
+                                receipt["host_invoked"] = True
+                            process.communicate(input=body, timeout=timeout)
+                            receipt["return_code"] = process.returncode
+                            receipt["ok"] = process.returncode == 0
                 if stage == "plan" and receipt["ok"]:
                     from benchmark.runtime.planning import task_plan_packet, validate_plan_readback
 
@@ -381,16 +543,21 @@ def run_once(env: dict[str, str]) -> dict:
         receipt["timed_out"] = True
     except BaseException as exc:
         receipt["ok"] = False
-        receipt["error_kind"] = type(exc).__name__
+        receipt.update(_error_tail(exc))
         raise
     finally:
+        checkpoint_context.close()
         try:
-            if session_wake is not None:
+            if session_wake is not None and receipt.get("host_invoked") is True:
                 session_wake.observe(wake / "stdout.jsonl")
         except BaseException as exc:
-            receipt.update(ok=False, error_kind=type(exc).__name__)
+            receipt.update(ok=False, **_error_tail(exc))
             raise
         finally:
+            if env.get("LOOPX_CHECKPOINT_REQUEST"):
+                from benchmark.runtime.checkpoint import capture_after_wake
+
+                capture_after_wake(env, receipt)
             if (home / "sessions").is_dir():
                 # One authoritative copy; resumed prefixes are never double counted.
                 shutil.copytree(
@@ -405,6 +572,15 @@ def main() -> int:
         raise KeyboardInterrupt("worker cancelled")
 
     signal.signal(signal.SIGTERM, cancelled)
+    if (os.name == "posix" and os.environ.get("LOOPX_CHECKPOINT_REQUEST")
+            and os.environ.get("LOOPX_EXECUTION_MODE", "heartbeat") == "heartbeat"):
+        # This entrypoint owns one disposable worker process. Its native Host
+        # and tools inherit the soft limit; the parent launcher and hard limit
+        # stay unchanged. Crash memory is not a resumable file participant.
+        import resource
+
+        _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
     receipt = run_once(dict(os.environ))
     print(json.dumps(receipt))
     if receipt.get("budget_exhausted") and receipt["mode"] in {"heartbeat", "turn"}:

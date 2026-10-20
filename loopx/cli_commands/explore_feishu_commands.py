@@ -25,7 +25,7 @@ from ..extensions.lark.presentation.explore_singleflight import (
     explore_feishu_sync_busy_packet,
     explore_feishu_sync_singleflight,
 )
-from ..extensions.lark.presentation.kanban import DEFAULT_CLI_BIN
+from ..extensions.lark.cli_transport import DEFAULT_CLI_BIN
 from ..extensions.lark.presentation.sink_visibility import SINK_VISIBILITY_OWNER_ONLY, SINK_VISIBILITIES
 
 
@@ -142,6 +142,7 @@ def register_explore_feishu_commands(
     add_subcommand_format(sync)
     add_config_path_arg(sync)
     sync.add_argument("--goal-id", required=True)
+    sync.add_argument("--agent-id", help="Registered agent whose live research lineage is displayed.")
     add_projection_limit_args(sync)
     sync.add_argument("--base-token")
     for table_key in EXPLORE_TABLE_KEYS:
@@ -167,6 +168,7 @@ def register_explore_feishu_commands(
     add_subcommand_format(card)
     add_config_path_arg(card)
     card.add_argument("--goal-id", required=True)
+    card.add_argument("--agent-id", help="Registered agent whose live research lineage is displayed.")
     add_projection_limit_args(card)
     card.add_argument("--title")
     card.add_argument("--template", default="blue")

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from ..control_plane.coordination.legacy_writer_fence import LegacyCoordinationWriterFenced
 from ..control_plane.coordination.shadow_management import ShadowManagementError
+from ..control_plane.effect_runtime import EffectRuntimeRemoteError, EffectRuntimeStartupError
 
 import argparse
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from ..capabilities.machine_configuration.goal_storage import new_goal_storage_target
 from ..control_plane.projects.registry import (
     PROJECT_KINDS,
     bind_session,
@@ -50,6 +52,10 @@ def register_project_commands(
         choices=("source_session_v1",),
     )
     register_parser.add_argument("--operation-id")
+    register_parser.add_argument("--registered-agent", action="append", default=[],
+        help="Declare peer identities for a fresh source-session Goal; does not provision or start workers.")
+    register_parser.add_argument("--canonical-storage", metavar="PROVIDER",
+        help="Explicitly create fresh File/SQLite authority with hard leases for a source-session Goal; never migrates existing work or enables execution.")
 
     bind_parser = project_sub.add_parser(
         "bind-session",
@@ -160,8 +166,11 @@ def handle_project_command(
                 stop_condition=args.stop_condition,
                 repository_bindings=args.repository,
                 external_locator_bindings=args.external_locator,
+                resolve_new_goal_storage_target=new_goal_storage_target,
                 goal_instance_profile=args.goal_instance_profile,
                 operation_id=args.operation_id,
+                registered_agents=getattr(args, "registered_agent", []),
+                canonical_storage=getattr(args, "canonical_storage", None),
             )
         elif args.project_command == "bind-session":
             payload = bind_session(
@@ -197,7 +206,7 @@ def handle_project_command(
                 operation_id=args.operation_id,
                 execute=args.execute,
             )
-    except (OSError, TypeError, ValueError, LegacyCoordinationWriterFenced, ShadowManagementError) as exc:
+    except (OSError, TypeError, ValueError, LegacyCoordinationWriterFenced, ShadowManagementError, EffectRuntimeRemoteError, EffectRuntimeStartupError) as exc:
         payload = {
             "ok": False,
             "changed": False,

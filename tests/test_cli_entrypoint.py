@@ -14,11 +14,43 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_isolated_script(script: str) -> subprocess.CompletedProcess[str]:
+def test_machine_json_keeps_values_capture_and_human_renderer(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from copy import deepcopy
+
+    from loopx.cli_runtime import print_payload
+    from loopx import usage_ping
+
+    payload = {
+        "ok": False,
+        "error": "保留空格、换行\n和 \\\" 引号",
+        "future": {"unknown": [None, True, 3, {"projection_ref": "$.future"}]},
+        "instruction": "Read before work. Continue when evidence is missing.",
+    }
+    original = deepcopy(payload)
+    captured = []
+    monkeypatch.setattr(usage_ping, "capture_result", lambda value: captured.append(deepcopy(value)))
+    print_payload(payload, "json", lambda _: pytest.fail("JSON cannot use Markdown"))
+    stdout = capsys.readouterr().out
+    assert json.loads(stdout) == original
+    assert stdout.count("\n") == 1  # Newlines in values remain JSON escapes.
+    assert "保留空格" in stdout
+    assert payload == original
+    assert captured == [original]
+
+    print_payload(payload, "markdown", lambda value: "Readable result\n" + value["error"])
+    assert capsys.readouterr().out == "Readable result\n" + original["error"] + "\n"
+    assert captured == [original, original]
+
+
+def run_isolated_script(
+    script: str, *, environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-c", script],
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={**os.environ, **(environment or {}), "PYTHONPATH": str(REPO_ROOT)},
         text=True,
         capture_output=True,
         check=False,
@@ -30,6 +62,7 @@ def run_cli_main(
 	argv: list[str],
 	*,
 	forbidden_modules: tuple[str, ...] = (),
+	environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
 	script = f"""
 import sys
@@ -45,7 +78,7 @@ for forbidden_module in {forbidden_modules!r}:
     assert forbidden_module not in sys.modules
 raise SystemExit(exit_code)
 """
-	return run_isolated_script(script)
+	return run_isolated_script(script, environment=environment)
 
 
 def run_cli_batch(module: str, argv_cases: list[list[str]]) -> list[dict[str, object]]:
@@ -507,17 +540,23 @@ def test_selected_task_lease_rejections_match_full_cli(tmp_path: Path, arguments
 
 @pytest.mark.parametrize("command", ["authority-archive", "extension", "slash-commands"])
 def test_selected_admin_preview_matches_full_cli_without_writes(
-	tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str,
+	tmp_path: Path, command: str,
 ) -> None:
+	parent_environment = os.environ.copy()
 	registry, runtime_root = write_command_fixture(tmp_path)
 	runtime_root.mkdir()
 	host_home = tmp_path / "host-home"
 	host_home.mkdir()
-	monkeypatch.setenv("HOME", str(host_home))
-	monkeypatch.setenv("CODEX_HOME", str(host_home / ".codex"))
-	monkeypatch.setenv("LOOPX_RUNTIME_ROOT", str(runtime_root))
-	monkeypatch.setenv("LOOPX_REGISTRY", str(registry))
-	monkeypatch.setenv("LOOPX_USAGE_PING", "0")
+	# Only the CLI subprocesses use this home. Existing worker threads must not
+	# discover it through a temporary change to the pytest process environment.
+	cli_environment = {
+		"HOME": str(host_home),
+		"USERPROFILE": str(host_home),
+		"CODEX_HOME": str(host_home / ".codex"),
+		"LOOPX_RUNTIME_ROOT": str(runtime_root),
+		"LOOPX_REGISTRY": str(registry),
+		"LOOPX_USAGE_PING": "0",
+	}
 	argv = ["--registry", str(registry), "--runtime-root", str(runtime_root),
 		"--format", "json", command]
 	if command == "authority-archive":
@@ -529,12 +568,18 @@ def test_selected_admin_preview_matches_full_cli_without_writes(
 
 	before = {str(path.relative_to(tmp_path)): path.read_bytes()
 		for path in tmp_path.rglob("*") if path.is_file()}
-	selected = run_cli_main("loopx.entrypoint", argv, forbidden_modules=("loopx.cli",))
-	full = run_cli_main("loopx.cli", argv)
+	selected = run_cli_main(
+		"loopx.entrypoint", argv, forbidden_modules=("loopx.cli",),
+		environment=cli_environment,
+	)
+	full = run_cli_main("loopx.cli", argv, environment=cli_environment)
 
 	assert selected.returncode == full.returncode == 0, (selected.stderr, full.stderr)
 	assert selected.stdout == full.stdout
 	assert selected.stderr == full.stderr == ""
+	assert {key: os.environ.get(key) for key in cli_environment} == {
+		key: parent_environment.get(key) for key in cli_environment
+	}
 	assert {str(path.relative_to(tmp_path)): path.read_bytes()
 		for path in tmp_path.rglob("*") if path.is_file()} == before
 	assert not list(host_home.iterdir())
@@ -677,6 +722,25 @@ def test_console_entrypoint_selects_only_receipt_bound_native_scheduler_followup
     )
 
 
+@pytest.mark.parametrize("observation", [
+    {"available": True, "rrule": "FREQ=MINUTELY;INTERVAL=3"},
+    {"available": False},
+])
+def test_native_scheduler_reads_host_instead_of_the_applied_claim(monkeypatch, observation) -> None:
+    from loopx import entrypoint, upgrade
+
+    monkeypatch.setattr(shutil, "which", lambda value: "/fixture/node")
+    seen = []
+    monkeypatch.setattr(upgrade, "resolve_codex_app_automation_rrule", lambda **kw: seen.append(kw) or observation)
+    args = ["quota", "scheduler-ack-current", "--goal-id", "goal", "--agent-id", "agent",
+            "--scheduler-host-facts-chunk", "facts", "--turn-instance-id", "turn",
+            "--host-match-observed", "--applied-rrule", "FREQ=MINUTELY;INTERVAL=30",
+            "--app-automation-current-rrule", "FREQ=MINUTELY;INTERVAL=30"]
+    native = entrypoint._native_scheduler_followup_argv(args)
+    assert seen == [{"goal_id": "goal", "agent_id": "agent"}]
+    assert native[-2:] == ["--app-automation-current-rrule", observation.get("rrule", "")]
+
+
 def test_explicit_main_argv_remains_an_in_process_compatibility_call(
     monkeypatch,
 ) -> None:
@@ -695,6 +759,25 @@ def test_explicit_main_argv_remains_an_in_process_compatibility_call(
 
     assert entrypoint.main(["--format", "json", "version"]) == 0
     assert seen == [["--format", "json", "version"]]
+
+
+def test_windows_native_scheduler_followup_preserves_child_exit_status(
+    monkeypatch, capfd,
+) -> None:
+    from loopx import entrypoint
+
+    native_argv = [
+        sys.executable, "-c",
+        "import sys; print('native refusal'); sys.exit(73)",
+    ]
+    with monkeypatch.context() as patch:
+        patch.setattr(entrypoint.os, "name", "nt")
+        patch.setattr(sys, "argv", ["loopx", "quota", "scheduler-ack-current"])
+        patch.setattr(entrypoint, "_native_scheduler_followup_argv", lambda _args: native_argv)
+        result = entrypoint.main()
+
+    assert result == 73
+    assert capfd.readouterr().out.strip() == "native refusal"
 
 
 def test_console_native_scheduler_followup_fails_closed_without_node(

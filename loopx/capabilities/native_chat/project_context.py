@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from ...control_plane.effect_runtime import EffectRuntimeRejected, effect_runtime_result
 from ...presentation.answer_instruction import conversation_answer_instruction
+
+if TYPE_CHECKING:
+    from ...chat_store import ChatSessionStore
 
 
 PROJECT_CONVERSATION_OBJECTIVE = (
@@ -62,10 +65,11 @@ class ChatProjectContexts:
 
     def resolve(self, project_ref: str, *, session_context: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
-            return effect_runtime_result("collaboration.project.context", {
+            result: dict[str, Any] = effect_runtime_result("collaboration.project.context", {
                 "project_ref": project_ref, "available": self.available(),
                 **({"session_context": session_context} if session_context is not None else {}),
             })
+            return result
         except EffectRuntimeRejected as exc:
             raise ValueError(str(exc)) from exc
 
@@ -74,22 +78,29 @@ class ChatProjectContexts:
         if isinstance(steward, dict):
             if self.conversation_bindings is None:
                 raise ValueError("bound steward authority is unavailable")
-            selected = self.conversation_bindings.session_context(steward)
+            selected = self.conversation_bindings.session_context(steward, session=session)
+            return self.runtime_context(session, selected)
+        saved = session.get("project_context")
+        if not isinstance(saved, dict) or session.get("goal_id") is not None:
+            raise ValueError("invalid ordinary project Session")
+        if saved.get("audience") in {"bound_owner", "bound_group"}:
+            if self.conversation_bindings is None:
+                raise ValueError("bound project conversation authority is unavailable")
+            selected = self.conversation_bindings.session_context(saved, session=session)
+        else:
+            selected = self.resolve(str(saved.get("project_ref") or ""), session_context=saved)
+        return self.runtime_context(session, selected)
+
+    @staticmethod
+    def runtime_context(session: dict[str, Any], selected: dict[str, Any]) -> dict[str, Any]:
+        """Adapt an already verified Core selection; never repeat provider IO under its fence."""
+        if session.get("steward_context") is not None:
             if session.get("goal_id") != "loopx-manager" or session.get("channel_id") != selected["channel_id"]:
                 raise ValueError("steward audience mismatch")
             from ...chat_manager import MANAGER_AGENT_OBJECTIVE
             return {"project": Path(selected["context"]["workspace_path"]), "objective": MANAGER_AGENT_OBJECTIVE,
                     "title": "Steward"}
-        saved = session.get("project_context")
-        if not isinstance(saved, dict) or session.get("goal_id") is not None:
-            raise ValueError("invalid ordinary project Session")
-        if saved.get("audience") == "bound_owner":
-            if self.conversation_bindings is None:
-                raise ValueError("bound project conversation authority is unavailable")
-            selected = self.conversation_bindings.session_context(saved)
-        else:
-            selected = self.resolve(str(saved.get("project_ref") or ""), session_context=saved)
-        if session.get("channel_id") != selected["channel_id"]:
+        if session.get("goal_id") is not None or session.get("channel_id") != selected["channel_id"]:
             raise ValueError("project conversation channel mismatch")
         objective = PROJECT_WORK_OBJECTIVE if selected["context"]["grant"] == "workspace_write" else PROJECT_CONVERSATION_OBJECTIVE
         return {"project": Path(selected["context"]["workspace_path"]),
@@ -108,10 +119,13 @@ class ChatProjectContexts:
         session = {"goal_id": "loopx-manager" if steward else None, "channel_id": selected["channel_id"],
                    "project_context": None if steward else selected["context"],
                    "steward_context": selected["context"] if steward else None}
-        return {**session, **self.session_context(session)}
+        # This is a construction plan, not a canonical Session yet. Subsequent
+        # input/recovery validates the stored identity against a fresh binding.
+        return {**session, **self.runtime_context(session, selected)}
 
     @staticmethod
-    def initialize_bound_scope(store, session, *, runtime_root=None):
+    def initialize_bound_scope(store: ChatSessionStore, session: dict[str, Any], *,
+                               runtime_root: Path | None = None) -> dict[str, Any]:
         steward = session.get("steward_context")
         if not steward:
             return session

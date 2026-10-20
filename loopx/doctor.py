@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import partial
 from importlib.metadata import PackageNotFoundError, distribution
 import json
 import os
@@ -17,9 +18,19 @@ from .control_plane.runtime.promotion_readiness import (
     PROMOTION_READINESS_RUNTIME_INDEX,
 )
 from .control_plane.runtime.time import chronology_key
-from .install_contract import NO_CLONE_INSTALL_URL
+from .install_contract import (
+    _powershell_literal,
+    NO_CLONE_INSTALL_URL,
+    local_install_command,
+    no_clone_upgrade_command,
+)
 from .paths import configured_runtime_route, default_runtime_route, global_registry_path
-from .python_install_owner import PythonInstallOwner, python_distribution_upgrade_command, resolve_python_install_owner
+from .python_install_owner import (
+    PythonInstallOwner,
+    interpreter_invocation,
+    python_distribution_upgrade_command,
+    resolve_python_install_owner,
+)
 from .capabilities.project_skill_delivery import discover_project_scoped_skill_ids
 from .registry_writability import probe_registry_write_path
 from .release_manifest import load_release_manifest, release_runtime_identity, release_version_tag
@@ -79,62 +90,6 @@ REQUIRED_INSTALLED_SKILL_PHRASES = {
         "Repair at the lowest durable layer",
     ),
 }
-
-
-def _powershell_literal(value: str | Path) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def local_install_command(repo_root: Path, *, skip_skills: bool = False) -> str:
-    if os.name == "nt":
-        return (
-            "pwsh -NoLogo -NoProfile -File "
-            f"{_powershell_literal(repo_root / 'scripts' / 'install-windows.ps1')} "
-            f"-Python {_powershell_literal(sys.executable)}"
-            + (" -SkipSkills" if skip_skills else "")
-        )
-    command = str(repo_root / "scripts" / "install-local.sh")
-    return f"LOOPX_INSTALL_SKILL=0 {command}" if skip_skills else command
-
-
-def no_clone_upgrade_command(
-    source_ref: Any = None,
-    *,
-    doctor_agent_type: str | None = None,
-    skip_skills: bool = False,
-) -> str:
-    if os.name == "nt":
-        repo_root = Path(__file__).resolve().parents[1]
-        doctor_agent_arg = (
-            f" --agent-type {_powershell_literal(doctor_agent_type)}"
-            if doctor_agent_type
-            else ""
-        )
-        return (
-            f"{local_install_command(repo_root, skip_skills=skip_skills)}\n"
-            f"loopx doctor{doctor_agent_arg}"
-        )
-    ref = str(source_ref or "").strip()
-    installer = f"curl -fsSL {NO_CLONE_INSTALL_URL}"
-    doctor_agent_arg = (
-        f" --agent-type {shlex.quote(doctor_agent_type)}"
-        if doctor_agent_type
-        else ""
-    )
-    install_env: list[str] = []
-    if ref and ref != "stable":
-        install_env.append(f"LOOPX_REF={shlex.quote(ref)}")
-    if skip_skills:
-        install_env.append("LOOPX_INSTALL_SKILL=0")
-    if install_env:
-        installer = f"{installer} | env {' '.join(install_env)} bash"
-    else:
-        installer = f"{installer} | bash"
-    return (
-        f"{installer}\n"
-        'export PATH="$HOME/.local/bin:$PATH"\n'
-        f"loopx doctor{doctor_agent_arg}"
-    )
 
 
 def user_local_bin() -> Path:
@@ -604,6 +559,28 @@ def installed_skill_check(
     }
 
 
+def optional_installation_script_check(
+    check_id: str,
+    *,
+    exists: bool,
+    path: Path,
+    distribution_install: bool,
+) -> dict[str, Any]:
+    """Report release scripts only where the installation includes them."""
+    applicable = not distribution_install
+    return {
+        "id": check_id,
+        "required": False,
+        "ok": exists if applicable else True,
+        "applicable": applicable,
+        "detail": (
+            str(path)
+            if applicable
+            else "not applicable: Python package installs do not include release installer scripts"
+        ),
+    }
+
+
 def latest_promotion_readiness_event(runtime_root: Path, goal_id: str | None = None) -> dict[str, Any]:
     goals_dir = runtime_root / "goals"
     runtime_index = runtime_root / PROMOTION_READINESS_RUNTIME_INDEX
@@ -696,7 +673,15 @@ def collect_doctor(
     installation_only: bool = False,
     registry_path: Path | None = None,
     runtime_root_override: str | None = None,
+    zcode_cli: str | None = None,
+    zcode_desktop: str | None = None,
+    zcode_source: str | None = None,
 ) -> dict[str, Any]:
+    if any(value is not None for value in (zcode_cli, zcode_desktop, zcode_source)):
+        from .host_loop_activation import normalize_agent_type
+
+        if installation_only or not agent_type or normalize_agent_type(agent_type) != "zcode":
+            raise ValueError("ZCode paths require --agent-type zcode and host integration scope")
     if installation_only:
         from .release_candidate import collect_installation_doctor
 
@@ -768,9 +753,29 @@ def collect_doctor(
         comparison_source["label"] = "loopx-canary"
     path_entries = os.environ.get("PATH", "").split(os.pathsep)
     local_bin = user_local_bin()
-    skill_roots = codex_skill_roots()
-    skills = installed_skill_summary(skill_roots)
-    project_skill = skills["loopx-project"]
+    zcode_skill_repair_command = None
+    skill_roots: tuple[Path, ...]
+    if canonical_agent_type == "zcode":
+        from .slash_command_install import inspect_skill_facades
+        from .zcode_goal_mode import zcode_home
+
+        selected_zcode_home = zcode_home()
+        skill_roots = (selected_zcode_home / "skills",)
+        skills = inspect_skill_facades(skill_roots[0])
+        project_skill = skills["loopx"]
+        home_arg = (
+            _powershell_literal(selected_zcode_home)
+            if os.name == "nt"
+            else shlex.quote(str(selected_zcode_home))
+        )
+        zcode_skill_repair_command = (
+            "loopx slash-commands --install --surface zcode "
+            f"--zcode-home {home_arg}"
+        )
+    else:
+        skill_roots = codex_skill_roots()
+        skills = installed_skill_summary(skill_roots)
+        project_skill = skills["loopx-project"]
     skill_path = Path(str(project_skill["path"]))
     project_scoped_skill_ids = discover_project_scoped_skill_ids(
         repo_root / "skills"
@@ -840,7 +845,8 @@ def collect_doctor(
             latest_promotion_readiness_event(selected_runtime_root)
         ),
     }
-    install_freshness = build_install_freshness(
+    freshness_projection = partial(
+        build_install_freshness,
         command_path=command_path,
         release_root=release_root,
         repo_root=repo_root,
@@ -848,10 +854,27 @@ def collect_doctor(
         release_manifest=release_manifest,
         comparison_source=comparison_source,
         freshness_source=freshness_source,
-        require_installed_skills=installed_skills_required,
         doctor_agent_type=canonical_agent_type,
         python_distribution=python_distribution,
+        now=datetime.now(timezone.utc),
     )
+    install_freshness = freshness_projection(require_installed_skills=installed_skills_required)
+    zcode_installation_requires_upgrade = False
+    if zcode_skill_repair_command:
+        install_freshness["skill_repair_command"] = zcode_skill_repair_command
+        # Reuse the installation owner without Skill admission: the aggregate
+        # classification reports only its first problem and can hide another repair.
+        zcode_installation_requires_upgrade = bool(
+            freshness_projection(require_installed_skills=False)["requires_upgrade"]
+        )
+        if command_path is not None and not all(
+            skill.get("required_phrases") for skill in skills.values()
+        ):
+            surface_repair = zcode_skill_repair_command + "\nloopx doctor --agent-type zcode"
+            install_freshness["upgrade_command"] = (
+                install_freshness["upgrade_command"] + "\n" + surface_repair
+                if zcode_installation_requires_upgrade else surface_repair
+            )
     externally_managed_skills = bool(
         install_freshness.get("externally_managed_skills")
     )
@@ -888,10 +911,15 @@ def collect_doctor(
         ),
         "mode": "surface_managed" if installed_skills_required else "host_managed",
         "codex_skills_root_applicable": installed_skills_required
-        and not external_skill_delivery,
+        and not external_skill_delivery
+        and canonical_agent_type != "zcode",
         "installed_skills_required_for_freshness": installed_skills_required,
         "skill_roots": [str(root) for root in skill_roots],
         "status": skill_delivery_status,
+        **(
+            {"repair_command": zcode_skill_repair_command}
+            if zcode_skill_repair_command else {}
+        ),
         **(
             {"filesystem_readback": host_skill_install_readback}
             if host_skill_install_readback
@@ -997,18 +1025,18 @@ def collect_doctor(
             "ok": module_path.exists(),
             "detail": str(module_path),
         },
-        {
-            "id": "install_script_exists",
-            "required": False,
-            "ok": install_script.exists(),
-            "detail": str(install_script),
-        },
-        {
-            "id": "wrapper_script_exists",
-            "required": False,
-            "ok": wrapper_script.exists(),
-            "detail": str(wrapper_script),
-        },
+        optional_installation_script_check(
+            "install_script_exists",
+            exists=install_script.exists(),
+            path=install_script,
+            distribution_install=bool(python_distribution.get("available")),
+        ),
+        optional_installation_script_check(
+            "wrapper_script_exists",
+            exists=wrapper_script.exists(),
+            path=wrapper_script,
+            distribution_install=bool(python_distribution.get("available")),
+        ),
         {
             "id": "local_bin_on_path",
             "required": False,
@@ -1106,7 +1134,7 @@ def collect_doctor(
         })
     if deep_validation:
         checks.extend(deep_validation["checks"])
-    payload = {
+    payload: dict[str, Any] = {
         "ok": all(check["ok"] for check in checks if check["required"]),
         "mode": "deep" if deep else "standard",
         "service_runtime_identity": release_runtime_identity(),
@@ -1179,7 +1207,7 @@ def collect_doctor(
             else (
                 "Run `loopx workflow-skills --install`, then "
                 "`loopx slash-commands --install`, and rerun doctor. Upgrade this "
-                f"installation with `{shlex.quote(sys.executable)} -m pip install --upgrade loopx`."
+                f"installation with `{interpreter_invocation(sys.executable)} -m pip install --upgrade loopx`."
                 if python_distribution.get("available")
                 else (
                     f"Run `{local_install_command(repo_root, skip_skills=externally_managed_skills)}` "
@@ -1196,6 +1224,24 @@ def collect_doctor(
             )
         ),
     }
+    if canonical_agent_type == "zcode":
+        from .zcode_goal_mode.diagnostics import collect_zcode_host_diagnostics
+
+        payload["zcode"] = collect_zcode_host_diagnostics(
+            cli_path=zcode_cli, desktop_path=zcode_desktop, source_root=zcode_source,
+        )
+        skill_fix = (
+            f"Run `{zcode_skill_repair_command}` and then `loopx doctor --agent-type zcode` "
+            "with the same ZCode home. User-owned files are preserved; resolve any reported "
+            "name collision before installing. Filesystem checks do not verify runtime skill loading."
+        )
+        if (
+            payload["ok"] and command_path is not None
+            and not zcode_installation_requires_upgrade
+        ):
+            payload["fix"] = skill_fix
+        else:
+            payload["fix"] += "\nAfter restoring the LoopX installation/runtime, " + skill_fix
     if deep_validation:
         payload["release_candidate"] = deep_validation
     return payload
@@ -1367,6 +1413,24 @@ def render_doctor_markdown(payload: dict[str, Any]) -> str:
         recommended_action = typescript_control_plane.get("recommended_action")
         if recommended_action:
             lines.append(f"- recommended_action: {recommended_action}")
+    if payload.get("agent_type") == "zcode":
+        lines.extend(["", "## ZCode Skill Delivery"])
+        for name, skill in sorted((payload.get("skills") or {}).items()):
+            lines.append(
+                f"- {name}: `{skill.get('readback_status')}` — {skill.get('reason')} "
+                f"(`{skill.get('path')}`)"
+            )
+        repair_command = (payload.get("skill_delivery") or {}).get("repair_command")
+        if repair_command:
+            lines.extend([
+                "", "Refresh managed facades (user files are preserved):",
+                "```", str(repair_command), "```",
+            ])
+        zcode = payload.get("zcode")
+        if isinstance(zcode, dict):
+            from .zcode_goal_mode.diagnostics import render_zcode_diagnostics_markdown
+
+            lines.extend(render_zcode_diagnostics_markdown(zcode))
     restart = payload.get("effect_runtime_restart")
     if isinstance(restart, dict):
         previous = restart.get("previous_runtime_identity")

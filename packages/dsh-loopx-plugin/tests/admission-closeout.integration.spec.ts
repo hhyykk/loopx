@@ -105,6 +105,7 @@ async function fixture(): Promise<Fixture> {
     '---',
     'status: active-read-only',
     'owner_mode: goal',
+    'handoff_mode: soft_claim',
     'objective: "Validate one DSH continuation settlement."',
     'updated_at: 2026-01-01T00:00:00+00:00',
     '---',
@@ -152,6 +153,30 @@ async function fixture(): Promise<Fixture> {
       quota: { compute: 1, window_hours: 24, allowed_slots: 2 },
     }],
   }, null, 2)}\n`, 'utf8')
+  // The closeout journey starts on supported authority. Markdown remains a
+  // projection; this test must not depend on the retired ordinary writer.
+  const canonical = await runFile(await integrationPython, ['-c', [
+    'import sys',
+    'from pathlib import Path',
+    'sys.path.insert(0, str(Path(sys.argv[1]) / "tests/control_plane"))',
+    'from canonical_authority_fixture import initialize_canonical_authority',
+    'from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection',
+    'projection = build_todo_runtime_shadow_projection(',
+    '    goal_id=sys.argv[3], handoff_mode="soft_claim", todos=[{',
+    '        "schema_version": "todo_item_v0", "todo_id": sys.argv[5],',
+    '        "role": "agent", "status": "open", "done": False,',
+    '        "text": "[P1] Validate and settle the selected delivery.",',
+    '        "title": "Validate and settle the selected delivery.", "priority": "P1",',
+    '        "archive_state": "active", "source_section": "Agent Todo", "index": 1,',
+    '        "task_class": "advancement_task", "action_kind": "validate",',
+    '    }])',
+    'initialize_canonical_authority(Path(sys.argv[2]), sys.argv[3], projection,',
+    '    state_path=Path(sys.argv[4]), provider="file")',
+  ].join('\n'), repoRoot, runtime, goalId, state, todoId], {
+    cwd: repoRoot,
+    env: { ...process.env, PYTHONPATH: repoRoot },
+  })
+  expect(canonical.exitCode, canonical.stderr).toBe(0)
   expect((await runFile('git', ['init', '--quiet'], { cwd: project })).exitCode).toBe(0)
   expect((await runFile('git', [
     'remote', 'add', 'origin',
@@ -289,19 +314,48 @@ describe('DSH admission-to-closeout integration', () => {
     )
     expect(admission.kind).toBe('enter')
 
-    const guard = await runCli(testFixture, [
+    const unselected = await runCli(testFixture, [
       'quota', 'should-run',
       '--goal-id', goalId,
       '--agent-id', agentId,
       '--runtime-profile', 'generic_cli',
       '--turn-instance-id', turnInstanceId,
     ])
+    expect(unselected.exitCode).toBe(0)
+    const unselectedChannel = record(record(unselected.payload.interaction_contract).cli_channel)
+    expect(unselectedChannel.selection_required).toBe(true)
+    expect(unselectedChannel.settlement_plan).toBeUndefined()
+
+    // The queued conversation lets the agent choose work; it does not claim
+    // the fixture's Todo or bind the Turn on the agent's behalf, so the agent
+    // claims the work it selected before the exact receipt is bound.
+    const claimed = await runCli(testFixture, [
+      'todo', 'claim', '--goal-id', goalId, '--todo-id', todoId,
+      '--agent-id', agentId, '--claimed-by', agentId,
+    ])
+    expect(claimed.exitCode, JSON.stringify(claimed.payload)).toBe(0)
+    expect(claimed.payload.ok).toBe(true)
+
+    const guardArgs = [
+      'quota', 'should-run',
+      '--goal-id', goalId,
+      '--todo-id', todoId,
+      '--agent-id', agentId,
+      '--runtime-profile', 'generic_cli',
+      '--turn-instance-id', turnInstanceId,
+    ]
+    const guard = await runCli(testFixture, guardArgs)
+    const guardReplay = await runCli(testFixture, guardArgs)
+    expect(guardReplay.exitCode).toBe(0)
     expect(guard.exitCode).toBe(0)
+    expect(guard.payload.ok).toBe(true)
     const heartbeatReceipt = record(guard.payload.heartbeat_receipt)
     expect(heartbeatReceipt.turn_instance_id).toBe(turnInstanceId)
     const cliChannel = record(record(guard.payload.interaction_contract).cli_channel)
     const rawPlan = record(cliChannel.settlement_plan)
     const identity = record(rawPlan.identity)
+    const replayChannel = record(record(guardReplay.payload.interaction_contract).cli_channel)
+    expect(record(record(replayChannel.settlement_plan).identity)).toEqual(identity)
     const effectId = String(identity.effect_id)
     expect(identity.turn_instance_id).toBe(turnInstanceId)
     expect(identity.todo_id).toBe(todoId)
@@ -365,7 +419,18 @@ describe('DSH admission-to-closeout integration', () => {
       && event.agent_id === agentId
       && event.run_id === turnInstanceId
     ))
-    expect(admissionReceipts).toHaveLength(1)
+    expect(admissionReceipts).toHaveLength(2)
+    const initialAdmission = admissionReceipts.find(event => (
+      record(event.details).settlement_effect_id === null
+    ))
+    const selectedAdmission = admissionReceipts.find(event => (
+      record(event.details).settlement_effect_id === effectId
+    ))
+    expect(record(record(initialAdmission).details).delivery_allowed).toBe(false)
+    const selectedDetails = record(record(selectedAdmission).details)
+    expect(selectedDetails.todo_id).toBe(todoId)
+    expect(selectedDetails.settlement_receipt_revision).toBe('identity_upgrade')
+    expect(record(record(selectedAdmission).causality).caused_by).toBe(record(initialAdmission).event_id)
     expect(events.filter(event => (
       event.event_kind === 'quota_should_run'
       && event.run_id !== turnInstanceId

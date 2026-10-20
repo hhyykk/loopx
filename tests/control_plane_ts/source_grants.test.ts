@@ -1,12 +1,61 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { configureSourceRecipient, configureSourceScope, resolveSourceRecipients, sourceExecutionBindings } from "../../loopx/control_plane/collaboration/source_grants.ts";
+import { configureSourceRecipient, configureSourceScope, resolveSourceContextAuthority, resolveSourceRecipients, sourceExecutionBindings, validateSourceIngress } from "../../loopx/control_plane/collaboration/source_grants.ts";
 
 const worker = { goal_id: "research", agent_id: "worker" };
 const peer = { goal_id: "research", agent_id: "peer" };
 const other = { goal_id: "other", agent_id: "worker" };
 const available = [worker, peer, other];
 const source = { local_delivery_scope: "selected", sender_ids: ["owner"], targets: [{ goal_id: "research" }] };
+
+test("source authority keeps local portfolio and same-Goal delivery distinct", () => {
+  const params = {conversation: {channel_id: "manager", origin: "web"},
+    available: [worker, peer, other, worker], source_id: "web:original"};
+  assert.deepEqual(resolveSourceContextAuthority(params),
+    {mode: "context_only", source_id: params.source_id, targets: [other, peer, worker]});
+  assert.deepEqual(resolveSourceContextAuthority({...params,
+    conversation: {channel_id: "goal.research", goal_id: "research", origin: "web"}}).targets,
+    [peer, worker]);
+  // A read-only workspace is not a Goal or a portfolio delivery grant.
+  const project = {kind: "project_workspace", project_ref: "a".repeat(24),
+    workspace_path: "/synthetic/project", audience: "local_owner", grant: "workspace_read"};
+  assert.deepEqual(resolveSourceContextAuthority({...params, conversation: {
+    channel_id: `project.${project.project_ref}`, goal_id: null, project_context: project, origin: "web"}}),
+    {mode: "context_only", source_id: params.source_id, targets: []});
+  assert.throws(() => resolveSourceContextAuthority({...params, source_id: ""}));
+});
+
+test("source authority preserves exact external grants, revocations and original identity", () => {
+  const conversation = {session_id: "original", channel_id: "manager.external.synthetic", origin: "lark"};
+  const turn = {client_turn_id: "input", origin: "lark", message_digest: "digest"};
+  const ingress = {session_id: "original", client_turn_id: "input", channel: conversation.channel_id,
+    message_digest: "digest", sender_id: "owner", source_id: "provider:original"};
+  const params = {conversation, turn, ingress, available, source: {...source, blocked_targets: [peer]},
+    source_id: "not-a-substitute-for-ingress"};
+  assert.deepEqual(resolveSourceContextAuthority(params),
+    {mode: "context_only", source_id: ingress.source_id, targets: [worker]});
+  const unavailable = {mode: "unavailable", targets: []};
+  for (const change of [{source: null}, {ingress: {...ingress, sender_id: "visitor"}},
+    {ingress: {...ingress, session_id: "another"}}, {turn: {...turn, message_digest: "changed"}},
+    {ingress: null},
+    {source: {...source, blocked_targets: null}}, {available: [worker, {}]}]) {
+    assert.deepEqual(resolveSourceContextAuthority({...params, ...change}), unavailable);
+  }
+  assert.deepEqual(resolveSourceContextAuthority({...params,
+    conversation: {channel_id: "unavailable", origin: "lark"}}), unavailable);
+  assert.deepEqual(resolveSourceContextAuthority({...params,
+    conversation: {channel_id: "goal.research", goal_id: "research", origin: "lark"}}), unavailable);
+});
+
+test("source authority has one canonical deduplicated catalog for observed identities", () => {
+  const rows = [{goal_id: "research", agent_id: "a"}, {goal_id: "research", agent_id: "A"},
+    {goal_id: "research", agent_id: "\u{10000}"}, {goal_id: "research", agent_id: "\uE000"}];
+  const params = {conversation: {channel_id: "manager", origin: "web"}, source_id: "web:original",
+    available: [...rows, rows[0], null, {}]};
+  assert.deepEqual(resolveSourceContextAuthority(params).targets, [rows[1], rows[0], rows[3], rows[2]]);
+  assert.deepEqual(resolveSourceContextAuthority({...params, available: []}),
+    {mode: "context_only", source_id: params.source_id, targets: []});
+});
 
 test("execution needs an independent exact grant, current sender and both registered identities", () => {
   const binding = {...worker, binding_id: "review", requester_agent_id: "peer"};
@@ -134,4 +183,48 @@ test("an Agent revocation while its Goal is disabled survives Goal restoration",
     assert.deepEqual(resolveSourceRecipients({ sender_id: "owner", source: restoredAgent.source, available }),
       { targets: policy === source ? [peer, worker] : [other, peer, worker] });
   }
+});
+
+test("evidence reads follow current registered Goals only after explicit all-registered configuration", async () => {
+  const {resolveSourceEvidenceGoals, configureSourceEvidenceScope} = await import("../../loopx/control_plane/collaboration/source_grants.ts");
+  assert.deepEqual(resolveSourceEvidenceGoals({source, available_goal_ids: ["research", "later"]}), {goal_scope: "selected", goal_ids: null});
+  const selected = {...source, evidence_goal_ids: ["research"]};
+  assert.deepEqual(resolveSourceEvidenceGoals({source: selected, available_goal_ids: ["research", "later"]}).goal_ids, ["research"]);
+  const next = configureSourceEvidenceScope({source: selected, goal_scope: "all_registered", goal_ids: ["research"], available_goal_ids: ["research"]});
+  assert.deepEqual(resolveSourceEvidenceGoals({source: next.source, available_goal_ids: ["research", "later"]}).goal_ids, ["later", "research"]);
+  assert.deepEqual((next.source as typeof selected).targets, selected.targets);
+  assert.deepEqual(resolveSourceEvidenceGoals({source: {...selected, evidence_goal_ids: []}, available_goal_ids: ["research"]}).goal_ids, []);
+  for (const invalid of [{evidence_goal_scope: "unknown"}, {evidence_goal_ids: ["*"]}, {evidence_goal_ids: null}, {evidence_goal_scope: "all_registered"}]) {
+    assert.throws(() => resolveSourceEvidenceGoals({source: invalid}));
+  }
+});
+
+
+test("source provenance is exact and local bound input never borrows provider lineage", () => {
+  const steward = {kind: "bound_steward", project_ref: "a".repeat(24), workspace_path: "/authorized/project",
+    audience: "bound_owner", grant: "portfolio_read", binding_id: "b".repeat(24), source_ref: "c".repeat(24),
+    provider_ref: "d".repeat(24), operator_ref: "e".repeat(24), goal_ids: []};
+  const session = {session_id: "original", goal_id: "loopx-manager", steward_context: steward,
+    channel_id: `manager.external.native.${steward.binding_id}.${steward.source_ref}`};
+  const turn = {client_turn_id: "local", origin: "web", message_digest: "digest"};
+  const ingress = {session_id: "original", client_turn_id: "local", channel: session.channel_id,
+    message_digest: "digest", sender_id: steward.operator_ref, source_id: "web:original", origin: "web"};
+  const params = {session, turn, ingress};
+  assert.deepEqual(validateSourceIngress(params), {verified: true});
+  for (const field of ["session_id", "client_turn_id", "channel", "message_digest", "sender_id", "origin"]) {
+    assert.throws(() => validateSourceIngress({...params, ingress: {...ingress, [field]: "other"}}));
+  }
+  for (const origin of ["lark", "external", "model"]) {
+    assert.throws(() => validateSourceIngress({...params, turn: {...turn, origin}}));
+  }
+  assert.throws(() => validateSourceIngress({...params, ingress: {...ingress, origin: undefined}}));
+  assert.throws(() => validateSourceIngress({...params, session: {...session, steward_context: undefined}}));
+  // Existing provider records omit origin and keep their historical shape.
+  const legacy = {...ingress, origin: undefined};
+  for (const origin of ["lark", "external"]) {
+    assert.deepEqual(validateSourceIngress({...params, turn: {...turn, origin}, ingress: legacy}), {verified: true});
+  }
+  const unbound = {...session, steward_context: undefined};
+  assert.deepEqual(validateSourceIngress({...params, session: unbound, turn: {...turn, origin: "lark"}, ingress: legacy}), {verified: true});
+  assert.throws(() => validateSourceIngress({...params, session: unbound, turn: {...turn, origin: "external"}, ingress: legacy}));
 });

@@ -18,12 +18,15 @@ from .doubao_model_behavior_actor import (
     DoubaoActorTransportError,
 )
 
-EXEC_COMMAND_TOOL = {
+EXEC_COMMAND_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "exec_command",
         "description": (
-            "Run a shell command in the current workspace and return its output."
+            "Run a shell command in the current workspace and return its output. "
+            "This host accepts at most one tool call per assistant response. "
+            "Wait for that call's result before choosing the next command. "
+            "Shell composition within a command remains available."
         ),
         "parameters": {
             "type": "object",
@@ -236,13 +239,19 @@ class DoubaoExecToolClient:
         *,
         tool_description: str | None = None,
     ) -> ExecToolStep:
+        tool = EXEC_COMMAND_TOOL
+        if tool_description is not None:
+            tool = {
+                **tool,
+                "function": {
+                    **tool["function"],
+                    "description": f"{tool['function']['description']} {tool_description}",
+                },
+            }
         body = {
             "model": self._model,
             "messages": messages,
-            "tools": [EXEC_COMMAND_TOOL if tool_description is None else {
-                **EXEC_COMMAND_TOOL,
-                "function": {**EXEC_COMMAND_TOOL["function"], "description": tool_description},
-            }],
+            "tools": [tool],
             "tool_choice": "auto",
             "thinking": {"type": "disabled"},
             "temperature": 0,

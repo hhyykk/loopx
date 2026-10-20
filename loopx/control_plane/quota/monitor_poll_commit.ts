@@ -5,9 +5,11 @@ import { AgentScopeFrontierAction } from "../agents/agent_scope_frontier.generat
 import { createHash } from "node:crypto";
 import { access, readFile, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { monitorSuccessorIntent, monitorSuccessorRoute } from "../scheduler/monitor_successor.ts";
+import {planTodoCreationPriority, readTodoPriority} from "../todos/priority.ts";
+import { monitorSuccessorIntent, monitorSuccessorRoute, monitorSuccessorPriorities } from "../scheduler/monitor_successor.ts";
 import { normalizeTodoCapabilities } from "../todos/work_requirements.ts";
 import { parseProjectionDelivery } from "../todos/projection_delivery.ts";
+import { isMonitorUnavailableWait } from "./blocked_wait.ts";
 import {
   QUOTA_SETTLEMENT_READBACK_REQUEST_SCHEMA,
   readQuotaSettlementForAdmittedOwnerFromSnapshot,
@@ -16,11 +18,12 @@ import {
 import {
   parseQuotaAccountingOwner,
   quotaGoalRef,
+  quotaOwnerOwnsProjection,
   withBorrowedQuotaAccountingOwner,
   type QuotaAccountingOwner,
 } from "./source_admission.ts";
 
-import type { JsonObject } from "../effect_program.ts";
+import type { JsonObject, SettlementIdentity } from "../effect_program.ts";
 import { EffectRuntimeRequestError } from "../effect_runtime_errors.ts";
 import {
   appendJsonLine,
@@ -364,6 +367,7 @@ function observationObject(value: unknown): MonitorObservation {
       observation.next_due_at,
       "observation.next_due_at",
     )?.trim() ?? null,
+    ...monitorSuccessorPriorities(observation),
     next_agent_todo: optionalString(
       observation.next_agent_todo,
       "observation.next_agent_todo",
@@ -563,9 +567,25 @@ interface Admission {
   external: boolean;
 }
 
-async function readAuxiliarySettlement(request: MonitorRequest): Promise<JsonObject | null> {
+function monitorGateAllowsObservation(decision: MonitorDecision): boolean {
+  if (!decision.requires_user_action) return true;
+  const gateScope = decision.auxiliary_gate_scope;
+  const monitor = decision.registry_due_monitor;
+  return decision.safe_bypass_allowed &&
+    decision.safe_bypass_kind === "scoped_user_gate_fallback" &&
+    gateScope?.schema_version === "todo_gate_scope_projection_v0" &&
+    gateScope.agent_id === decision.agent_id && gateScope.todo_id === monitor.todo_id &&
+    gateScope.state === "independent" && typeof gateScope.gate_count === "number" &&
+    Number.isInteger(gateScope.gate_count) && gateScope.gate_count > 0;
+}
+
+async function readMonitorSettlement(request: MonitorRequest): Promise<JsonObject | null> {
+  const todoId = request.observation.settlement_todo_id ?? request.observation.todo_id;
+  // The Turn/effect and run record belong to the decision Agent; provider actor
+  // metadata cannot select a different historical settlement to evade its fence.
+  const agentId = request.decision.agent_id;
   if (!request.runtime_root || !request.turn_instance_id ||
-      !request.observation.actor_agent_id || !request.observation.settlement_todo_id) return null;
+      !agentId || !todoId) return null;
   const snapshot = await readQuotaSettlementSnapshot(
     request.runtime_root,
     request.goal_id,
@@ -573,7 +593,7 @@ async function readAuxiliarySettlement(request: MonitorRequest): Promise<JsonObj
   return readQuotaSettlementForAdmittedOwnerFromSnapshot({
     schema_version: QUOTA_SETTLEMENT_READBACK_REQUEST_SCHEMA,
     runtime_root: request.runtime_root, goal_id: request.goal_id,
-    agent_id: request.observation.actor_agent_id, todo_id: request.observation.settlement_todo_id,
+    agent_id: agentId, todo_id: todoId,
     turn_instance_id: request.turn_instance_id, replan_obligation_id: null,
     infer_turn_instance_id: false, allow_unbound_binding: false,
   }, request.owner, snapshot);
@@ -604,7 +624,7 @@ async function auxiliaryMonitorAllowed(
         todo.excluded_agents.some(value => typeof value !== "string") ||
         todo.excluded_agents.includes(decision.agent_id)))) throw conflict();
   if (!historicalAdmission) {
-    const settlement = await readAuxiliarySettlement(request);
+    const settlement = await readMonitorSettlement(request);
     const progress = jsonObject(settlement?.progress);
     // The advancement's single debit is not an observation-admission fence.
     // A settled exact binding still permits independently admitted due Monitors.
@@ -620,24 +640,38 @@ async function auxiliaryMonitorAllowed(
   const monitor = decision.registry_due_monitor;
   // Retain ordinary quota/due-work admission and capability/gate projections;
   // lifecycle lookup must not become a second should-run bypass.
-  const gateScope = decision.auxiliary_gate_scope;
-  const independentGate = decision.safe_bypass_allowed &&
-    decision.safe_bypass_kind === "scoped_user_gate_fallback" &&
-    gateScope?.schema_version === "todo_gate_scope_projection_v0" &&
-    gateScope.agent_id === decision.agent_id && gateScope.todo_id === monitor.todo_id &&
-    gateScope.state === "independent" && typeof gateScope.gate_count === "number" && Number.isInteger(gateScope.gate_count) && gateScope.gate_count > 0;
-  return (!decision.requires_user_action || independentGate) && dueMonitorAllowed(decision, observation) &&
+  return monitorGateAllowsObservation(decision) && dueMonitorAllowed(decision, observation) &&
     monitor.due === true && candidateMatches(monitor, observation) &&
     (monitor.claimed_by == null || monitor.claimed_by === decision.agent_id);
 }
 
 async function admission(request: MonitorRequest, historicalAdmission = false): Promise<Admission> {
+  const observation = request.observation;
+  const settlementTodo = observation.settlement_todo_id ?? observation.todo_id;
+  if (settlementTodo && (!observation.todo_id || settlementTodo === observation.todo_id)) {
+    const settlement = await readMonitorSettlement(request);
+    // The readback owner verifies admission, exact identity and durable blocked
+    // evidence. A late observation cannot replace that frozen no-spend outcome.
+    // Durable poll replay returns before admission; independent auxiliary
+    // Monitors retain their advancement-bound admission below.
+    if (jsonObject(settlement?.progress)?.closeout_kind === "typed_blocked_writeback_no_spend" &&
+        isMonitorUnavailableWait(jsonObject(settlement?.writeback_run)?.blocked_retry, settlementTodo)) {
+      throw new EffectRuntimeRequestError(
+        "monitor-poll conflicts with the committed unavailable attempt; use a fresh Turn for a new observation",
+        "monitor_poll_admission_rejected",
+      );
+    }
+  }
   const blocked = blockedSuccessorAllowed(request.decision);
   const external = externalMonitorAllowed(request.decision);
   const auxiliary = await auxiliaryMonitorAllowed(request, historicalAdmission);
   const due = auxiliary ?? dueMonitorAllowed(request.decision, request.observation);
   if (auxiliary === false) {
     throw new EffectRuntimeRequestError("auxiliary monitor-poll requires its own due Monitor target",
+      "monitor_poll_admission_rejected");
+  }
+  if (due && !monitorGateAllowsObservation(request.decision)) {
+    throw new EffectRuntimeRequestError("Monitor observation is blocked by current User gate dependencies",
       "monitor_poll_admission_rejected");
   }
   if (
@@ -916,9 +950,8 @@ function requestDigest(request: MonitorRequest): string {
   }));
 }
 
-function providerPlanFor(request: MonitorRequest, gateGuard = Boolean(
-  request.observation.settlement_todo_id && request.observation.settlement_todo_id !== request.observation.todo_id
-), legacyBatchVersion: 1 | null = 1): MonitorProviderPlan {
+function providerPlanFor(request: MonitorRequest, gateGuard = true,
+  legacyBatchVersion: 1 | null = null): MonitorProviderPlan {
   const resultHash = request.observation.result_hash;
   if (!resultHash) {
     throw new EffectRuntimeRequestError("monitor todo writeback requires --result-hash");
@@ -939,6 +972,7 @@ function providerPlanFor(request: MonitorRequest, gateGuard = Boolean(
     cadence: request.observation.cadence,
     next_due_at: request.observation.next_due_at,
     reason_summary: request.observation.reason_summary,
+    ...monitorSuccessorPriorities(request.observation, true),
     next_agent_todo: request.observation.next_agent_todo,
     next_action_kind: request.observation.next_action_kind,
     next_task_repository: request.observation.next_task_repository,
@@ -952,12 +986,10 @@ function providerPlanFor(request: MonitorRequest, gateGuard = Boolean(
   };
 }
 
-/** Upgrade uncommitted historical auxiliary dispatch without rewriting its WAL.
+/** Upgrade uncommitted historical Monitor dispatch without rewriting its WAL.
  * Existing business receipts replay the same intended-effect identity first. */
-function providerDispatchPlan(request: MonitorRequest, plan: MonitorProviderPlan): MonitorProviderPlan {
-  return request.observation.settlement_todo_id &&
-    request.observation.settlement_todo_id !== request.observation.todo_id
-    ? {...plan, gate_scope_guard: true} : plan;
+function providerDispatchPlan(plan: MonitorProviderPlan): MonitorProviderPlan {
+  return {...plan, gate_scope_guard: true};
 }
 
 function providerPlanObject(value: unknown): MonitorProviderPlan {
@@ -995,6 +1027,7 @@ function providerPlanObject(value: unknown): MonitorProviderPlan {
     cadence: optionalString(plan.cadence, "provider_plan.cadence")?.trim() ?? null,
     next_due_at: optionalString(plan.next_due_at, "provider_plan.next_due_at")?.trim() ?? null,
     reason_summary: optionalString(plan.reason_summary, "provider_plan.reason_summary"),
+    ...monitorSuccessorPriorities(plan),
     next_agent_todo: optionalString(plan.next_agent_todo, "provider_plan.next_agent_todo"),
     next_action_kind: optionalString(plan.next_action_kind, "provider_plan.next_action_kind")
       ?.trim() ?? null,
@@ -1068,6 +1101,21 @@ function requireProviderTodoText(
   const actual = requiredString(value, label).trim().replace(/\s+/g, " ");
   const compactExpected = expected.trim().replace(/\s+/g, " ");
   requireProviderMatch(actual, compactExpected, label);
+}
+
+function requireProviderSuccessorPriority(
+  receipt: JsonObject, nextTodo: JsonObject, plan: MonitorProviderPlan, role: "agent" | "user",
+): void {
+  const text = String(plan[`next_${role}_todo`]);
+  const key = `next_${role}_priority`;
+  const explicit = Object.hasOwn(plan, key);
+  const taskClass = role === "agent" ? "advancement_task" : plan.next_user_task_class;
+  const expected = planTodoCreationPriority({text, task_class: taskClass,
+    ...(explicit ? {priority: plan[key]} : {})});
+  if (!explicit && nextTodo.todo === text) return; // Historical provider plan and original receipt.
+  requireProviderTodoText(nextTodo.todo, String(expected.text), `${role} next_todo text`);
+  requireProviderMatch(readTodoPriority(receipt), expected.priority, `${role} successor priority`);
+  requireProviderMatch(readTodoPriority(nextTodo), expected.priority, `${role} next_todo priority`);
 }
 
 function requireCanonicalSuccessorRoute(
@@ -1158,11 +1206,7 @@ function validateSuccessorReceipts(
       todoId,
       "agent next_todo unblocks_todo_id",
     );
-    requireProviderTodoText(
-      nextTodo.todo,
-      plan.next_agent_todo,
-      "agent next_todo text",
-    );
+    requireProviderSuccessorPriority(receipt, nextTodo, plan, "agent");
     requireProviderMatch(
       requiredProviderTodoId(receipt.todo_id, "agent successor todo_id"),
       requiredProviderTodoId(nextTodo.todo_id, "agent next_todo todo_id"),
@@ -1186,11 +1230,7 @@ function validateSuccessorReceipts(
       plan.next_user_task_class,
       "user next_todo task_class",
     );
-    requireProviderTodoText(
-      nextTodo.todo,
-      plan.next_user_todo,
-      "user next_todo text",
-    );
+    requireProviderSuccessorPriority(receipt, nextTodo, plan, "user");
     requireProviderMatch(
       requiredProviderTodoId(receipt.todo_id, "user successor todo_id"),
       requiredProviderTodoId(nextTodo.todo_id, "user next_todo todo_id"),
@@ -1562,7 +1602,7 @@ function successorReceipts(providerReceipt: JsonObject | null): JsonObject[] {
 async function projectAuxiliaryContinuation(request: MonitorRequest, payload: JsonObject): Promise<void> {
   const continuation = jsonObject(payload.turn_continuation);
   if (!request.execute || continuation?.settlement_binding_matches_observation !== false) return;
-  const settlement = await readAuxiliarySettlement(request);
+  const settlement = await readMonitorSettlement(request);
   if (jsonObject(settlement?.progress)?.state !== "settled") return;
   // This is current readback, not a change to the historical Monitor receipt
   // or permission for another advancement. Replays must not reopen a paid Turn.
@@ -1695,6 +1735,7 @@ function receiptObject(value: unknown): MonitorReceipt {
       "receipt.expected_index_digest",
     ),
     expected_index_bytes: expectedBytes,
+    ...(receipt.goal_ref === undefined ? {} : {goal_ref: requiredObject(receipt.goal_ref, "receipt.goal_ref")}),
   } as const;
   const status = requireStringLiteral(
     receipt.status,
@@ -1743,6 +1784,45 @@ async function readReceipt(path: string): Promise<MonitorReceipt | null> {
     }
     throw error;
   }
+}
+
+/** A stored observation may already have reached its provider even before the
+ * run index is settled. Its existing receipt owner must recover or prove no
+ * effect before a competing unavailable closeout can be admitted. */
+export async function hasMonitorPollTransaction(
+  runtimeRoot: string, identity: SettlementIdentity, owner: QuotaAccountingOwner,
+): Promise<boolean> {
+  if (!identity.todo_id) return false;
+  const runsDir = join(runtimeRoot, "goals", identity.goal_id, "runs");
+  const base = `quota-monitor-poll:${identity.goal_id}:${identity.agent_id}:${identity.turn_instance_id}`;
+  for (const effectId of [base, `${base}:todo:${identity.todo_id}`]) {
+    const receipt = await readReceipt(transactionPath(runsDir, effectId));
+    if (!receipt) continue;
+    validateReceiptScope(receipt, runsDir, join(runsDir, "index.jsonl"));
+    const facts = receipt.status === "provider_pending" ? receipt.provider_plan : receipt.index_record;
+    if (receipt.effect_id !== effectId || facts.goal_id !== identity.goal_id ||
+        facts.todo_id !== identity.todo_id) continue;
+    if (receipt.status === "provider_pending") {
+      // The provider plan names its actor, not the Turn's accounting Agent.
+      // Legacy pending receipts retain this exact accounting effect identity.
+      if (receipt.schema_version === MONITOR_PENDING_ADMISSION_SCHEMA &&
+          (receipt.admitted_decision.goal_id !== identity.goal_id ||
+           receipt.admitted_decision.agent_id !== identity.agent_id)) {
+        throw new EffectRuntimeRequestError(
+          "stored Monitor admission conflicts with its accounting identity", "malformed_transaction_receipt",
+        );
+      }
+    } else if (facts.agent_id !== identity.agent_id) continue;
+    const goalRef = receipt.status === "provider_pending" ? receipt.goal_ref : facts.goal_ref;
+    if (receipt.status === "provider_pending" && goalRef === undefined && owner.kind !== "alias") {
+      throw new EffectRuntimeRequestError(
+        "historical pending Monitor transaction lacks GoalRef scope; reconcile its original owner before unavailable closeout",
+      );
+    }
+    if (!quotaOwnerOwnsProjection(owner, goalRef)) continue;
+    return true;
+  }
+  return false;
 }
 
 function validateReceiptScope(
@@ -2047,6 +2127,7 @@ function validateNoEffect(receipt: JsonObject | null, plan: MonitorProviderPlan)
     "next_agent_todo", "next_action_kind", "next_task_repository", "next_required_capabilities",
     "next_continuation_policy", "next_target_key", "next_claimed_by", "next_user_todo", "next_user_task_class",
   ].map(key => [key, plan[key]]));
+  Object.assign(intent, monitorSuccessorPriorities(plan));
   const hash = monitorPollRequestHash({goal_id: plan.goal_id, actor_agent_id: plan.agent_id,
     dry_run: !plan.execute, observation, intent, lease_proof: plan.lease_proof});
   if (receipt?.schema_version !== "loopx_coordination_monitor_poll_result_v0" ||
@@ -2311,6 +2392,7 @@ async function evaluateQuotaMonitorPollRequest(
           expected_index_bytes: indexBytes?.length ?? 0,
           provider_plan: plan,
           admitted_decision: request.decision,
+          ...(quotaGoalRef(request.owner) === null ? {} : {goal_ref: quotaGoalRef(request.owner)}),
         } satisfies PendingMonitorReceipt;
         await atomicWriteJson(receiptPath, pending);
       }
@@ -2322,7 +2404,7 @@ async function evaluateQuotaMonitorPollRequest(
         { ok: true, dry_run: false, provider_required: true },
         "quota monitor-poll Todo provider is required",
         currentDigest,
-        providerDispatchPlan(request, plan),
+        providerDispatchPlan(plan),
       );
     }
 

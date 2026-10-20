@@ -1,5 +1,15 @@
 import { z } from "zod";
-import { goalAcceptanceObservationSchema, type GoalAcceptanceContract } from "./goal-acceptance-observation.js";
+import { hasConfiguredGoalChecks, type GoalAcceptanceChecks, goalAcceptanceDisplayStatus, goalAcceptanceObservationSchema, projectGoalAcceptanceCriteria, type GoalAcceptanceContract } from "./goal-acceptance-observation.js";
+
+// Consumer validation only; freshness and coverage remain kernel decisions.
+const projectionEnvelopeSchema = z.object({
+  schema_version: z.literal("loopx_projection_envelope_v0"), projection: z.string(),
+  observed_at: z.string().datetime({offset: true}), served_at: z.string().datetime({offset: true}),
+  fresh: z.boolean(), complete: z.boolean(), alert: z.boolean(), alert_reasons: z.array(z.string()),
+  sources: z.array(z.object({source_id: z.string(), last_read_at: z.string().nullable(), status: z.string()}).passthrough()),
+  coverage: z.object({scope: z.string(), expected_count: z.number().int().nonnegative().nullable(),
+    included_count: z.number().int().nonnegative(), omitted: z.array(z.object({reason: z.string(), count: z.number().int().positive()}).passthrough())}).passthrough(),
+}).passthrough();
 
 const refsSchema = z.record(z.string(), z.array(z.string()));
 const nodeSchema = z.object({
@@ -45,6 +55,7 @@ const goalMapNodeSchema = z.object({
 });
 const goalMapSchema = z.object({
   schema_version: z.literal("goal_task_map_v0"), mode: z.literal("read_only"), goal_id: z.string(),
+  projection_envelope: projectionEnvelopeSchema.optional(),
   limits: z.object({
     node_limit: z.number().int().positive(), emitted_node_count: z.number().int().nonnegative(),
     omitted_node_count: z.number().int().nonnegative(), source_truncated: z.boolean(),
@@ -66,6 +77,7 @@ const goalMapSchema = z.object({
 });
 const snapshotSchema = z.object({
   ok: z.literal(true), goal_id: z.string(), observed_at: z.string().datetime({ offset: true }),
+  projection_envelope: projectionEnvelopeSchema.optional(),
   graph: graphSchema.nullable(), goal_map: goalMapSchema.nullable().optional(),
   acceptance: goalAcceptanceObservationSchema.nullable(),
 });
@@ -81,7 +93,9 @@ export function parseDeliveryReview(value: unknown, goalId: string): DeliveryRev
   const result = snapshotSchema.parse(value);
   if (result.goal_id !== goalId || (result.graph && result.graph.goal_id !== goalId)
       || (result.goal_map && result.goal_map.goal_id !== goalId)
-      || (result.acceptance && result.acceptance.goal_id !== goalId)) {
+      || (result.acceptance && result.acceptance.goal_id !== goalId)
+      || (result.projection_envelope && result.projection_envelope.projection !== "delivery_review")
+      || (result.goal_map?.projection_envelope && result.goal_map.projection_envelope.projection !== "goal_task_map")) {
     throw new Error("Review source does not match the selected Goal");
   }
   return result;
@@ -123,12 +137,14 @@ export function reviewNodeColumn(node: ReviewNode) {
   return ["gate", "gate_summary", "lease"].includes(node.kind) ? 0 : node.kind === "deliverable" ? 1 : 2;
 }
 
-type EnabledContract = Extract<GoalAcceptanceContract, { enabled: true }>;
+type ConfiguredContract = GoalAcceptanceChecks;
 type ContractExportLabels = Record<"title" | "boundary" | "scope" | "selectedWork" | "allWork" | "source" | "revision" | "digest" | "objective" | "criteria"
   | "nonGoals" | "tasks" | "verification" | "unknown" | "noTasks" | "noCriteria" | "notApplicable"
-  | "heldTasks" | "receipt" | "receiptNote" | "operation" | "verificationScope" | "allCriteria" | "passed" | "failed" | "exitCode", string> & {
-  taskState: Record<EnabledContract["tasks"][number]["state"], string>;
-  verificationState: Record<EnabledContract["status"], string>;
+  | "heldTasks" | "receipt" | "receiptNote" | "operation" | "verificationScope" | "allCriteria" | "passed" | "failed" | "exitCode"
+  | "oracleChecker" | "oracleSourceDigest" | "oracleCheckedAt" | "oracleInputVersions" | "oracleOutputVersions", string> & {
+  taskState: Record<ConfiguredContract["tasks"][number]["state"], string>;
+  verificationState: Record<ConfiguredContract["status"], string>;
+  oracleState: Record<NonNullable<ConfiguredContract["criteria"][number]["oracle"]>["state"], string>;
 };
 export type ReviewExportLabels = {
   contract: ContractExportLabels;
@@ -136,15 +152,27 @@ export type ReviewExportLabels = {
   acceptance: string; acceptanceBoundary: string; noGraph: string; incomplete: string;
   unavailable: string; refs: string; required: string; guards: string; next: string;
   owner: string; reason: string; historical: string; checks: string; missingSources: string; observedScope: string;
+  sourceUnknown: string; sourceWarning: string; coverageWarning: string;
   kind: Record<ReviewNode["kind"], string>; state: Record<ReviewNode["state"], string>;
   relation: Record<ReviewRelation, string>;
   workMap: { title: string; boundary: string; kind: Record<GoalMapNode["kind"], string>; relation: Record<GoalMapEdge["relation"], string> } & Record<string, unknown>;
 };
 
+/** Display the owner's flags, including unknown older responses; do not age a second clock. */
+export function deliveryReviewWarning(snapshot: DeliveryReviewSnapshot, labels: Pick<ReviewExportLabels,
+  "sourceUnknown" | "sourceWarning" | "coverageWarning">) {
+  const envelope = snapshot.projection_envelope;
+  return !envelope ? labels.sourceUnknown : !envelope.fresh ? labels.sourceWarning
+    : !envelope.complete ? labels.coverageWarning : null;
+}
+
 /** Export the entire validated snapshot, never the search-filtered screen. */
 export function deliveryReviewMarkdown(snapshot: DeliveryReviewSnapshot, labels: ReviewExportLabels) {
   const line = (value: unknown) => String(value ?? labels.unavailable).replace(/[\\`*_{}[\]<>|#]/g, "\\$&").replace(/[\r\n]+/g, " ");
   const rows = [`# ${labels.title}`, "", `Goal: ${line(snapshot.goal_id)}`, `${labels.observed}: ${line(snapshot.observed_at)}`, "", labels.scope, "", labels.acceptanceBoundary, "", `## ${labels.chain}`, ""];
+  const warning = deliveryReviewWarning(snapshot, labels);
+  if (warning) rows.push(warning, "");
+  if (snapshot.projection_envelope) rows.push("```json", JSON.stringify(snapshot.projection_envelope, null, 2), "```", "");
   const graph = snapshot.graph;
   if (!graph) rows.push(labels.noGraph);
   else {
@@ -164,6 +192,7 @@ export function deliveryReviewMarkdown(snapshot: DeliveryReviewSnapshot, labels:
   const map = snapshot.goal_map;
   if (map) {
     rows.push("", `## ${labels.workMap.title}`, "", labels.workMap.boundary, "", "```json", JSON.stringify(map.limits, null, 2), "```", "");
+    if (map.projection_envelope) rows.push("```json", JSON.stringify(map.projection_envelope, null, 2), "```", "");
     const names = new Map(map.nodes.map(node => [node.node_id, node.title]));
     for (const node of map.nodes) rows.push(`- ${line(node.title)} · ${labels.workMap.kind[node.kind]} · ${labels.state[node.state]}${node.owner_agent ? ` · ${line(node.owner_agent)}` : ""} (${line(node.refs.todo_ids?.join(", "))})`);
     if (map.edges.length) rows.push("");
@@ -194,7 +223,17 @@ export function deliveryReviewMarkdown(snapshot: DeliveryReviewSnapshot, labels:
       `${labels.next}: ${line(acceptance.next_action)} (${line(acceptance.next_action_source)})`);
   }
   const contract = acceptance?.goal_acceptance_contract;
-  if (contract?.enabled === true) {
+  for (const outcome of contract?.outcome_requirements?.outcomes ?? []) {
+    rows.push("", `### ${line(outcome.objective)}`);
+    for (const requirement of outcome.requirements) {
+      const review = requirement.agent_review;
+      rows.push(`- ${line(requirement.description)} · checks: ${requirement.status}`);
+      if (review) rows.push(`  Agent review: ${review.conclusion}; basis_current=${review.basis_current}; not independent verification`,
+        `  ${line(review.note)}`, ...review.evidence_refs.map(ref => `  evidence: ${line(ref)}`));
+    }
+    rows.push(...outcome.work.map(work => `- ${line(work.todo_id)}: ${line(work.status)}`));
+  }
+  if (hasConfiguredGoalChecks(contract)) {
     const copy = labels.contract;
     rows.push("", `## ${copy.title}`, "", copy.boundary,
       `${copy.scope}: ${contract.scope?.kind === "selected_work" ? copy.selectedWork : copy.allWork}`,
@@ -202,7 +241,11 @@ export function deliveryReviewMarkdown(snapshot: DeliveryReviewSnapshot, labels:
       "", `### ${copy.objective}`, line(contract.objective || copy.unknown), "", `### ${copy.criteria}`);
     if (contract.non_goals.length) rows.push(`${copy.nonGoals}: ${line(contract.non_goals.join("; "))}`);
     if (!contract.criteria.length) rows.push(copy.noCriteria);
-    for (const criterion of contract.criteria) rows.push(`- ${line(criterion.id)}: ${line(criterion.description)}`);
+    for (const criterion of projectGoalAcceptanceCriteria(contract)) {
+      rows.push(`- ${line(criterion.id)}: ${line(criterion.description)}${criterion.oracle ? ` · ${copy.verificationState[criterion.state]}` : ""}`);
+      if (criterion.oracle) rows.push(`  ${copy.oracleChecker}: ${line(criterion.oracle.source_id)} · ${copy.oracleState[criterion.oracle.state]}`,
+        `  ${copy.oracleSourceDigest}: ${line(criterion.oracle.source_digest)}`);
+    }
     rows.push("", `### ${copy.tasks}`);
     if (!contract.tasks.length) rows.push(copy.noTasks);
     for (const task of contract.tasks) {
@@ -211,7 +254,7 @@ export function deliveryReviewMarkdown(snapshot: DeliveryReviewSnapshot, labels:
       if (task.reason) rows.push(`  ${line(task.reason)}`);
       if (task.applicable === false) rows.push(`  ${copy.notApplicable}`);
     }
-    rows.push("", `### ${copy.verification}`, copy.verificationState[contract.status]);
+    rows.push("", `### ${copy.verification}`, copy.verificationState[goalAcceptanceDisplayStatus(contract)]);
     if (contract.held_todo_ids.length) rows.push(`${copy.heldTasks}: ${line(contract.held_todo_ids.join(", "))}`);
     rows.push("", `### ${copy.receipt}`);
     const receipt = contract.verification;
@@ -220,7 +263,20 @@ export function deliveryReviewMarkdown(snapshot: DeliveryReviewSnapshot, labels:
       rows.push(copy.receiptNote, `${copy.operation}: ${line(receipt.operation_id)}`,
         `${copy.revision}: ${receipt.contract_revision}`, `${copy.digest}: ${line(receipt.contract_digest)}`,
         `${copy.verificationScope}: ${line(receipt.todo_id ?? copy.allCriteria)}`);
-      for (const result of receipt.results) rows.push(`- ${line(result.criterion_id)}: ${result.passed ? copy.passed : copy.failed}; ${copy.exitCode}: ${result.exit_code ?? copy.unknown}`);
+      for (const result of receipt.results) {
+        rows.push(`- ${line(result.criterion_id)}: ${result.passed ? copy.passed : copy.failed}; ${copy.exitCode}: ${result.exit_code ?? copy.unknown}`);
+        // The saved witness belongs to this historical result. Its hashes and
+        // timestamp never upgrade the current criterion observation above.
+        const evidence = result.oracle_evidence;
+        if (!evidence) continue;
+        rows.push(`  ${copy.oracleChecker}: ${line(evidence.source_id)}`,
+          `  ${copy.oracleSourceDigest}: ${line(evidence.source_digest)}`,
+          `  ${copy.oracleCheckedAt}: ${line(evidence.checked_at)}`);
+        for (const [label, versions] of [[copy.oracleInputVersions, evidence.input_versions], [copy.oracleOutputVersions, evidence.output_versions]] as const) {
+          rows.push(`  ${label}:`);
+          for (const version of versions) rows.push(`  - ${line(version.ref)}: ${line(version.sha256)}`);
+        }
+      }
     }
   }
   return rows.join("\n") + "\n";

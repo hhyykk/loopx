@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { deliveryReviewMarkdown, filterReviewNodes, parseDeliveryReview, reviewCoverageIncomplete } from "../node_modules/.cache/delivery-review/data/delivery-review.js";
+import { deliveryReviewMarkdown, deliveryReviewWarning, filterReviewNodes, parseDeliveryReview, reviewCoverageIncomplete } from "../node_modules/.cache/delivery-review/data/delivery-review.js";
 import { deliveryReviewCopy } from "../node_modules/.cache/delivery-review/features/personal-workspace/delivery-review-copy.js";
 
 const snapshot = {
@@ -23,6 +23,23 @@ const snapshot = {
   },
 };
 const before = JSON.stringify(snapshot);
+const envelope = {
+  schema_version: "loopx_projection_envelope_v0", projection: "delivery_review",
+  observed_at: snapshot.observed_at, served_at: snapshot.observed_at, fresh: true, complete: true,
+  alert: false, alert_reasons: [], sources: [{source_id: "goal_todos", last_read_at: snapshot.observed_at, status: "fresh"}],
+  coverage: {scope: "selected_goal_delivery", expected_count: 3, included_count: 3, omitted: []},
+};
+for (const copy of Object.values(deliveryReviewCopy)) {
+  assert.equal(deliveryReviewWarning(parseDeliveryReview(snapshot, "review-demo"), copy), copy.sourceUnknown);
+  const current = parseDeliveryReview({...snapshot, projection_envelope: envelope}, "review-demo");
+  assert.equal(deliveryReviewWarning(current, copy), null);
+  const stale = parseDeliveryReview({...snapshot, projection_envelope: {...envelope, fresh: false, alert: true}}, "review-demo");
+  assert.equal(deliveryReviewWarning(stale, copy), copy.sourceWarning);
+  assert.ok(deliveryReviewMarkdown(stale, copy).includes('"fresh": false'));
+  assert.equal(deliveryReviewWarning({...current, projection_envelope: {...envelope, complete: false}}, copy), copy.coverageWarning);
+}
+assert.throws(() => parseDeliveryReview({...snapshot, projection_envelope: {...envelope, projection: "status"}}, "review-demo"));
+assert.throws(() => parseDeliveryReview({...snapshot, projection_envelope: {...envelope, fresh: "true"}}, "review-demo"));
 const parsed = parseDeliveryReview(snapshot, "review-demo");
 const graph = parsed.graph;
 assert.equal(graph.edges.length, 4, "Parallel lineage and dependency edges must survive");
@@ -66,3 +83,35 @@ for (const copy of Object.values(deliveryReviewCopy)) {
 console.log("delivery review: identity, scope, relationships, partial coverage, filtering, export and negative contracts passed");
 await import("./goal-work-map-smoke.mjs");
 await import("./goal-acceptance-contract-smoke.mjs");
+
+// A visual route must not run through another task, irrespective of title,
+// state, projected depth, duplicate relation or prerequisite direction.
+const { goalWorkMapGeometry, goalWorkMapCard, goalWorkMapLayout } = await import("../node_modules/.cache/delivery-review/data/goal-work-map.js");
+const geometryNodes = Array.from({ length: 12 }, (_, index) => ({
+  node_id: `node-${index}`, kind: "deliverable", state: "open", depth: index % 4,
+  title: "A long task with a recorded prerequisite", refs: {},
+}));
+const geometryEdges = geometryNodes.flatMap((node, index) => [1, 3, 5].map(offset => ({
+  edge_id: `${index}-${offset}`, from_node_id: node.node_id, to_node_id: geometryNodes[(index + offset) % geometryNodes.length].node_id,
+  relation: "depends_on", enforcement: "typed_condition", reason: "Recorded input",
+})));
+for (const available of [320, 700, 1200, 2000]) {
+  const input = { nodes: geometryNodes, edges: geometryEdges };
+  const original = JSON.stringify(input);
+  const geometry = goalWorkMapGeometry(goalWorkMapLayout(input, "all"), available);
+  assert.equal(JSON.stringify(input), original, "Layout cannot mutate task authority");
+  assert.equal(geometry.positions.size, geometryNodes.length);
+  assert.equal(geometry.routes.size, geometryEdges.length);
+  for (const points of geometry.routes.values()) for (let index = 1; index < points.length; index++) {
+    const a = points[index - 1], b = points[index];
+    assert.ok(a.x === b.x || a.y === b.y, "Segments stay in orthogonal routing gutters");
+    for (const { x, y } of geometry.positions.values()) {
+      const crosses = a.x === b.x
+        ? a.x > x && a.x < x + goalWorkMapCard.width && Math.max(a.y, b.y) > y && Math.min(a.y, b.y) < y + goalWorkMapCard.height
+        : a.y > y && a.y < y + goalWorkMapCard.height && Math.max(a.x, b.x) > x && Math.min(a.x, b.x) < x + goalWorkMapCard.width;
+      assert.equal(crosses, false, "A relation cannot cross a card interior");
+    }
+    for (const point of [a, b]) assert.ok(point.x >= 0 && point.y >= 0 && point.x <= geometry.width && point.y <= geometry.height, "Routes remain inside their scrollable canvas");
+  }
+}
+console.log("Work map geometry: skip, reverse, same-column and dense multi-row routes avoid every card; small viewports preserve dimensions");

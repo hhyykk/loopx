@@ -54,8 +54,8 @@ def _apply_manager_runtime_profile(runtime_root, profile):
 
 def test_manager_defaults_are_independent_of_worker_configuration():
     assert manager_model_config({}) == {
-        "model": "gpt-6-astra",
-        "reasoning_effort": "high",
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "xhigh",
     }
     assert manager_model_config(
         {"LOOPX_MANAGER_MODEL": "fixture-model", "LOOPX_MANAGER_REASONING_EFFORT": "low"}
@@ -100,6 +100,7 @@ def test_current_agent_work_reaches_prompt_without_extra_detail_reads(
 ):
     from loopx.capabilities.manager_context.inspection import ManagerInspection, TOOL_NAME, manager_index
 
+    (tmp_path / "registry.json").write_text(json.dumps({"goals": [{"id": "alpha"}]}))
     todos = [{"todo_id": f"todo_{i}", "title": f"Implement task {i}",
               "status": "in-progress", "priority": "P0", "claimed_by": "worker",
               "readiness": "runnable", "raw_receipt": "excluded"} for i in range(5)]
@@ -451,6 +452,25 @@ def test_manager_prompt_uses_the_window_source_health_rows_as_guidance():
     assert "including the local source" in MANAGER_AGENT_OBJECTIVE
     assert "next_action as the repair" in MANAGER_AGENT_OBJECTIVE
     assert "not a machine-checked obligation" in MANAGER_AGENT_OBJECTIVE
+
+
+def test_manager_reporting_guidance_scopes_diagnostics_to_the_requested_answer():
+    from loopx.chat_manager import manager_agent_objective
+
+    for profile in ("restricted", "trusted_owner"):
+        objective = manager_agent_objective(profile)
+        assert "For dated or coverage-sensitive reports" in objective
+        assert "For questions about Goal work, read the relevant Goals' current_todos" in objective
+        assert "every Goal within the requested and authorized coverage" in objective
+        assert "each source_id needed for the requested coverage" in objective
+        assert "material omitted coverage" in objective
+        assert "Keep routine transport and limit details in the evidence records" in objective
+        assert "Do not turn an unrelated question into a portfolio or source-health report" in objective
+        assert "Every Turn declares evidence_window" not in objective
+        # Reporting relevance does not hide a gap that changes the answer.
+        assert "When a relevant source is unavailable" in objective
+        assert "use its reason_code and reason" in objective
+        assert "unavailable source is a named coverage gap" in objective
 
 
 def test_remote_source_rows_are_typed_and_never_read_as_no_progress():
@@ -992,9 +1012,11 @@ def test_trusted_manager_profile_rejects_endpoint_that_cannot_enforce_it(
     assert "Select the Codex Agent" in caught.value.gate["next_action"]
 
 
+@pytest.mark.parametrize("initial_profile,next_profile", [("restricted", "trusted_owner"), ("trusted_owner", "restricted")])
 def test_manager_profile_change_rotates_healthy_upstream_without_losing_session(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, initial_profile, next_profile
 ):
+    _apply_manager_runtime_profile(tmp_path / "runtime", initial_profile)
     store = ChatSessionStore(tmp_path / "runtime")
     runtime = ChatRuntimeController(store=store, codex_bin="codex")
     monkeypatch.setattr(
@@ -1025,9 +1047,10 @@ def test_manager_profile_change_rotates_healthy_upstream_without_losing_session(
         mode="new",
         channel_id="manager",
     )
-    assert starts[0][0]["manager_runtime"]["runtime_profile"] == "restricted"
+    assert starts[0][0]["manager_runtime"]["runtime_profile"] == initial_profile
+    store.append_message(session["session_id"], role="user", text="Keep this conversation.")
 
-    _apply_manager_runtime_profile(tmp_path / "runtime", "trusted_owner")
+    _apply_manager_runtime_profile(tmp_path / "runtime", next_profile)
     restored = runtime._ensure_adapter(
         session,
         work_dir=tmp_path,
@@ -1037,9 +1060,13 @@ def test_manager_profile_change_rotates_healthy_upstream_without_losing_session(
     assert starts[0][1].closed is True
     assert restored is starts[1][1]
     assert starts[1][0]["resume_thread_id"] is None
-    assert starts[1][0]["manager_runtime"]["runtime_profile"] == "trusted_owner"
+    assert starts[1][0]["manager_runtime"]["runtime_profile"] == next_profile
+    assert starts[1][0]["manager_runtime"]["sandbox"] == (
+        "danger-full-access" if next_profile == "trusted_owner" else "read-only"
+    )
     updated = store.load_session(session["session_id"])
-    assert updated["manager_runtime_profile"] == "trusted_owner"
+    assert updated["manager_runtime_profile"] == next_profile
+    assert [m["text"] for m in store.messages(session["session_id"])] == ["Keep this conversation."]
     assert updated["upstream_thread_id"] == "upstream-1"
 
 

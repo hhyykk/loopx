@@ -107,7 +107,31 @@ def test_idle_conversation_adopts_model_preserving_context_and_authority(convers
     assert len(starts) == 2
 
 
-@pytest.mark.parametrize("turn_status", ["queued", "starting", "running", "interrupting"])
+def test_restart_migrates_legacy_history_once_preserving_source_and_native_provenance(conversation):
+    root, store, runtime, session, starts = conversation
+    sid = session["session_id"]
+    for index in range(40):
+        store.append_message(sid, role="user" if index % 2 == 0 else "agent",
+            text=f"Retain original constraint and result {index}.")
+    before = store.messages(sid)
+    legacy = store.update_session(sid, manager_context_version=20)
+    runtime.adapters.pop(sid).close_session()  # the existing service restarted
+    runtime._ensure_adapter(legacy, work_dir=root, objective="manager")
+    current = store.load_session(sid)
+    assert starts[-1][0]["resume_thread_id"] is None
+    assert current["manager_context_version"] == MANAGER_CONTEXT_VERSION
+    assert current["upstream_context_history"] == [{"thread_id": session["upstream_thread_id"],
+        "manager_context_version": 20}]
+    assert [item["content"] for item in starts[-1][0]["history"]] == [item["text"] for item in before]
+    assert all(item["text"] not in starts[-1][0]["objective"] for item in before)
+    assert store.messages(sid) == before and current["channel_id"] == session["channel_id"]
+    runtime._ensure_adapter(current, work_dir=root, objective="manager")
+    assert len(starts) == 2 and store.load_session(sid)["upstream_context_history"] == current["upstream_context_history"]
+    with pytest.raises(ValueError, match="preserve"):
+        store.update_session(sid, upstream_context_history=[])
+
+
+@pytest.mark.parametrize("turn_status", ["starting", "running", "interrupting"])
 def test_model_edit_never_replaces_an_in_flight_turn(conversation, turn_status):
     root, store, runtime, session, starts = conversation
     # Store transitions are covered independently; this fixture models the
@@ -122,16 +146,19 @@ def test_model_edit_never_replaces_an_in_flight_turn(conversation, turn_status):
     assert store.load_turn(session["session_id"], turn["turn_id"])["status"] == turn_status
 
 
-def test_accepted_queued_turn_can_adopt_before_starting_upstream(conversation):
+@pytest.mark.parametrize("explicit_acceptance", [False, True])
+def test_accepted_queued_turn_can_adopt_before_starting_upstream(conversation, explicit_acceptance):
     root, store, runtime, session, starts = conversation
     turn, _ = store.create_turn(session["session_id"], client_turn_id="next", message="Continue.")
-    queued = store.load_session(session["session_id"])
+    queued = store.update_session(session["session_id"], active_turn_id=turn["turn_id"], status="busy")
     configure(root, model="gpt-6.1-sol", effort="high")
     with runtime._session_adapter_lock(session["session_id"]):
         runtime._ensure_adapter_locked(
-            queued, work_dir=root, objective="manager", accepted_turn_id=turn["turn_id"],
+            queued, work_dir=root, objective="manager",
+            **({"accepted_turn_id": turn["turn_id"]} if explicit_acceptance else {}),
         )
-    assert len(starts) == 2
+    assert len(starts) == 2 and starts[0][1].closed
+    assert store.load_session(session["session_id"])["active_turn_id"] == turn["turn_id"]
     assert starts[1][0]["executor_model"]["model"] == "gpt-6.1-sol"
     assert store.load_turn(session["session_id"], turn["turn_id"])["status"] == "queued"
 
@@ -214,9 +241,9 @@ def test_model_edit_keeps_early_context_through_public_resume(upstream_boundary,
     # have a persisted rollout, so a model edit cannot assume resumability.
     assert starts[-1][0]["resume_thread_id"] is None
     assert updated["upstream_thread_id"] != session["upstream_thread_id"]
-    objective = starts[-1][0]["objective"]
-    positions = [objective.index(text) for text in messages]
-    assert positions == sorted(positions)
+    # Native history is restored once, separately from the repeated objective.
+    assert [item["content"] for item in starts[-1][0]["history"]] == messages
+    assert all(text not in starts[-1][0]["objective"] for text in messages)
 
 
 @pytest.mark.parametrize("policy,effort,expected_effort", [

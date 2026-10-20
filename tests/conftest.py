@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -14,6 +15,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import pytest  # noqa: E402
+
+from managed_effect_runtime_fixture import (  # noqa: E402
+    capture_disposable_effect_runtimes,
+    stop_disposable_effect_runtimes,
+)
 
 from loopx import paths  # noqa: E402
 from loopx.canary.runner import SMOKE_SUITE_CHOICES  # noqa: E402
@@ -34,6 +40,49 @@ _DEFAULT_ROUTE_REFERENCES = (
     ("loopx.control_plane.runtime.local_state_migration", "LEGACY_RUNTIME_ROOT", (".codex", "loopx")),
 )
 _REAL_DEFAULT_ROUTES = (paths.DEFAULT_RUNTIME_ROOT, paths.LEGACY_RUNTIME_ROOT)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item):
+    temporary = item.funcargs.get("tmp_path")
+    captured = capture_disposable_effect_runtimes(temporary) if isinstance(temporary, Path) else []
+    try:
+        return (yield)
+    finally:
+        # Run after fixture finalizers and monkeypatch restoration, including
+        # failed tests. Ending a fixture must not leave its copied-source Node
+        # processes alive for the runtime's normal five-minute reuse window.
+        if isinstance(temporary, Path):
+            stop_disposable_effect_runtimes(temporary, captured)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_worker_effect_runtime(tmp_path_factory):
+    # HOME does not namespace the Effect process on POSIX: its locator uses
+    # getuid() and the process temp directory. A restart in one xdist worker
+    # must not retire another worker's real runtime.
+    temporary = tmp_path_factory.mktemp("effect-runtime")
+    with pytest.MonkeyPatch.context() as patch:
+        for variable in ("TMPDIR", "TEMP", "TMP"):
+            patch.setenv(variable, str(temporary))
+        patch.setattr(tempfile, "tempdir", str(temporary))
+        yield
+        from loopx.control_plane.effect_runtime import restart_effect_runtime
+
+        restart_effect_runtime(wait_for_exit=True)
+
+
+@pytest.fixture
+def isolated_effect_runtime(tmp_path, monkeypatch):
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    monkeypatch.setenv("TMPDIR", str(temporary))
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary))
+    from loopx.control_plane import effect_runtime
+
+    yield
+    # Stop only the real runtime launched in this test's private directory.
+    effect_runtime.restart_effect_runtime()
 
 
 @pytest.fixture(autouse=True)

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .todos import complete_goal_todo, update_goal_todo
+from .control_plane.todos.mutation_api import complete_goal_todo, update_goal_todo
 from .control_plane.coordination.local_authority import (
     LocalCoordinationAuthorityUnavailable, read_canonical_todos_if_promoted,
 )
-from .control_plane.coordination.local_authority_shadow_adapter import effective_runtime_root
+from .paths import effective_runtime_root
 from .control_plane.todos.provider_projection import projection_delivery_requires_ack
 
 
@@ -30,6 +30,13 @@ class ChatTodoActionMixin:
     ) -> dict[str, Any]:
         goal_id = str(parameters["goal_id"])
         operation = str(parameters.get("operation") or "edit")
+        if parameters.get("review_basis") is not None and parameters["review_basis"] != basis:
+            raise ValueError("The Task source changed. Reload its complete requirements before saving.")
+        # Transport only caller-supplied proof. The terminal owner revalidates
+        # the execution; a lease read or a Todo claim is never substitute proof.
+        proof = {key: parameters[key] for key in (
+            "task_lease_idempotency_key", "task_lease_expected_version",
+        ) if key in parameters} if operation == "complete" else {}
         if operation == "complete" and (basis is None or
                 basis.get("schema_version") == "loopx_chat_canonical_terminal_basis_v0"):
             return complete_goal_todo(
@@ -42,6 +49,7 @@ class ChatTodoActionMixin:
                 agent_id=parameters.get("agent_id"),
                 authority_reason="owner-confirmed typed Chat action",
                 dry_run=dry_run,
+                **proof,
                 **self._reviewed_terminal_options(basis, operation_id),
             )
         status = parameters.get("status")
@@ -62,20 +70,22 @@ class ChatTodoActionMixin:
             status=status,
             **({"role": "user", "no_followup": bool(parameters.get("no_followup", True))}
                if operation == "complete" else {}),
-            # A reviewed block is a lifecycle transition, not a copy edit.
-            # Its UI/Lark note supplies the public reason; a combined note
-            # patch would cross the hard-lease execution fence.
+            # The established block control uses note as its pause reason;
+            # preserve the task's existing notes. Explicit ordinary note edits
+            # and lifecycle effects still share the canonical transaction.
             note=(parameters.get("note") if operation != "block" or basis is None else None),
-            reason=(parameters.get("note") if operation == "block" and basis is not None else None),
+            reason=(parameters.get("note") or "Owner requested deferral") if operation in {"block", "defer"} else (
+                parameters.get("note") or "Owner explicitly requested task resumption" if status == "open" else None),
             claimed_by=(
                 parameters.get("agent_id") if operation == "reassign" else None
             ),
             resume_when=parameters.get("resume_when"),
-            clear_resume_when=operation == "block" and basis is not None,
+            clear_resume_when=(operation == "block" or status == "open") and basis is not None,
             successor_todo_ids=parameters.get("successor_todo_ids"),
             agent_id=parameters.get("agent_id"),
             authority_reason="owner-confirmed typed Chat action",
             dry_run=dry_run,
+            **proof,
             **self._reviewed_update_options(basis, operation_id),
         )
 

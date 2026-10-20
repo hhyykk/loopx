@@ -52,6 +52,33 @@ A lost admission correlation cannot move a request to a newer Session. Admission
 feedback and final delivery use separate durable provider intents; an ambiguous
 write is read back without blind resend. Unsupported media receives an explicit
 notice. The workspace grant conveys no Goal, portfolio or peer execution authority.
+Lark queued notices describe the observed queue state without claiming that an
+earlier request is running: the first Turn can also await its native claim.
+Recovery retains an already persisted notice's exact text and provider intent.
+
+The existing four-slot reply pool wakes after private admission returns and
+after a local Turn worker exits, including preparation failure. These in-process
+Event hints carry no content or delivery authority and perform no provider IO;
+the scanner still reads the canonical journals and rechecks the source and Core.
+It clears the hint before discovery so arrivals during a scan remain visible to
+the following wait. Shutdown wakes that wait and unregisters the runtime hint.
+The one-second recovery poll, bounded pool, request fairness and thirty-second
+owner-notification cadence remain; custom controllers without the hook still poll.
+An occupied worker may still defer a request until a later scan. No completed-
+Future callback repeatedly reschedules unfinished work. File/Core and native
+protocol fixtures qualify this scheduling path separately from installed service,
+provider latency, complete stop acknowledgement and first-visible Web results.
+
+Native Lark sends and receipt recovery use one operation-bound source verifier
+for the current App, exact profile/chat/message and Core grant, as existing
+reply edits already do. The observed Bot name must match the Inbox metadata;
+a rename still holds the first send while metadata refreshes. The verifier
+joins source reads and rechecks the exact binding before returning. A lost
+readback retains the same attempt and re-verifies without resending. No identity
+or grant is cached across operations, and legacy membership-only callbacks
+retain separate sender authentication. File/Core fixtures qualify this transport
+transaction, including late revocation; they do not qualify installed provider
+latency, the complete stop SLA or first-visible Web results.
 
 The packaged settings journey, source revocation/recovery, duplicate events,
 native queue/stop and two-App isolation have synthetic-provider regression and
@@ -69,9 +96,171 @@ without private bindings do not add provider authentication; configured aliases
 reuse one request-scoped verified identity observation. Lark HTTP composition
 resides in the extension, while the typed binding owner remains provider-neutral.
 
+Binding resolution rereads the exact grant after provider identity observation.
+Revoking or replacing that binding during the observation rejects the request;
+an unrelated binding edit does not invalidate it. The typed owner still checks
+the current context, with no identity cache shared across verification calls.
+
+The same Settings read model includes Core bindings for locally installed
+conversation transports. Listener status comes from the exact host-composed
+provider's optional `health_snapshot()` returning a content-free `status`, or
+from the existing Lark listener observation for default profiles. This local
+hook must return cached observations without network calls. Only existing
+listener labels (`starting`, `listening`, `retrying`, `stopped`, `standby`,
+`inactive`) are projected; missing, malformed or failed observations become
+`unknown`, rendered as connection unconfirmed. Raw provider fields and exception
+messages are excluded. Listening is neither a delivery receipt nor task
+acceptance. Native binding/composition/HTTP regressions qualify the source read
+model, while each provider's installed liveness and result return remain separate.
+
+### Continue an original private conversation on the local App
+
+Settings → Lark offers **Continue original conversation** on an existing
+owner-private connection. Discovery uses Core's verified binding selector and
+requires its echoed identity; the URL then freezes that binding and exact
+existing Session. Missing, malformed, revoked, closed or unsupported targets
+remain unavailable. There is no fallback to ordinary steward/project history,
+Session creation, executor change or model reconfiguration on this entry.
+Group audiences retain their existing boundary.
+
+The App reuses its conversation history, single composer, stream recovery and
+queued-input owners. Quiet source refresh reads the verified compact index;
+only changed snapshots are read. Messages arriving from the original source
+become visible without navigation, and Web sends retain Web origin through the
+existing Core queue and fresh source admission. The connection list loads
+independently of App/credential catalogs, so a failed catalog does not hide an
+existing conversation or label it disconnected.
+
+Real Chat HTTP/SQLite/Core with a synthetic provider and model qualifies source
+selection, both input origins, denial/recovery and no replacement Session.
+Packaged browser evidence qualifies the local UI path separately. Live Lark
+return delivery, installed service adoption, split-root composition and
+Goal-less project peer handoff remain open; this checkpoint does not close them.
+
 Synthetic product previews: [desktop](../../assets/personal-workspace/private-project-conversations.png),
 [narrow](../../assets/personal-workspace/private-project-conversations-narrow.png),
 [revoked workspace](../../assets/personal-workspace/private-project-workspace-revoked.png).
+
+## Selected group topics: isolated ordinary project Chat
+
+Settings → Lark also connects a project App to explicitly selected groups. The
+list comes from that App's provider-observed group membership; Core validates
+the allowlist at configuration time. This is an audience option on the existing
+binding, not a new Goal Channel, listener, queue or model runner. One App retains
+one binding owner. Existing private bindings keep their audience and host grants.
+
+New group bindings verify the selected Bot's App identity; they do not require
+a personal user login in that App profile. The group principal is App-scoped and
+never supplies private-owner authority. Private project/steward connections still
+require both the verified App and its independently verified user. Existing group
+bindings that used a user principal retain that exact identity and native home;
+an explicit disconnect/reconnect selects the new App principal and requires a new
+isolated home/login. Polling or a user's login/logout never migrates a binding.
+
+A human starts a topic by mentioning the Bot. Admission reads the exact provider
+message and, for a continuation, its original root; event text cannot substitute
+the root or mention. Members in that topic share its Session and FIFO; different
+topics, groups and Apps have independent Session identities. Status, stop and new
+target that topic. Admission feedback, streamed posts, terminal edits and receipt
+recovery use the existing delivery path with `source_thread` placement. A revoked
+binding or unreadable source prevents later result delivery.
+
+For `/status`, `/help`, `/new` and `/stop` in a locally admitted topic, the
+transport batches the canonical incoming message and root in one raw provider
+read. The accepted root journal only selects those two read IDs; it grants no
+authority. After that IO, Core freshly resolves the exact binding and App inside
+both existing request/source fences. An in-process source verifier checks the
+envelopes against that selection, including sender, ancestry, root mention and
+the still-current binding, before journal creation or exact replay. A changed
+App or grant, incomplete pair or source mismatch rejects the command. An event
+control hint whose canonical body is ordinary text returns to ordinary rendering
+before any Core write. Unknown topics and legacy rendered journals retain their
+original route. No identity survives the transaction; outbound verification,
+typed admission decisions and stop recovery retain their existing owners.
+File/Core tests qualify the transaction and its rejection/replay boundaries;
+real provider read timings alone do not qualify the full stop reply or Web SLA.
+
+A completed, target-frozen stop on a locally enabled group binding reads its two
+original provider messages while Core freshly resolves the binding and App
+identity. Both readonly observations must finish successfully before source,
+ancestry and root-mention validation can authorize delivery. Only that invocation
+reuses the verified identity; no observation is persisted or reused by a later
+verification. Changed bindings discard the buffered message observation; ordinary
+input, private conversations and unknown stop scope keep their existing paths.
+
+When an ordinary Codex topic has no active Turn, `/stop` also covers background
+commands left by completed Turns in that same canonical Session, even after a
+later answer. Core freezes the original Session and canonical candidate Turn
+identities in the existing request journal **before** native inventory or
+transport resume can fail. Native observation may only narrow that frozen set;
+a retry cannot add later completed/active Turns or switch to a newer Session.
+Completed-command discovery reads the exact native thread's complete paginated
+item inventory once, retaining only command ownership for the frozen candidates.
+This avoids a separate inventory round trip for each historical Turn. Missing or
+conflicting item ownership and incomplete pagination remain unconfirmed; the
+existing exact-Turn cancellation and independent terminal readback still run.
+The existing Lark listener returns after this durable freeze; its existing reply
+workers recover the prepared request to observe and cancel native background
+commands. Prepared recovery uses admission's fresh authority check inside both
+the request and source-route fences, without a duplicate provider probe before
+waiting for those fences. Revocation while waiting prevents control and delivery.
+Slow or unavailable native control therefore does not hold inbound
+admission. This is scheduling only: it introduces no queue or completion state,
+does not defer an active Turn's exact interrupt, and sends no successful stop
+reply until native control and the original delivery checks have succeeded.
+A recovered legacy request without a recorded target has unknown original scope;
+Core rejects retargeting and preserves it unconfirmed. A fresh stop is a separate
+user request, never an automatic replacement for the unknown one.
+An active Turn keeps its existing exact stop path; unavailable historical item
+inventory cannot prevent that interruption or widen its target to earlier work.
+Native command-item and terminal readback scopes the effects; unknown terminals,
+other Topics and completed answer receipts remain intact. Replaying the stop
+does not select newer work. If `/new` has deliberately closed the original
+Session, its pending stop stays unconfirmed; recovery does not reopen it or
+borrow control of the replacement Session. Unavailable control or incomplete
+readback keeps the original stop unconfirmed rather than reporting an idle topic. This extends the
+existing Lark command; active-Turn HTTP/frontend control and attached or native
+Goal hosts retain their separate contracts. Synthetic provider/Core and real
+child-process regressions qualify this source slice; installed host adoption,
+live stop timing and the full community release pack remain separate exits.
+
+Disconnecting an external binding, or replacing its identity/context/grant,
+publishes the typed revocation before applying native exact Turn interruption.
+Its queued work is stopped before its active Turn, across the binding's topics
+and resumed Sessions; currently authorized peers keep running. Grant history
+remains readable. Reapplying an identical binding does not stop its work. The IO
+bridge waits outside the grant publication fence and reuses Core Turn control;
+it creates no queue, scheduler or provider authority. A stop failure leaves the
+grant revoked and reports that execution stop is unconfirmed. Retry disconnect
+for the old binding identity with the current revision to confirm that stop,
+including after a failed replacement. Settings projects these revoked targets
+from canonical queued/active Turns: a failed mutation still reads back the current
+revision, and refresh/reload retains an exact stop retry without restoring the
+grant. Successful retry removes the recovery only after Core settles the Turn;
+a newly authorized binding and unrelated work remain intact. No separate stop
+ledger is introduced. A claimed attached-host Turn still lacks
+push stop control: revocation reports that limitation, cancels its pending
+external work and preserves unrelated local Turns. Controlled synthetic
+Codex/provider regressions qualify these source semantics; installed/live host
+stopping, physical command cancellation and community release remain separate
+acceptance requirements.
+
+Group contexts always use `workspace_only` filesystem isolation, even when the
+owner's private project uses `host_default`. Only the selected read/write workspace
+grant is available. Personal portfolio, attached Agent selection, global skills,
+MCP, shell profiles and inherited account environment are unavailable. The native
+host must verify the exact permissions profile and workspace root. Its independent
+store is never seeded from personal credentials/history; model authentication may
+be supplied by the trusted host through the native external-token protocol below.
+`/status` exposes the project title, not the host's absolute workspace path.
+
+Core, HTTP, provider-readback and native-protocol fixtures exercise these boundaries.
+They are synthetic transport/model evidence, not a live community rollout. The
+[community golden queries](../../product/use-cases/community/golden-queries.md)
+still require an isolated public workspace, qualified model authentication and actual pilot
+group journeys before either developer group is enabled. Public-source reading
+needs its separately qualified scoped tool; this change does not enable unrestricted
+network or personal browser access.
 
 ## Ordinary workspace writes: default and revocation checkpoint
 
@@ -107,14 +296,48 @@ project access remains writable with `host_default` filesystem scope.
 The shell environment keeps only `PATH`, disables shell profile snapshots, and
 uses a fixed minimal system search path for POSIX workspaces. This preserves native
 file commands while filtering account-configured environment overrides as well as
-inherited variables. Windows execution remains unqualified by the live probes.
+inherited variables. On macOS, the trusted host may prepend the Git binary directory
+of the standard Command Line Tools or Xcode toolchain selected by the fixed system
+`xcode-select` command and grant that toolchain read access. Every path from the
+binary through `/` must be canonical, root-owned, of the expected type and neither
+group/other-writable nor writable by the caller, including through an ACL. An unsafe
+container (including a writable `/Applications`), missing toolchain or unsupported
+selection leaves the original profile and search path intact. This adaptation does
+not enable toolchain writes, root reads, account environment or tool network access.
+Windows execution remains unqualified by the live probes.
 
 The narrowed profile also disables automatic skill catalog injection and project
 instruction discovery. The agent can read workspace-owned `AGENTS.md` and skills
 through its bounded file tools. Ordinary project Sessions keep native instruction
-and skill discovery. This does not disable explicit host skill resolution, clear
-old conversation context or suppress account-level instructions supplied by the
-host; those remain separate privacy checks.
+and skill discovery. Workspace-only native Sessions now also launch with a private
+`HOME`/`CODEX_HOME`, a minimal process environment and file-based native credential
+storage. Effective MCP servers, including managed and project configuration layers,
+and native Apps connectors are disabled on thread start and resume. The operator's
+`LOOPX_CHAT_PUBLIC_SOURCE_READ=on` opt-in admits only the anonymous
+`read_public_url` and `read_public_image` tools with explicit native tool approval;
+other MCP tools remain unavailable. Turning it off removes that reader, while
+Apps stay disabled for workspace-only Sessions. Core derives the store identity from the
+authorized workspace and App/owner binding; topics retain independent threads
+without requiring a new login for every message. Default `host_default` Sessions
+keep the account's existing native configuration and authentication.
+
+No authentication or conversation history is copied into the new store. An
+existing project-native login retains its chosen account. Otherwise, when the
+trusted host has native file-based ChatGPT authentication, the adapter supplies
+only its access token and account identifier over private app-server stdio using
+[`chatgptAuthTokens`](https://learn.chatgpt.com/docs/app-server#3c-log-in-with-externally-managed-chatgpt-tokens-chatgptauthtokens).
+This experimental native mode holds tokens in process memory; it does not place
+credentials in the project store, model prompt, tool environment or command line.
+An unauthorized-token callback asks the native host account store to refresh;
+concurrent callbacks reuse an already rotated token. An unavailable host account,
+invalid credential store or account change fails closed with a redacted error.
+Restoring the host account permits a retry without rebinding the conversation.
+Keyring-only and API-key host authentication are not bridged by this adapter.
+Independent login remains available through the native Codex flow with
+`CODEX_HOME` set to the Session's recorded home.
+Existing workspace-only Sessions created with a shared home cannot silently
+resume or migrate: choose a new Session explicitly with its isolated native home.
+Ordinary legacy Sessions keep their existing home and exact-thread resume behavior.
 
 The adapter sends the Core-owned named permissions profile, never a simultaneous
 legacy sandbox override, on start and exact-thread resume. It verifies the returned
@@ -124,10 +347,12 @@ permissions. Other executors are rejected for this scope. The native helper uses
 the canonical Codex executable so a home-directory symlink needs no read grant.
 
 This is a filesystem-tool boundary, not complete community Bot isolation. It does
-not authorize group audiences or isolate host-loaded instructions, skills, MCP
-credentials, dynamic tools or a private registry. Those boundaries need their own
-qualification before a public group is enabled; a successful file probe is not
-public Bot acceptance.
+not authorize group audiences, erase historical context, isolate arbitrary host
+dynamic tools or make a checkout containing private files safe to publish. Group
+admission, a clean public workspace, qualified model authentication and live
+privacy/interaction qualification remain required before public enablement; native
+context isolation and a successful file probe are prerequisites, not public Bot
+acceptance.
 
 Typed Core/HTTP/native-host regressions qualify default writes, explicit read-only,
 workspace identity, independent App grants, old-Session rejection and exact-thread
@@ -135,6 +360,24 @@ resume. Earlier source evidence records a Codex canary editing and reading back 
 synthetic note while preserving prior text and creating no Goal. This historical
 host/filesystem evidence is separate from current synthetic-protocol regression
 checks and does not qualify live Lark, material intake or a release.
+Disconnecting a binding or replacing its identity, context or grant first
+publishes typed revocation, then reuses Core's exact-Turn interruption. Cancel
+that binding's queued work before stopping its active Turns, including topic
+and resumed Sessions; unrelated authorized work continues. History remains
+readable and unchanged-configuration retries do not interrupt execution. Never
+hold the authorization-publication lock while waiting for the host to stop or
+create another queue, scheduler or provider authority. An unconfirmed stop
+retains revocation and reports failure. Retrying disconnect with the old binding
+identity and current revision continues stop confirmation, including after a
+failed replacement. Settings projects pending/running targets from Core's
+persisted state, retains exact stop recovery across refresh and reload, and
+removes recovery only after Core confirms termination. It does not restore the
+grant or change the new binding and unrelated work. A claimed attached host
+still lacks push-stop support: report that limit, cancel its unclaimed external
+requests and preserve unrelated local Turns. Synthetic Codex/provider tests
+qualify source semantics; installed/live-host stop, physical command cancellation
+and community enablement remain separate acceptance.
+
 Committed same-claim replay is separate from new admission: after a lost response
 and target revocation, the original host can recover its committed receipt; new
 claims and external result publication remain denied. Current validation uses real
@@ -428,6 +671,13 @@ receipt → observed work or actionable failure → readable answer in the same 
   upstream observations; never simulate phases, expose hidden reasoning, or
   infer progress from elapsed time. A period without new events has an explicit
   waiting caption, not an invented failure or continually changing animation.
+- Generate the visible answer once, then append a complete hidden review envelope
+  with `message: ""`. The production parser reuses the preceding Markdown and
+  applies the same redaction and typed metadata normalization. Legacy nonempty
+  envelope messages remain authoritative; missing/null messages do not select
+  this convention. Codex uses the completed final answer item, excluding earlier
+  commentary. Incomplete or malformed envelopes still drop action metadata.
+  Removing duplicate generation does not qualify end-to-end response latency.
 - Before dispatch, cancel only session preparation and state that the request
   was not submitted. After acceptance, existing exact-turn steering/interrupt
   controls own effects; stopping observation is not stopping the worker.
@@ -503,6 +753,37 @@ packaged UI with synthetic fixtures and qualify the chosen real query separately
 | Lark transport | `extensions/lark/event_inbox.py`, `routed_inbox.py`, `inbox_reply.py` and reaction adapter | Provider normalization, idempotent capture, read/processed records and reply recovery coexist with Lark ids/policy. Extract only demonstrated reusable semantics; keep authentication, addressing, provider ids, reactions and message limits in the adapter |
 | Execution and control | Existing managed Turn, attached-session/host binding, Chat steering/interrupt | Qualify the exact supported profile. Neither registered nor inbox-acknowledged means running; native steering, next-Turn queue and unsupported must stay distinct |
 | Result | Answer-report, artifact/revision, review/adoption and return owners | Read the stored version; preserve source and independent review. A failed report read retries reading, not a new model run |
+
+The local-input repair uses the existing
+`POST /api/chat/sessions/{session_id}/turns` with `message` and a stable
+`client_turn_id`; `delivery: "queue"` remains optional. For an existing private
+bound-owner Session, a normal send now enters the same queue after fresh
+provider/operator, saved-binding and workspace checks. It retains `origin=web`,
+the original Session/thread and the binding's narrow project or steward audience.
+It does not become a provider event or an unrestricted local portfolio. Group
+input and direct steering retain their source guards. The body cannot supply
+origin, owner or provider claims. The TS binding/source owners decide admission
+and provenance; Python observes identity and commits under the binding fence.
+Steward ingress uses the registered coordination root and existing source policy,
+separately from execution grants. File/SQLite HTTP regressions cover full text,
+replay, FIFO and revocation races. The existing session-list endpoint also accepts
+`GET /api/chat/sessions?conversation_binding_id=<binding_id>` to discover existing
+private Sessions through that same fresh binding owner. It returns the existing
+public Session summaries, retaining a project's null Goal and the original
+Session/channel; it does not create or resume a thread, enqueue work or grant
+execution. Group, unavailable and changed sources refuse; closed Sessions are
+not offered as current targets and their history remains stored. An empty,
+duplicate or mixed selector cannot fall back to the ordinary unfiltered list.
+The filtered response includes the matching `conversation_binding_id`; callers
+must require that match before adopting its targets. Older services may ignore
+the query and return an ordinary list without it, which does not qualify this
+discovery operation.
+Provider observation stays outside the publication fence, and ordinary session
+listing adds no provider IO. The product selector must use this verified original
+identity rather than equating an ordinary workspace channel with a bound Chat.
+This is a Core/API prerequisite: packaged
+frontend discovery, live shared-Lark adoption, project-recipient collaboration
+and original-conversation result return still require their existing acceptance.
 
 Lark's readable-answer exit also checks rendered emphasis, not only a matching
 Markdown source receipt. Following the [CommonMark delimiter rules](https://spec.commonmark.org/0.31.2/#emphasis-and-strong-emphasis),
@@ -832,6 +1113,46 @@ not scan and dispatch captured history. Consecutive concise requests and a
 correction must retain their own object, constraints and return lineage. Transport
 fixtures do not qualify receiver adoption or actual repair and merge.
 
+Owner-private Lark connections also compare bounded provider history with native
+capture receipts in the existing background delivery scanner. This default
+observation starts within one minute and repeats one minute after completion;
+it uses the same verified App and an already-admitted owner destination. The
+initial live lookback is bounded to a day; later complete windows overlap by a
+minute. Each pass reads live sources first, up to 20 pages, then at most five
+older pages from the provider's beginning to a fixed boundary before the live
+window. A private pagination cursor resumes that historical read across restarts,
+including upgrades of receipts that only contain the live cursor. Incomplete
+historical pagination cannot report verified coverage. Each history-page request
+retains its five-second budget; identity verification retains its existing timeout.
+Failed, stale or changed-binding reads cannot advance coverage. A bounded,
+successful historical page batch may save its cursor without claiming completion.
+The private receipt retains every previously observed gap; absence from a later
+window does not close it. Group topics and other providers retain their own
+coverage contracts.
+
+Capture evidence is matched to the same verified App/profile, provider source,
+private destination and owner, including a receipt from a prior context binding.
+That receipt proves capture only; it neither grants the current binding work
+authority nor establishes a final result. Foreign sources remain separate.
+
+After an outage, bounded one-day windows continue from the last complete cursor;
+catch-up cannot certify an unscanned interval. A per-binding receipt lock covers
+the read, provider query and write. Regression coverage uses a real native
+binding, Core and connection HTTP endpoint with synthetic provider history and
+host execution: a two-day outage still exposes its missed source, and admitting
+only the later source after interleaved observations cannot erase an earlier gap.
+
+The existing connection API and Lark settings show source coverage separately
+from live-listener readiness and pending execution. Its `ingress` observation
+uses `unobserved`, `verified`, `gap` and `unavailable`, with timestamps and counts,
+without source identifiers or bodies. An observed Bot reply does not establish
+native capture, a final answer or requester adoption. A newly observed unanswered
+live-window gap may stop only this service's existing consumer once; older-history
+discoveries do not trigger that reconnect. The existing App lease
+and refresh lifecycle own its replacement. History never enters Core admission,
+replies, retries or failed-Turn recovery. Reconnection is a live-path mitigation,
+not proof that a missing historical request ran or that provider loss was fixed.
+
 The shared conversation intake resolves intent and verifies decision-relevant
 facts before delegation. A currently satisfied outcome returns its evidence
 without duplicate work or another protected-action proposal; a historical record
@@ -856,7 +1177,26 @@ and the written execution boundary must both be respected downstream.
 The explicit status-only profile returns a labelled snapshot, not a keyword-built
 answer. Converting a reply into a task opens the complete editable text rather
 than guessing its next-action sentence. Structured ID/date/resume-condition
-validation remains. Lark routing is unchanged.
+validation remains. Lark admission retains its existing conversation owner.
+
+Todo proposals may carry an explicit `goal_id` resolved from the permitted
+directory. A manager answer with that target reaches the existing typed Todo
+confirmation card; an unscoped manager proposal and a proposal naming a different
+Goal from the selected Goal never silently inherit a UI target. Legacy unscoped
+Goal replies keep their current Goal behavior. This adds no automatic write.
+
+In a bound steward private conversation, the same scoped proposal is prepared
+by the canonical `todo.create` action owner and returned with the existing
+`/confirm` and `/cancel` commands. The request journal retains its expiry and
+idempotency before preview IO. Confirmation requires the same current App,
+owner, private source and granted Goal, within fifteen minutes; read scope or a
+model proposal alone authorizes no Todo mutation. The existing canonical writer
+supplies the verified receipt, and the result returns to that original private
+conversation. It neither creates a Goal nor starts or assigns an execution.
+Stale, revoked or expired previews fail closed. Lost preview replies recover
+the same preview; an already committed Todo recovers its existing receipt.
+No callback consumer, executor or independent work queue is introduced. These
+source/fixture contracts do not certify an installed Bot or model recognition.
 
 ### Conversational goal preparation: integrating the team-workspace proposal
 
@@ -974,3 +1314,98 @@ host media and file delivery remain separate gaps. Regression covers model-wire
 image input, unchanged Session, replay, durable restart and download-time
 revocation; live provider/model acceptance is reported separately. No new
 Session authority, queue, worker or feature toggle is introduced.
+
+### Native history migration and unfinished-request continuation
+
+A delivered failure notice is not a completed business request. The existing
+private reply scanner now discovers eligible unfinished ordinary Codex steward
+requests after the legacy manager-context migration. Context version 21 restores
+the complete visible user/assistant history once in native persisted history;
+the old upstream identity remains recorded, and native Goal/attached executions
+are not replaced by this migration.
+
+Discovery uses the local enabled binding and the same typed candidate planner,
+without provider identity IO for every historical failure. This is a queue hint;
+admission still re-resolves current App/owner/grant and exact source/native proof
+under the existing fences before reserving or enqueueing any continuation.
+
+Source verification accepts both ordinary text and text-only rich posts. A post
+must retain its original provider rendering, an explicit empty attachment
+inventory and the same admitted text after intake whitespace normalization.
+The current provider message type and complete rendering must still match.
+Missing or edited evidence, images and attachment failures remain holds; recovery
+does not download resources or submit only a media caption.
+
+Core may admit one correlated continuation per request and context version
+after current App/owner/grant and unchanged source verification, an exact failed
+native Turn readback, and a complete inventory containing only its original user
+item. Policy/usage denials, corrections, tools, unknown effects, closed Sessions,
+group/attached routes and unreadable evidence remain holds. The original failed
+Turn and its verified failure notice remain unchanged; the existing same-Session
+queue owns continuation, and a distinct frozen delivery phase owns the eventual
+original-source result. A restart resumes the deterministic reservation rather
+than dispatching it twice. Existing provider replies accompany recovery as data
+so completed work can be retained without repeating its effects.
+
+The same bounded admission also covers a current-format `host_gate` failure
+whose native error is `other`, only when the stable native inventory proves
+there was exactly the original user input and no execution item. It resumes the
+existing thread, without a history migration or error-message text matching.
+This proves absence of execution, not provider health or eventual success. A
+terminal Core failure is returned and retained; it cannot enqueue another
+continuation.
+
+The existing in-flight transport retry also recognizes the exact native
+`other` diagnostic `workspace routing discovery timed out`. This provider hint
+alone grants no retry: a fresh, stable inventory must show the latest failed
+native Turn contains only its original user item. Unknown or changed diagnostics,
+additional items, stop/grant/configuration changes and exhausted budgets remain
+holds. It reuses the original Core Turn, input, Session and three-retry/backoff
+budget; it never reopens a terminal historical request or resets a reservation
+after restart. Native error prose is not copied into the retry journal. Existing
+App and Lark retry progress and final readback expose the same request's outcome.
+
+Recovery discovery backoff is only a temporary hint. The existing reply worker
+retains its per-request fairness count while that canonical request still exists;
+an omitted hint does not retire work or let earlier unresolved requests repeatedly
+take every available slot. The four-worker and no-extra-backlog limits stay intact.
+
+Continuation admission, progress, cursor and final delivery use a version-scoped
+presentation journal. They never reopen the acknowledged original Inbox source
+or edit its failure notice as a new draft. The final replaces only the new draft.
+For already-returned legacy continuations that reused the old notice, the same
+worker may restore that notice and retire subsequent stale drafts using their
+exact confirmed edit proofs. This is edit-only presentation repair: current
+source/grant, canonical Turn and unchanged prior-or-desired provider body must
+verify. Changed bodies, uncertain effects and edit-limit rejections stay pending;
+repair neither enqueues work nor appends another result. Acceptance independently
+checks actual provider bodies, including rollover and lost acknowledgements.
+
+Qualification covers the actual background scanner, source/grant counterexamples,
+native inventory reads and crashes before admission, after enqueue and before
+transport synchronization. Synthetic model/provider journeys and read-only native
+observations do not certify live model completion or the wider conversation SLA.
+
+### Lark progress-edit budget and final-result recovery
+
+Private conversations and steward commissions reuse persisted Turn events to
+edit one progress message; the Core terminal answer still owns the full result.
+Progress allows at most 12 edit attempts, persisted before the provider write.
+Unknown receipts consume the budget and restart does not reset it. This is a
+conservative transport limit, not Lark's maximum allowance. After exhaustion,
+retain Turn events and the allowance for a final edit and necessary close notice.
+
+Older long tasks may already have exhausted the provider quota. Only an explicit
+`230072` response plus fresh readback proving the target body absent allows
+retaining the rejected-edit proof and sending the complete result separately
+through the existing source-session, audience and idempotent-send path. Never
+mark an exhausted draft successfully closed, rerun the model or recreate the
+Session. Unknown errors, lost receipts and unavailable readback retain recovery
+without a blind resend. If the result is verified but reaction cleanup remains,
+recover only its original result proof without sending again.
+
+Regression covers budget persistence across restart, final-result retention,
+explicit quota refusal, unknown failure, lost post-write receipt, unavailable
+readback, recovery of older failed journals and two-App isolation. Live provider
+delivery remains separate. Model completion, material intake and an intermediate
+card cannot substitute for final-message readback.

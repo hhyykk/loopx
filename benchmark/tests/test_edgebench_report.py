@@ -3,12 +3,54 @@
 import copy
 import csv
 import json
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from benchmark.edgebench.export_report import digest, export, verify, write
+
+
+ROOT = Path(__file__).resolve().parents[2]
+PUBLISHED_DATA = Path("benchmark/edgebench/studies/portfolio-ten-arm-20261006/data")
+
+
+@pytest.mark.parametrize("strategy", [None, "off", "evidence_conditioned_v1"])
+def test_report_preserves_observed_stride_version_and_absence(trial, strategy):
+    runs, selection, output, task = trial
+    task = runs / "run" / "case"
+    for name in ("runtime-receipt", "worker-profile"):
+        path = task / (name + ".json")
+        value = json.loads(path.read_text())
+        if strategy is not None:
+            value["stride_strategy"] = strategy
+            value["worker" if name == "runtime-receipt" else "profile"] = "heartbeat-resume"
+        write(path, value)
+    export(runs, selection, output, observed_at="2026-01-02T00:00:00+00:00")
+    config = json.loads((output / "settings/run.json").read_text())
+    for field in ("runner", "worker_profile"):
+        assert config[field].get("stride_strategy") == strategy
+        assert ("stride_strategy" in config[field]) is (strategy is not None)
+
+
+@pytest.mark.parametrize("runner,profile", [
+    ("evidence_conditioned_v1", "off"),
+    ("evidence_conditioned_v1", None),
+    ("future_policy", "future_policy"),
+])
+def test_report_rejects_unbound_or_unknown_stride_version(trial, runner, profile):
+    runs, selection, output, task = trial
+    task = runs / "run" / "case"
+    for name, strategy in (("runtime-receipt", runner), ("worker-profile", profile)):
+        path = task / (name + ".json")
+        value = json.loads(path.read_text())
+        if strategy is not None:
+            value["stride_strategy"] = strategy
+        write(path, value)
+    with pytest.raises(ValueError, match="stride_strategy"):
+        export(runs, selection, output, observed_at="2026-01-02T00:00:00+00:00")
 
 
 @pytest.fixture
@@ -129,6 +171,32 @@ def test_terminal_report_retains_unqualified_status_and_unknowns(trial):
     assert verify(out)["runs"] == 1
     with pytest.raises(ValueError, match="immutable"):
         build(trial)
+
+
+@pytest.mark.parametrize("fault", [None, "profile", "mode", "unknown"])
+def test_official_feedback_payload_is_preserved_without_relabeling_history(trial, fault):
+    for name in ("runtime-receipt", "worker-profile"):
+        path = trial[3] / (name + ".json")
+        value = json.loads(path.read_text())
+        value["feedback"] = "best-only"
+        value["feedback_payload"] = "official-result"
+        if fault == "profile" and name == "worker-profile":
+            value.pop("feedback_payload")
+        elif fault == "mode":
+            value["feedback"] = "blind"
+        elif fault == "unknown":
+            value["feedback_payload"] = "future-unknown"
+        write(path, value)
+    if fault:
+        with pytest.raises(ValueError, match="feedback payload"):
+            build(trial)
+        assert not trial[2].exists()
+    else:
+        out = build(trial)
+        settings = json.loads((out / "settings/run.json").read_text())
+        assert settings["runner"]["feedback_payload"] == "official-result"
+        assert settings["worker_profile"]["feedback_payload"] == "official-result"
+        assert verify(out)["runs"] == 1
 
 
 @pytest.mark.parametrize(
@@ -254,6 +322,155 @@ def test_native_tie_choice_and_missing_sample_times_are_preserved(trial):
     assert verify(out)["verified"] is True
 
 
+def native_trial(trial, policy="score_first", direction="minimize"):
+    """Synthetic native receipts: selected round has score 0, another has 2."""
+    trial[1][0]["settings"]["native_ranking"] = {
+        "selection": policy, "score_direction": direction,
+    }
+    for name in ("runtime-receipt", "final_result", "run_history"):
+        path = trial[3] / (name + ".json")
+        data = json.loads(path.read_text())
+        data["best_score"] = 0
+        if name != "runtime-receipt":
+            data.update(best_round="auto-2", best_pass_rate=1.0)
+        if name == "run_history":
+            data["entries"][0].update(
+                pass_rate=0.5, valid=policy != "valid_then_score",
+                private_future_field="must-not-be-exported",
+            )
+            data["entries"][1].update(pass_rate=1.0, valid=True)
+        write(path, data)
+
+
+@pytest.mark.parametrize("policy,direction", [
+    ("score_first", "minimize"),
+    ("valid_then_score", "maximize"),
+    ("pass_rate_first", "maximize"),
+])
+def test_native_ranking_preserves_selected_lower_score(trial, policy, direction):
+    native_trial(trial, policy, direction)
+    out = build(trial)
+    row = json.loads((out / "run-rows.json").read_text())[0]
+    assert row["metrics"]["best_score"] == {
+        "value": 0, "unit": "raw_score", "higher_is_better": direction == "maximize",
+    }
+    assert row["metrics"]["best_pass_rate"]["value"] == 1.0
+    assert row["countability"]["score_countable"] is False
+    with (out / "scores.csv").open() as stream:
+        assert next(csv.DictReader(stream))["best_round"] == "auto-2"
+    assert all("must-not-be-exported" not in p.read_text()
+               for p in out.rglob("*") if p.is_file())
+    assert verify(out)["verified"] is True
+
+
+@pytest.mark.parametrize("metadata", [
+    None, {}, {"selection": "score_first"},
+    {"selection": "other", "score_direction": "minimize"},
+    {"selection": "score_first", "score_direction": "down"},
+    {"selection": "score_first", "score_direction": False},
+    {"selection": "score_first", "score_direction": "minimize", "private": "extra"},
+])
+def test_invalid_native_ranking_metadata_fails_before_output(trial, metadata):
+    trial[1][0]["settings"]["native_ranking"] = metadata
+    with pytest.raises(ValueError, match="native ranking"):
+        build(trial)
+    assert not trial[2].exists()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("best_round", "absent"), ("best_round", "auto-1"),
+    ("best_score", 2), ("best_pass_rate", 0.5),
+])
+def test_native_history_winner_must_bind_final_result(trial, field, value):
+    native_trial(trial)
+    path = trial[3] / "run_history.json"
+    data = json.loads(path.read_text())
+    data[field] = value
+    write(path, data)
+    with pytest.raises(ValueError, match="Native history"):
+        build(trial)
+    assert not trial[2].exists()
+
+
+def test_supplied_metric_direction_cannot_be_silently_overwritten(trial):
+    native_trial(trial)
+    trial[1][0]["row"]["metrics"]["best_score"] = {
+        "value": 0, "higher_is_better": True,
+    }
+    with pytest.raises(ValueError, match="direction"):
+        build(trial)
+    assert not trial[2].exists()
+
+
+@pytest.mark.parametrize("fault", ["direction", "missing_direction", "pass_rate", "winner"])
+def test_rehashed_native_report_contradictions_fail(trial, fault):
+    native_trial(trial, "pass_rate_first", "maximize")
+    out = build(trial)
+    if fault == "winner":
+        replace_csv(out, "scores.csv", "best_round", "auto-1")
+    else:
+        path = out / "run-rows.json"
+        rows = json.loads(path.read_text())
+        if fault == "direction":
+            rows[0]["metrics"]["best_score"]["higher_is_better"] = False
+        elif fault == "missing_direction":
+            del rows[0]["metrics"]["best_score"]["higher_is_better"]
+        else:
+            rows[0]["metrics"]["best_pass_rate"]["value"] = 0.5
+        write(path, rows)
+        reseal(out, "run-rows.json")
+    with pytest.raises(ValueError, match="direction|pass rate|Best round"):
+        verify(out)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_cli_exports_mixed_legacy_and_native_without_sforge(trial, reverse):
+    runs, selection, out, source = trial
+    other = runs / "other" / "case"
+    shutil.copytree(source, other)
+    for name in ("runtime-receipt", "final_result", "run_history"):
+        path = other / (name + ".json")
+        data = json.loads(path.read_text())
+        data["run_id"] = "other"
+        write(path, data)
+    legacy = copy.deepcopy(selection[0])
+    legacy["row"]["run_id"] = "other"
+    native_trial(trial)
+    selection.append(legacy)
+    if reverse:
+        selection.reverse()
+    selection_file = runs.parent / "selection.json"
+    write(selection_file, selection)
+    result = subprocess.run([
+        sys.executable, "-c",
+        "import sys, runpy; sys.modules['sforge'] = None; "
+        "runpy.run_module('benchmark.edgebench.export_report', run_name='__main__')",
+        "--runs-root", str(runs), "--selection", str(selection_file),
+        "--output", str(out), "--observed-at", "2026-01-02T00:00:00+00:00",
+    ], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["runs"] == 2
+    with (out / "samples.csv").open() as stream:
+        samples = list(csv.DictReader(stream))
+    assert [p["pass_rate"] for p in samples if p["run_id"] == "run"] == ["0.5", "1.0"]
+    assert all(p["pass_rate"] == "" for p in samples if p["run_id"] == "other")
+    assert verify(out)["verified"] is True
+
+
+def test_archived_report_cli_verifies_unchanged_without_sforge():
+    data = ROOT / PUBLISHED_DATA
+    before = {p: digest(p) for p in data.rglob("*") if p.is_file()}
+    result = subprocess.run([
+        sys.executable, "-c",
+        "import sys, runpy; sys.modules['sforge'] = None; "
+        "runpy.run_module('benchmark.edgebench.export_report', run_name='__main__')",
+        "--verify", str(data),
+    ], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"runs": 10, "files": 13, "verified": True}
+    assert {p: digest(p) for p in before} == before
+
+
 @pytest.mark.parametrize(
     "key,value,message",
     [
@@ -332,3 +549,108 @@ def test_cli_rejects_inconsistent_reports(trial, operation):
     assert '"verified": true' not in result.stdout
     if operation == "export":
         assert not trial[2].exists()
+
+
+def _windows_text_writes(monkeypatch):
+    """Mirror the os.linesep translation CPython applies to Windows text writes."""
+    real_open = Path.open
+
+    def windows_text_write(self, mode="r", *args, **kwargs):
+        if "b" not in mode and any(flag in mode for flag in "wax"):
+            if kwargs.get("newline") is None:
+                kwargs["newline"] = "\r\n"
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", windows_text_write)
+
+
+def _publish_and_recheck(tmp_path, build_data):
+    """Publish files through Git with text conversion forced on, then verify."""
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    shutil.copyfile(ROOT / ".gitattributes", repository / ".gitattributes")
+    data = build_data(repository)
+    (repository / "control.txt").write_bytes(b"control\n")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repository), "-c", "core.autocrlf=true", *args],
+            check=True, capture_output=True, text=True,
+        )
+
+    relative = data.relative_to(repository).as_posix()
+    pin = git("check-attr", "eol", f"{relative}/index.json").stdout
+    assert pin.strip().endswith("eol: lf"), "the LF pin must apply to this path"
+    git("add", "--", ".gitattributes", relative, "control.txt")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    git("checkout-index", "--all", f"--prefix={checkout.as_posix()}/")
+    assert (checkout / "control.txt").read_bytes() == b"control\r\n", "conversion must be active"
+    restored = checkout / relative
+    assert verify(restored)["verified"] is True
+    for path in data.rglob("*"):
+        if path.is_file():
+            assert (restored / path.relative_to(data)).read_bytes() == path.read_bytes()
+    return restored
+
+
+def test_json_writer_ignores_host_text_newline_translation(tmp_path, monkeypatch):
+    _windows_text_writes(monkeypatch)
+    value = {"best_score": 2, "note": "first line\nsecond line"}
+    path = tmp_path / "value.json"
+    write(path, value)
+    expected = json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    assert path.read_bytes() == expected.encode("utf-8")
+
+
+def test_published_archive_materializes_byte_exact_under_autocrlf(tmp_path):
+    def build(repository):
+        data = repository / PUBLISHED_DATA
+        shutil.copytree(ROOT / PUBLISHED_DATA, data)
+        return data
+
+    _publish_and_recheck(tmp_path, build)
+
+
+def test_exported_report_survives_autocrlf_publication(tmp_path, trial, monkeypatch):
+    """A Windows host writes CRLF for default text writes, but this export binds
+    its own bytes, so Git must store and restore exactly what was written."""
+    _windows_text_writes(monkeypatch)
+
+    def build(repository):
+        data = repository / "benchmark/edgebench/studies/review-roundtrip/data"
+        runs, selection, _unused, _task = trial
+        export(runs, selection, data, observed_at="2026-01-02T00:00:00+00:00")
+        return data
+
+    _publish_and_recheck(tmp_path, build)
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_report_preserves_horizon_opt_in_and_historical_absence(trial, enabled):
+    runs, selection, output, _ = trial
+    for name in ("runtime-receipt", "worker-profile"):
+        path = runs / "run" / "case" / (name + ".json")
+        value = json.loads(path.read_text())
+        if enabled is not None:
+            value["planning_horizon_goal"] = enabled
+        write(path, value)
+    export(runs, selection, output, observed_at="2026-01-02T00:00:00+00:00")
+    config = json.loads((output / "settings/run.json").read_text())
+    for field in ("runner", "worker_profile"):
+        assert config[field].get("planning_horizon_goal") is enabled
+        assert ("planning_horizon_goal" in config[field]) is (enabled is not None)
+
+
+@pytest.mark.parametrize("receipt,profile", [(True, False), (True, None), ("true", "true"), (True, 1)])
+def test_report_rejects_unbound_horizon_setting(trial, receipt, profile):
+    runs, selection, output, _ = trial
+    for name, enabled in (("runtime-receipt", receipt), ("worker-profile", profile)):
+        path = runs / "run" / "case" / (name + ".json")
+        value = json.loads(path.read_text())
+        if enabled is not None:
+            value["planning_horizon_goal"] = enabled
+        write(path, value)
+    with pytest.raises(ValueError, match="planning_horizon_goal"):
+        export(runs, selection, output, observed_at="2026-01-02T00:00:00+00:00")

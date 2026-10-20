@@ -6,10 +6,12 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+import yaml
 
 WORKFLOW_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (WORKFLOW_ROOT / ".github/workflows/python-tests.yml").read_text(encoding="utf-8")
@@ -17,9 +19,12 @@ WORKFLOW = (WORKFLOW_ROOT / ".github/workflows/python-tests.yml").read_text(enco
 
 def test_dashboard_acceptance_and_kernel_checks_run_independently() -> None:
     kernel = WORKFLOW.split("  kernel-static-checks:\n", 1)[1].split(
+        "  dashboard-browser:\n", 1,
+    )[0]
+    dashboard = WORKFLOW.split("  dashboard-browser:\n", 1)[1].split(
         "  dashboard-acceptance:\n", 1,
     )[0]
-    dashboard = WORKFLOW.split("  dashboard-acceptance:\n", 1)[1].split(
+    coverage = WORKFLOW.split("  dashboard-acceptance:\n", 1)[1].split(
         "  checks:\n", 1,
     )[0]
     aggregate = WORKFLOW.split("  checks:\n", 1)[1].split(
@@ -34,14 +39,22 @@ def test_dashboard_acceptance_and_kernel_checks_run_independently() -> None:
 
     assert "test:dashboard:coverage" in dashboard
     assert "personal-workspace-browser-smoke.mjs" in dashboard
+    dashboard_timeout = re.search(r"(?m)^    timeout-minutes: (\d+)$", dashboard)
+    assert dashboard_timeout is not None
+    assert int(dashboard_timeout.group(1)) >= 25
     assert "python -m ruff check" not in dashboard
     assert "python -m mypy" not in dashboard
+    assert "shard: [1, 2, 3]" in dashboard
+    assert "LOOPX_PERSONAL_WORKSPACE_SHARD" in dashboard
+    assert "needs: [changes, dashboard-browser]" in coverage
+    assert "merge-dashboard-coverage.mjs" in coverage
+    assert "name: dashboard-coverage\n" in coverage
 
     assert "if: always() && needs.changes.outputs.core_tests == 'true'" in aggregate
     assert "NEEDS_JSON: ${{ toJSON(needs) }}" in aggregate
     assert "scripts/ci/review_gate.py verify-core" in aggregate
     assert (
-        "needs: [changes, kernel-static-checks, typescript-coverage, "
+        "needs: [changes, kernel-static-checks, kernel-contracts, typescript-coverage, "
         "dashboard-acceptance, chat-bundle-browser]"
     ) in aggregate
 
@@ -66,6 +79,7 @@ def test_checks_aggregate_requires_every_planned_parallel_lane(
             "stage2c_tests": str(backend).lower(), "presentation_tests": str(not backend).lower(),
         }},
         "kernel-static-checks": {"result": kernel},
+        "kernel-contracts": {"result": kernel},
         "typescript-coverage": {"result": typescript},
         "dashboard-acceptance": {"result": dashboard},
         "chat-bundle-browser": {"result": browser},
@@ -209,15 +223,24 @@ def test_merge_gate_runs_on_all_prs_and_checks_every_core_aggregate() -> None:
     ) in gate
     assert "NEEDS_JSON: ${{ toJSON(needs) }}" in gate
     assert "run: python scripts/ci/review_gate.py verify" in gate
-    assert "continue-on-error" not in gate
+    gate_policy = yaml.safe_load(WORKFLOW)["jobs"]["merge-gate"]
+    assert "continue-on-error" not in gate_policy
+    # Only the read-only diagnostic report may fail independently. Checkout,
+    # setup and the qualification verdict must still fail the required check.
+    assert [step["name"] for step in gate_policy["steps"] if step.get("continue-on-error")] == [
+        "Explain qualification with current-attempt job evidence",
+    ]
     for name, output in (("checks", "core_tests"), ("test-shard", "python_tests"), ("stage2c-suite", "stage2c_tests"), ("windows-powershell", "python_tests"), ("presentation", "presentation_tests")):
         job = WORKFLOW.split(f"  {name}:\n", 1)[1].split("    steps:", 1)[0]
         if name == "checks":
             assert (
-                "needs: [changes, kernel-static-checks, typescript-coverage, "
+                "needs: [changes, kernel-static-checks, kernel-contracts, typescript-coverage, "
                 "dashboard-acceptance, chat-bundle-browser]"
             ) in job
             assert "if: always() && needs.changes.outputs.core_tests == 'true'" in job
+        elif name == "test-shard":
+            assert "needs: [changes, chat-bundle]" in job
+            assert f"needs.changes.outputs.{output} == 'true'" in job
         else:
             assert "needs: [changes, chat-bundle]" in job
             assert f"if: needs.changes.outputs.{output} == 'true'" in job
@@ -243,7 +266,7 @@ def test_presentation_exemption_retains_real_frontend_checks_and_force_full() ->
         < browser.index("npm run smoke:chat-upgrade")
     )
     assert "continue-on-error" not in browser
-    for name in ("kernel-static-checks", "typescript-core", "typescript-coverage", "node-minimum-compatibility"):
+    for name in ("kernel-static-checks", "kernel-contracts", "typescript-core", "typescript-coverage", "node-minimum-compatibility"):
         header = WORKFLOW.split(f"  {name}:\n", 1)[1].split("    steps:", 1)[0]
         assert "if: needs.changes.outputs.backend_tests == 'true'" in header
     dashboard = WORKFLOW.split("  dashboard-acceptance:\n", 1)[1].split("    steps:", 1)[0]
@@ -256,7 +279,7 @@ def test_presentation_exemption_retains_real_frontend_checks_and_force_full() ->
     assert "workflow_dispatch:" in WORKFLOW
     assert "--force-full" in WORKFLOW
     assert "impact-shadow" not in WORKFLOW
-    assert "matrix:\n        shard: [1, 2, 3, 4]" in WORKFLOW
+    assert "matrix:\n        shard: [1, 2, 3, 4, 5, 6]" in WORKFLOW
 
 
 def test_windows_lane_rebuilds_the_frontend_without_a_usable_python3() -> None:
@@ -289,12 +312,26 @@ def test_windows_lifecycle_suite_references_existing_tests() -> None:
     assert [
         path for path in test_paths if not (WORKFLOW_ROOT / path).is_file()
     ] == []
+    fixture_step = next(
+        step for step in yaml.safe_load(WORKFLOW)["jobs"]["windows-powershell"]["steps"]
+        if step.get("name") == "Qualify native CLI output fixture and diagnostic boundaries"
+    )
+    args = shlex.split(fixture_step["run"])
+    assert args[args.index("--basetemp") + 1] == (
+        "${{ runner.temp }}/lxb-${{ github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert "tests/control_plane/test_cli_output_budget.py" in args
+    assert "tests/control_plane/test_cli_output_differential.py" in args
+    assert set(args[args.index("-k") + 1].split(" or ")) == {
+        "stable_budget_fixture", "long_path_budget",
+        "probe_process_failure_preserves_utf8_diagnostics",
+    }
 
 
-def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
+def test_six_shards_execute_each_test_once_and_merge_portable_coverage(
     tmp_path: Path,
 ) -> None:
-    # Real pytest-split + xdist + coverage, in four distinct checkout roots.
+    # Real pytest-split + xdist + coverage, in six distinct checkout roots.
     # Each shard alone misses a function; their union must cover the whole file.
     shard_step = WORKFLOW.split("name: Run test shard", 1)[1]
     template = shard_step.split("run: >-", 1)[1].split("      - name:", 1)[0]
@@ -302,8 +339,9 @@ def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
         key: value for key, value in os.environ.items()
         if not key.startswith(("COVERAGE", "COV_CORE", "PYTEST"))
     }
+    env["PYTHONPATH"] = str(WORKFLOW_ROOT)
     seen: list[set[str]] = []
-    for shard in (1, 2, 3, 4):
+    for shard in (1, 2, 3, 4, 5, 6):
         root = tmp_path / f"checkout-{shard}"
         root.mkdir()
         (root / "ci_subject.py").write_text(
@@ -312,10 +350,15 @@ def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
         )
         (root / "test_subject.py").write_text(
             "from ci_subject import first, second\n"
+            "import pytest, time\n"
+            "@pytest.fixture(autouse=True)\n"
+            "def slow_setup(): time.sleep(0.03)\n"
             "def test_first_one():\n    assert first() == 1\n"
             "def test_first_two():\n    assert first() == 1\n"
             "def test_second_one():\n    assert second() == 2\n"
-            "def test_second_two():\n    assert second() == 2\n",
+            "def test_second_two():\n    assert second() == 2\n"
+            "def test_first_three():\n    assert first() == 1\n"
+            "def test_second_three():\n    assert second() == 2\n",
             encoding="utf-8",
         )
         (root / "pyproject.toml").write_text(
@@ -323,6 +366,10 @@ def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
             encoding="utf-8",
         )
         args = shlex.split(template.replace("${{ matrix.shard }}", str(shard)))
+        assert args[args.index("--ci-stall-after") + 1] == "120"
+        # Exercise the same diagnostic on a bounded real fixture. Dumping a
+        # stack must still permit complete collection, success and coverage.
+        args[args.index("--ci-stall-after") + 1] = "0.01"
         args[0] = sys.executable
         args[args.index("--cov=loopx")] = "--cov=ci_subject"
         result = subprocess.run(
@@ -330,6 +377,7 @@ def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
             capture_output=True, text=True, timeout=60, check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+        assert "LOOPX_PYTEST_STACK " in result.stdout + result.stderr
         cases = ET.parse(root / "results.xml").findall(".//testcase")
         seen.append({case.attrib["name"] for case in cases})
         partial = subprocess.run(
@@ -342,8 +390,8 @@ def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
         (root / ".coverage").rename(destination / ".coverage")
 
     assert all(seen)
-    assert sum(map(len, seen)) == len(set.union(*seen)) == 4
-    assert set.union(*seen) == {"test_first_one", "test_first_two", "test_second_one", "test_second_two"}
+    assert sum(map(len, seen)) == len(set.union(*seen)) == 6
+    assert set.union(*seen) == {"test_first_one", "test_first_two", "test_second_one", "test_second_two", "test_first_three", "test_second_three"}
     # Reuse the real aggregate shell commands, with a 100% synthetic oracle.
     step = WORKFLOW.split("name: Combine complete coverage", 1)[1]
     script = step.split("run: |", 1)[1].split("      - uses:", 1)[0]
@@ -351,7 +399,7 @@ def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
     script = script.replace("--fail-under=19.6", "--fail-under=100")
     root = tmp_path / "checkout-1"
     (tmp_path / "coverage-shards").rename(root / "coverage-shards")
-    for shard in (1, 2, 3, 4):
+    for shard in (1, 2, 3, 4, 5, 6):
         data = root / "coverage-shards" / f"python-coverage-{shard}" / ".coverage"
         held = data.with_name("held")
         data.rename(held)
@@ -374,9 +422,59 @@ def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
         capture_output=True, check=False,
     )
     assert missing.returncode != 0
-    assert re.search(r"shard: \[1, 2, 3, 4\]", WORKFLOW)
+    assert re.search(r"shard: \[1, 2, 3, 4, 5, 6\]", WORKFLOW)
     assert "include-hidden-files: true" in WORKFLOW
     assert "--cov-fail-under" not in template
+
+
+def test_shard_names_failed_cases_before_the_remaining_tests_finish(tmp_path: Path) -> None:
+    # Drive the real shard command: one worker fails while the other waits.
+    # A runner deadline must not leave only an anonymous F in the progress log.
+    step = WORKFLOW.split("name: Run test shard", 1)[1]
+    template = step.split("run: >-", 1)[1].split("      - name:", 1)[0]
+    args = shlex.split(template.replace("${{ matrix.shard }}", "1"))
+    args[0] = sys.executable
+    args[args.index("--cov=loopx")] = "--cov=ci_subject"
+    (tmp_path / "ci_subject.py").write_text("def value(case):\n    return case\n")
+    (tmp_path / "test_subject.py").write_text(
+        "from pathlib import Path\nimport time\nimport pytest\n"
+        "from ci_subject import value\n"
+        "@pytest.mark.parametrize('case', range(8))\n"
+        "def test_outcome(case):\n"
+        "    if case < 4:\n        assert value(case) < 0, 'synthetic failure'\n"
+        "    Path('waiting').touch()\n"
+        "    while not Path('release').exists():\n        time.sleep(0.01)\n"
+        "    assert value(case) >= 4\n",
+    )
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("COVERAGE", "COV_CORE", "PYTEST"))}
+    env["PYTHONPATH"] = str(WORKFLOW_ROOT)
+    log = tmp_path / "progress.log"
+    with log.open("w") as output:
+        process = subprocess.Popen(args, cwd=tmp_path, env=env, stdout=output, stderr=subprocess.STDOUT)
+        try:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                progress = log.read_text()
+                if (tmp_path / "waiting").exists() and re.search(
+                    r"FAILED test_subject.py::test_outcome\[\d+\]", progress,
+                ):
+                    break
+                time.sleep(0.05)
+            assert process.poll() is None, log.read_text()
+            assert (tmp_path / "waiting").exists(), log.read_text()
+            assert re.search(r"FAILED test_subject.py::test_outcome\[\d+\]", log.read_text())
+        finally:
+            (tmp_path / "release").touch()
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    assert process.returncode == 1, log.read_text()
+    cases = ET.parse(tmp_path / "junit.xml").findall(".//testcase")
+    assert len(cases) == 2
+    assert len([case for case in cases if case.find("failure") is not None]) == 1
 
 
 def test_backend_and_mixed_prs_require_the_browser_qualified_artifact() -> None:
@@ -384,7 +482,7 @@ def test_backend_and_mixed_prs_require_the_browser_qualified_artifact() -> None:
     assert "needs.changes.outputs.core_tests == 'true'" in producer
     aggregate = WORKFLOW.split("  checks:\n", 1)[1].split("    steps:", 1)[0]
     assert "chat-bundle-browser" in aggregate
-    for name in ("chat-bundle-browser", "kernel-static-checks", "typescript-core", "dashboard-acceptance", "test-shard", "stage2c-suite", "windows-powershell", "presentation"):
+    for name in ("chat-bundle-browser", "kernel-contracts", "typescript-core", "dashboard-browser", "test-shard", "stage2c-suite", "windows-powershell", "presentation"):
         job = WORKFLOW.split(f"  {name}:\n", 1)[1].split("      - uses: actions/setup-", 1)[0]
         assert "needs: [changes, chat-bundle]" in job
         assert "name: chat-bundle-${{ github.sha }}" in job
@@ -414,7 +512,7 @@ def test_typescript_shards_select_every_test_file_exactly_once() -> None:
 
 def test_typescript_core_shards_feed_one_complete_coverage_report() -> None:
     core = WORKFLOW.split("  typescript-core:\n", 1)[1].split("  typescript-coverage:\n", 1)[0]
-    report = WORKFLOW.split("  typescript-coverage:\n", 1)[1].split("  dashboard-acceptance:\n", 1)[0]
+    report = WORKFLOW.split("  typescript-coverage:\n", 1)[1].split("  dashboard-browser:\n", 1)[0]
     assert "shard: [1, 2, 3]" in core
     assert "fail-fast: false" in core
     assert 'node-version: "22.22.3"' in core

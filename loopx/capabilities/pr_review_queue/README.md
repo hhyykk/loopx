@@ -93,6 +93,25 @@ code-symbol and negative-walkthrough applicability. Inventory-only rows expose
 no executable review artifacts. Host skills route and publish this packet; they
 must not maintain a second explanation checklist.
 
+Policy revision 21 adds optional visual explanation guidance to that same
+contract and each actionable PR's five-section template. Use a small Mermaid
+diagram or table when it clarifies a before/after behavior, branching flow,
+state transition, dependency or authority boundary; simple edits can stay in
+prose. Place it in **改动思路**, explain it briefly, and bind its caption and
+source links to the exact reviewed head. Recheck it when the head changes.
+Source-derived diagrams are illustrative, not test evidence. Inspect rendered
+labels and branches before publication; use a prose/table fallback with the
+rendering limitation when necessary. No image service, new setting, result
+field or diagram completion gate is introduced. The complete bilingual review,
+findings, source coverage, section floors and merge checks still apply.
+
+同一能力合同与每个可执行 PR 的五段模板现在提供按需图示指导：复杂的前后行为、
+分支流程、状态迁移、依赖和权限边界可用一张小 Mermaid 图或表格说明；简单改动
+保持简洁文字。图放在「改动思路」，附短解释、实际审查 head 和源码链接，改后重新
+核对。源码推导图标为示意，不能充当测试证据；发布前检查真实渲染，无法核验时改用
+文字或表格并说明缺口。该指导不新增设置、图生成服务、结果字段或配图门禁，完整
+双语评审、发现、来源读取和合并资格仍沿用原合同。
+
 Architecture judgment is part of `change_proportionality.architecture_assessment`,
 not a second review checklist. Policy revision 19 asks the reviewer to separate
 the PR's behavior-bearing mechanisms into invariants, optional policies,
@@ -299,6 +318,36 @@ scan, so the latency improvement does not change queue ordering or freshness
 semantics. The scan does not use a stale cache: rerunning the command always
 re-reads the requested GitHub window.
 
+When GitHub's paginated file API is capped at 3000 entries, a PR declaring
+more files can recover its inventory from already available exact Git objects
+in the caller's checkout. The `origin` must identify the requested GitHub
+repository. LoopX compares the unique merge base to the exact head, folds only
+API-confirmed rename pairs, and requires the resulting file count and whole-diff
+addition/deletion totals to match fresh GitHub metadata. Head, base and totals
+are fenced before pagination and after recovery. This is source completeness,
+not review evidence or approval of the recovered PR.
+
+The source provider's recovered file rows identify `source` as `github` or
+`git`. Known API per-file statistics are retained, including 0/0 for omitted
+or generated diffs. Unobserved Git binary rows retain unknown per-file counts
+(`null`); Git's textual totals exclude binary lines. Mixed display values need
+not sum to the independently verified whole-diff totals. Ordinary complete GraphQL/REST reads keep their
+existing shape. No object fetch, clone, checkout, external diff or textconv is
+performed. A wrong repository, missing objects, ambiguous rename or
+malformed statistics, total mismatch or remote version change remains an
+incomplete source. Callers without a versioned snapshot (including approval
+closeout) retain their complete-API requirement; inventory recovery grants no
+additional closeout, publication or merge authority.
+
+GitHub 文件 API 达到 3000 项上限时，调用方当前 checkout 中已有的精确 Git 对象
+可用于恢复更大 PR 的文件清单。必须核对 origin 仓库、唯一 merge base 与精确 head，
+仅折叠 API 明确确认的 rename，并让文件数和全 diff 增删量与远端 metadata 一致。
+分页前及恢复后校验 head、base 和总量。保留 API 已知行的统计值；恢复行的 Git 来源
+不等于已完成 review。Git 二进制行不贡献文本行数，未被 API 观测的逐行统计保留 null，
+不会假定为 API 的 0/0。不会自动抓取对象、切分支或执行外部 diff/textconv；缺对象、
+统计格式损坏、rename 歧义、总量不符或版本变化继续明确返回 incomplete。没有精确快照
+的 approval closeout 仍要求完整 API 读回，不扩大撤回 review 或合并权限。
+
 For an autonomous maintainer monitor, request the complete open queue while
 persisting its compact cursor in an ignored local checkpoint:
 
@@ -454,6 +503,14 @@ its checks or is blocked. The summary's attention counts are derived from this
 same actionable set. Inventory-only rows set `review_plan` and
 `review_template` to null and `evidence_commands` to an empty list so hosts
 cannot mistake readback metadata for execution authority.
+
+Draft PRs remain inventory-only until the author submits them for review.
+Follow [author submission](../../../AGENTS.md#author-submission-and-review-entry)
+for completed proposals: missing review or held CI/merge qualification must not
+prevent an authorized author from marking the PR ready. Read back the unchanged
+head and regenerate the packet after that transition. Reviewer action authority
+and exact-head merge qualification remain separate; this rule grants neither a
+reviewer permission to change another author's Draft nor permission to merge.
 
 It emits a
 `pull_request_review_todo_preview_v0` bound to its exact head. The preview may
@@ -769,7 +826,53 @@ state transition, author-owned conclusions use `COMMENTED` plus one exact title:
 `Approval conclusion (author-owned PR; GitHub blocks formal self-approval)` or
 `Request changes conclusion (author-owned PR; GitHub blocks formal self-review)`.
 The compact result is versioned as `pull_request_review_conclusion_v0` and
-reports a typed verdict and invalid-reason codes.
+reports a typed verdict and invalid-reason codes. Queue selection and approval
+closeout share the typed owner for each reviewer's latest submitted opinion.
+A brief approval by another reviewer cannot hide a complete exact-head approval.
+A reviewer's newer formal opinion retires their own previous opinion, including
+when it is dismissed or lacks the required body. Current-head requests for
+changes remain visible even without that format, and ordinary comments or
+pending reviews cannot restore a retired approval. A changed head still requires
+fresh evidence. This corrects default queue/readiness classification; it neither
+relaxes body qualification nor grants dismissal or merge authority.
+
+队列与 closeout 复用同一 TypeScript 历史选择规则：另一评审者的简短批准不会
+遮住完整的精确 head 批准；同一评审者的新正式意见会替换自己的旧意见，撤回或
+格式不完整也不会复活旧批准。当前 head 的阻塞意见保留，普通评论及待提交评审
+不改变已有正式意见，head 变化仍需新证据。本修复改变默认队列和 readiness
+分类，不放宽正文校验，也不授予撤回评审或合并权限。
+
+The default queue also avoids duplicating a submitted independent review. A
+complete, paginated GitHub history can establish `independent_review` when a
+non-author, non-bot account with `OWNER`, `MEMBER`, `COLLABORATOR` or `CONTRIBUTOR`
+association submitted `COMMENTED`, `APPROVED` or `CHANGES_REQUESTED` on the current
+head. These are formal review events, including inline-only reviews, not issue
+comments. The typed history owner uses each reviewer's latest submitted event;
+pending reviews do not erase prior activity, and dismissal retires that actor's
+coverage. Missing actor/association metadata, incomplete reads or a new head
+cannot establish coverage. The live provider rechecks head/base after history.
+
+Covered rows remain in inventory with the reviewer, review URL/state and exact
+head, a null action, null plan/template and no evidence commands. Read that
+record once and continue the queue; the contributor need not write this agent's
+bilingual format. This is work coverage, not a qualified approval or merge
+permission. Existing dissent, strict approval-body qualification, closeout,
+validation and merge-readiness gates remain. An explicit authorized
+`--fresh-audit-exact-head NUMBER@HEAD_OID` can request new evidence despite
+coverage. No reviewer-name whitelist, new configuration or automatic write is
+introduced.
+
+默认队列也跳过已有独立评审覆盖的重复全文审查：完整分页的 GitHub 记录证明，
+当前提交已由非作者、非机器人且身份为 OWNER、MEMBER、COLLABORATOR 或
+CONTRIBUTOR 的账号提交 COMMENTED、APPROVED 或 CHANGES_REQUESTED。这里指正式
+review（包括只有行内意见的评审），不包括普通 issue 评论。复用同一 TypeScript
+历史 owner，按每个评审者最近的已提交记录判断；待提交不会抹去旧记录，撤销只
+撤回该账号的覆盖。身份未知、来源不完整或换头时不跳过，读取后还须核对 head/base。
+载荷的 `independent_review` 给出评审者、原记录链接、状态和精确提交；该行仍在
+inventory，但不生成可执行计划或证据命令。第三方无需使用本 agent 的双语格式。
+跳过重复工作不授予批准或合并资格，不清除阻塞意见；原批准正文、closeout、验证
+和 merge-readiness 门保留。明确要求重新取证时，沿原精确头 fresh-audit 入口执行。
+不新增人名白名单、配置或自动外部写入。
 
 After a published exact-head `APPROVE` is read back, the capability-owned
 `review_execution_contract.approval_closeout` requires effective-review
@@ -818,6 +921,19 @@ construction consumes the observation only when every readiness input still
 matches; a changed head, base, review conclusion, CI policy/result, review
 thread, draft flag, merge state, mergeability, or PR state fails open to a fresh
 qualification.
+
+Live queue details request `headRefOid` and `baseRefOid` together with the
+computed merge fields, matching the versioned readiness read. An unversioned
+GitHub detail request can return `UNKNOWN` despite a known exact-head merge
+state, repeatedly reopening an unchanged observation. Head/base drift between
+the list and detail reads makes the source incomplete; rerun discovery before
+selecting work. A genuinely unknown state still requires fresh qualification,
+and the immediately-before-merge gate remains mandatory.
+
+完整队列的详情请求同时读取 head/base OID 和合并状态；缺少版本的 GitHub
+详情读取可能返回 `UNKNOWN`，误使已核验项目反复排入队首。列表与详情之间的
+版本漂移会使来源不完整，须重新发现后再选择工作。真实未知状态仍需核验，
+合并前的精确版本检查和独立授权要求保持。
 
 They must not include raw logs, private connector payloads, credentials, local
 absolute paths, private source bodies, or hidden CI artifacts.
@@ -1262,3 +1378,21 @@ its existing values, and a new namespace uses capability defaults.
 审阅优先级），部分修改保留既有目标值，新覆盖使用 capability 默认值。关闭时不
 查询、轮询或等待 CI；本地必需验证、当前提交评审、评论及权限检查仍然适用。
 GitHub `BLOCKED` 只提示另需管理员授权，不授予合并权限。
+
+## Repository experience for opted-in review Agents
+
+The existing Reward Memory experiment can deliver Git-versioned procedural
+advice in actionable review packets. Enable the registered Agent, automatic
+recall and the explicit `pull_request_review.review` surface in its existing
+configuration. See [operation, readback and disable](experiences/README.md).
+The [#5944 comparison](experiences/pr-5944-review-frame.md) is the first stored
+case. Historical verdicts are outside retrieval; packet delivery proves neither
+adoption nor utility. Base/off paths, queue selection and review authority retain
+their existing contracts; the native file reader writes no provider.
+
+已开启的 review Agent 可通过现有 Reward Memory 实验，在可执行 review packet 中
+收到 Git 版本化的过程经验。须启用已注册 Agent、自动 recall，并在原配置中明确指定
+`pull_request_review.review` surface，参见[操作、回读与关闭](experiences/README.zh-CN.md)。
+[#5944 判断对照](experiences/pr-5944-review-frame.md)是第一条案例。
+历史 verdict 不进入检索，packet 投递不证明采用或效用。关闭路径、选工和评审权限
+仍遵循现有合同；内置文件 reader 不写 provider。

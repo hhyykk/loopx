@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "frontstage-pages.yml"
@@ -18,6 +20,12 @@ def assert_contains(text: str, needle: str) -> None:
 def assert_absent(text: str, needle: str) -> None:
     if needle in text:
         raise AssertionError(f"workflow must not reference {needle!r}")
+
+
+def step_source(text: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    assert text.count(marker) == 1, name
+    return text.split(marker, 1)[1].split("\n      - ", 1)[0]
 
 
 def _extract_paths_block(text: str, event: str) -> str:
@@ -129,7 +137,6 @@ def main() -> int:
         ".codex/goals",
         ".goal-" + "harness/",
         "registry.global.json",
-        "GH_TOKEN: ${{ github.token }}",
         "enable-reward-write-api",
         "npm run dev",
         "npm run preview",
@@ -143,6 +150,30 @@ def main() -> int:
         "path: loopx/web/chat/",
     ]:
         assert_absent(text, forbidden)
+
+    # The standard token may read complete-release download metadata only.
+    # The separate stargazer reader still requires its dedicated credential.
+    workflow = yaml.safe_load(text)
+    assert workflow["permissions"]["contents"] == "read", workflow["permissions"]
+    token_steps = [step for step in workflow["jobs"]["build"]["steps"]
+                   if step.get("env", {}).get("GH_TOKEN") == "${{ github.token }}"]
+    assert len(token_steps) == 2, token_steps
+    assert {step["name"] for step in token_steps} == {
+        "Validate public-safe frontstage bundle", "Export Pages frontstage artifact",
+    }, token_steps
+    for step in token_steps:
+        assert step["env"]["LOOPX_SITE_RESOLVE_DESKTOP_RELEASE"] == "1", step
+        assert step["working-directory"] == "apps/presentation/dashboard", step
+        assert step["run"] in {
+            "npm run smoke:frontstage-share-bundle",
+            "npm run export:frontstage-share -- --base /loopx/ --out-dir ../../../output/frontstage-pages",
+        }, step
+    assert "permissions" not in workflow["jobs"]["build"], "build must not elevate token permissions"
+    stargazers = step_source(text, "Fetch complete GitHub stargazer history")
+    assert_contains(stargazers, "if: github.event_name != 'pull_request'")
+    assert_contains(stargazers, "GH_TOKEN: ${{ secrets.STAR_HISTORY_READ_TOKEN }}")
+    assert_contains(stargazers, "scripts/fetch-github-stargazers.sh")
+    assert_absent(stargazers, "GH_TOKEN: ${{ github.token }}")
 
     # Detaching a non-published product must preserve its own qualification lane.
     python_tests = (WORKFLOW.parent / "python-tests.yml").read_text(encoding="utf-8")

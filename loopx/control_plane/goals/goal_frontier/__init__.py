@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from ...agents.agent_scope import (
     agent_scope_blocking_handoff_gates,
-    agent_scope_count_advancement_items,
+    agent_scope_count_advancement_items as _count_advancement_items,
     agent_scope_item_claimed_by,
     agent_scope_item_claimed_by_agent_or_unclaimed,
 )
@@ -21,11 +22,14 @@ from ...todos.contract import (
 from ...todos.todo_semantics import (
     todo_advancement_frontier_counts,
     todo_item_is_watch_only_monitor,
+    todo_summary_open_task_counts,
 )
 from ...todos.succession_warning import (
     TODO_SUCCESSION_WARNING_REASON_CODE,
     todo_succession_gap_items,
 )
+from ...todos.user_gate import open_todo_count as _open_todo_count
+from ...todos.resume_planning import read_todo_deferred_work_counts
 from ...work_items.autonomous_replan_ack import (
     autonomous_replan_ack_matches_agent,
     autonomous_replan_ack_matches_frontier,
@@ -38,14 +42,12 @@ from ...work_items.autonomous_replan_obligation import (
     ensure_replan_novelty_policy,
     with_replan_novelty_guidance,
 )
-from ...work_items.progress_observation import build_replan_context
+from ...work_items.lifecycle_recovery import attach_receipt_replan_context
 from ..goal_vision_policy import (
     completed_todo_replan_threshold,
     goal_vision_repeats_advancement_until_closed,
 )
-from ..goal_vision_state import (
-    goal_vision_state_is_closed,
-)
+from ..goal_vision_state import goal_vision_state_is_closed
 from ..goal_vision_read_model import (
     VISION_ACCEPTANCE_GAP_TRIGGER as VISION_ACCEPTANCE_GAP_TRIGGER,
     VISION_SUCCESSOR_GAP_TRIGGER as VISION_SUCCESSOR_GAP_TRIGGER,
@@ -58,32 +60,33 @@ from . import outcome_continuity
 from .acceptance import (
     GOAL_ACCEPTANCE_HOLD_TRIGGERS,
     acceptance_gaps_from_held_goal_binding,
+    acceptance_gaps_from_outcomes,
+    project_legacy_acceptance_hold_ack,
 )
-from ...effect_runtime import effect_runtime_result
+from ...work_items.replan_semantics_codec import project_replan_semantics
+from ...work_items.replan_history_codec import project_replan_history
 from .ack_policy import (
+    attach_rejected_replan_feedback,
     autonomous_replan_ack_satisfies_obligation,
     replan_successor_transition_ack,
 )
-from .fallback_disposition import (
+from .fallback_source import (
     VISION_FRONTIER_TODO_DELTA_ACTIONS,  # noqa: F401
     FallbackDeclaration,  # noqa: F401
+    FallbackTodoSource,
     agent_scoped_selectable_advancement_todo_ids,  # noqa: F401
     declared_fallback_gap_from_agent_vision,
     parse_fallback_declarations,  # noqa: F401
 )
-from .long_todo_chain import (
-    LONG_TODO_CHAIN_TRIGGER,
-    evaluate_long_todo_chain,
-)
+from .long_todo_chain import LONG_TODO_CHAIN_TRIGGER, evaluate_long_todo_chain
 from .replan_rules import (
     GoalFrontierReplanFacts,
     GoalFrontierReplanRule,
     select_goal_frontier_replan_rule,
 )
 from .semantic_history import (
+    _latest_runs_for_goal,
     latest_agent_vision_from_runs as latest_agent_vision_from_runs,
-)
-from .semantic_history import (
     latest_agent_vision_from_status_payload,
     latest_autonomous_replan_ack_from_status_payload,
     latest_missing_vision_checkpoint_from_status_payload,
@@ -203,28 +206,6 @@ def align_autonomous_replan_guidance_with_acceptance_policy(
         "coverage_backed_no_followup",
     ]
     return aligned
-
-
-def autonomous_replan_decision_allowed(
-    *,
-    replan_obligation: dict[str, Any] | None,
-    plan_ok: bool,
-    workspace_blocked: bool,
-    automation_prompt_upgrade_required: bool,
-    agent_id: str | None = None,
-    registered_agent_ids: list[str] | None = None,
-) -> bool:
-    return bool(
-        autonomous_replan_is_required(replan_obligation)
-        and autonomous_replan_scope_decision(
-            replan_obligation,
-            agent_id=agent_id,
-            registered_agent_ids=registered_agent_ids,
-        ).get("applies")
-        and plan_ok
-        and not workspace_blocked
-        and not automation_prompt_upgrade_required
-    )
 
 
 def _normalize_replan_agent_id(value: Any) -> str | None:
@@ -548,12 +529,6 @@ def build_vision_gap_judge(
     }
 
 
-def _open_todo_count(summary: dict[str, Any] | None) -> int:
-    if not isinstance(summary, dict):
-        return 0
-    return safe_non_negative_int(summary.get("open_count"))
-
-
 def _blocking_user_open_count(summary: dict[str, Any] | None) -> int:
     if not isinstance(summary, dict):
         return 0
@@ -577,10 +552,6 @@ def _todo_item_is_actionable_open(item: dict[str, Any]) -> bool:
 
 def _todo_task_class(item: dict[str, Any]) -> str:
     return str(item.get("task_class") or "").strip()
-
-
-def _count_advancement_items(items: Any, *, claimed_by: str | None = None) -> int:
-    return agent_scope_count_advancement_items(items, claimed_by=claimed_by)
 
 
 def _summary_task_counts(summary: dict[str, Any] | None) -> dict[str, int]:
@@ -617,7 +588,14 @@ def _summary_task_counts(summary: dict[str, Any] | None) -> dict[str, int]:
         # Compatibility-only fallback for summaries produced before the typed
         # TypeScript lane owner exposed convergence_open_count.
         open_count = max(0, open_count - watch_only_count)
+    work_counts = (
+        todo_summary_open_task_counts(summary)
+        if summary.get("work_counts") is not None else None
+    )
     advancement_count = (
+        safe_non_negative_int(work_counts.get("advancement"))
+        if isinstance(work_counts, dict)
+        else
         _count_advancement_items(executable)
         if isinstance(executable, list)
         else safe_non_negative_int(summary.get("claimed_advancement_open_count"))
@@ -630,7 +608,6 @@ def _summary_task_counts(summary: dict[str, Any] | None) -> dict[str, int]:
             ]
         )
     )
-    work_counts = summary.get("work_counts")
     if isinstance(work_counts, dict):
         monitor_count = max(
             0,
@@ -678,7 +655,7 @@ def _monitor_no_change_streak_trigger(
     if not isinstance(monitor_items, list):
         return None
 
-    stalled: list[tuple[int, str, dict[str, Any]]] = []
+    eligible = []
     for item in monitor_items:
         if not isinstance(item, dict):
             continue
@@ -691,33 +668,17 @@ def _monitor_no_change_streak_trigger(
         claimed_by = agent_scope_item_claimed_by(item)
         if agent_id and claimed_by != agent_id:
             continue
-        no_change_count = safe_non_negative_int(item.get("consecutive_no_change"))
-        if no_change_count < MONITOR_NO_CHANGE_STREAK_THRESHOLD:
-            continue
-        target_key = str(
-            item.get("target_key") or item.get("todo_id") or "monitor"
-        ).strip()
-        stalled.append((no_change_count, target_key, item))
-    if not stalled:
+        eligible.append(item)
+    if not eligible:
         return None
-
-    no_change_count, target_key, monitor = min(
-        stalled,
-        key=lambda entry: (-entry[0], entry[1]),
+    # The enclosing frontier already established that no advancement is
+    # selectable. Keep its eligibility facts, but share count/expiry/winner
+    # selection and the existing public trigger with the typed replan owner.
+    return project_replan_history(
+        operation="frontier_monitor_streak", agent_id=agent_id,
+        agent_todos={"monitor_open_items": eligible},
+        streak_threshold=MONITOR_NO_CHANGE_STREAK_THRESHOLD,
     )
-    return {
-        "kind": MONITOR_NO_CHANGE_STREAK_TRIGGER,
-        "section": "agent_todo_summary.monitor_open_items",
-        "text": (
-            f"monitor {target_key} recorded {no_change_count} consecutive "
-            "unchanged polls without selectable advancement"
-        ),
-        "todo_id": monitor.get("todo_id"),
-        "monitor_target_id": target_key,
-        "run_count": no_change_count,
-        "threshold": MONITOR_NO_CHANGE_STREAK_THRESHOLD,
-        "agent_id": agent_id,
-    }
 
 
 def _frontier_advancement_counts(
@@ -743,39 +704,22 @@ def _deferred_successors(
     *,
     agent_id: str | None,
 ) -> dict[str, Any]:
-    if not isinstance(summary, dict):
-        return {
-            "ready_count": 0,
-            "blocked_count": 0,
-            "current_agent_ready_count": 0,
-            "ready_todo_ids": [],
-        }
-
+    summary = summary if isinstance(summary, dict) else {}
+    counts = read_todo_deferred_work_counts(summary)
     ready_items = [
         item
         for item in (summary.get("deferred_resume_candidates") or [])
         if isinstance(item, dict)
     ]
-    deferred_items = [
-        item for item in (summary.get("deferred_items") or []) if isinstance(item, dict)
-    ]
-    deferred_count = max(
-        safe_non_negative_int(summary.get("deferred_count")),
-        len(deferred_items),
-        len(ready_items),
-    )
-    current_agent_ready_items = [
-        item
-        for item in ready_items
-        if agent_id and agent_scope_item_claimed_by(item) == agent_id
-    ]
     ready_todo_ids = [
         todo_id for todo_id in (_compact_todo_id(item) for item in ready_items[:5]) if todo_id
     ]
     projection = {
-        "ready_count": len(ready_items),
-        "blocked_count": max(0, deferred_count - len(ready_items)),
-        "current_agent_ready_count": len(current_agent_ready_items),
+        "ready_count": counts["ready"],
+        "blocked_count": counts["blocked"],
+        "unknown_count": counts["unknown"],
+        "counts_complete": counts["complete"],
+        "current_agent_ready_count": counts["ready_by_agent"].get(agent_id, 0),
         "ready_todo_ids": ready_todo_ids,
     }
     if ready_todo_ids:
@@ -918,56 +862,11 @@ def _vision_gap_acknowledged(
     acceptance_gaps: list[dict[str, Any]],
     latest_replan_ack: dict[str, Any] | None,
 ) -> bool:
-    """Keep exact acceptance holds; delegate vision ACK freshness to TS."""
+    """Delegate exact acceptance holds and ordinary evidence freshness to TS."""
 
     if not acceptance_gaps or not isinstance(latest_replan_ack, dict):
         return False
-    # A persisted Goal Acceptance drift is an independent Todo event and also
-    # requires exact semantic checkpoints, beyond ordinary evidence freshness.
-    held_bindings = [
-        gap for gap in acceptance_gaps
-        if gap.get("kind") in GOAL_ACCEPTANCE_HOLD_TRIGGERS
-    ]
-    if held_bindings:
-        semantic_delta = latest_replan_ack.get("semantic_delta")
-        satisfying_outcomes = (
-            semantic_delta.get("satisfying_outcomes")
-            if isinstance(semantic_delta, dict)
-            and isinstance(semantic_delta.get("satisfying_outcomes"), list)
-            else []
-        )
-        recorded_checkpoints = (
-            semantic_delta.get("trigger_checkpoints")
-            if isinstance(semantic_delta, dict)
-            and isinstance(semantic_delta.get("trigger_checkpoints"), list)
-            else []
-        )
-        exact_hold_checkpoints = all(
-            any(
-                isinstance(checkpoint, dict)
-                and checkpoint.get("kind") == gap.get("kind")
-                and checkpoint.get("frontier_revision") == gap.get("frontier_revision")
-                for checkpoint in recorded_checkpoints
-            )
-            for gap in held_bindings
-        )
-        if (
-            not _replan_evidence_acknowledged(
-                held_bindings, latest_replan_ack, time_key="generated_at",
-            )
-            or not isinstance(semantic_delta, dict)
-            or latest_replan_ack.get("recorded") is not True
-            or semantic_delta.get("accepted") is not True
-            or not all(gap.get("kind") in (semantic_delta.get("trigger_kinds") or [])
-                       for gap in held_bindings)
-            or not exact_hold_checkpoints
-            or not any(
-                outcome in {"new_runnable_successor", "new_concrete_blocker"}
-                for outcome in satisfying_outcomes if isinstance(outcome, str)
-            )
-        ):
-            return False
-    return effect_runtime_result("work_item.replan_semantics.project", {
+    return project_replan_semantics({
         "operation": "vision_ack",
         "acceptance_gaps": acceptance_gaps,
         "ack": latest_replan_ack,
@@ -1002,7 +901,9 @@ def derive_goal_frontier_replan_obligation_from_summaries(
     current_transition_replan_ack: dict[str, Any] | None = None,
     acceptance_gaps: list[dict[str, Any]] | None = None,
     monitor_lane_semantically_valid: bool = True,
+    capability_obligation: dict[str, Any] | None = None,
     vision_settlement_query: bool = False,
+    _frontier_counts: dict[str, int] | None = None,
 ) -> dict[str, Any] | None:
     """Return a compact replan obligation when the goal frontier has no advancement.
 
@@ -1012,9 +913,13 @@ def derive_goal_frontier_replan_obligation_from_summaries(
     """
 
     agent_counts = _summary_task_counts(agent_todo_summary)
-    frontier_counts = _frontier_advancement_counts(
-        agent_todo_summary=agent_todo_summary,
-        agent_id=agent_id,
+    # Only the enclosing context reduction supplies this fresh, same-agent
+    # snapshot. Standalone callers still classify their current source.
+    frontier_counts = (
+        _frontier_counts if _frontier_counts is not None
+        else _frontier_advancement_counts(
+            agent_todo_summary=agent_todo_summary, agent_id=agent_id,
+        )
     )
     total_frontier_advancement = sum(frontier_counts.values())
     selectable_frontier_advancement = (
@@ -1110,6 +1015,7 @@ def derive_goal_frontier_replan_obligation_from_summaries(
             current_agent_blocker_count=safe_non_negative_int(
                 (agent_todo_summary or {}).get("current_agent_blocker_count")
             ),
+            capability_gap_pending=bool(capability_obligation and capability_obligation.get("required") is True),
             monitor_no_change_streak_triggered=(
                 monitor_no_change_trigger is not None
             ),
@@ -1129,6 +1035,8 @@ def derive_goal_frontier_replan_obligation_from_summaries(
     )
     if not replan_rule.derives_obligation:
         return None
+    if replan_rule.rule is GoalFrontierReplanRule.CAPABILITY_EVIDENCE_GAP:
+        return capability_obligation
     if replan_rule.rule is GoalFrontierReplanRule.TODO_SUCCESSION_GAP:
         settlement_items = succession_gap_items[:3]
         settlement_todo_ids = [
@@ -1203,6 +1111,16 @@ def derive_goal_frontier_replan_obligation_from_summaries(
         acceptance_held = any(
             gap.get("kind") in GOAL_ACCEPTANCE_HOLD_TRIGGERS for gap in compact_acceptance_gaps
         )
+        trigger_gaps = compact_acceptance_gaps[:3]
+        # Three independent holds may fill the detail slots. Preserve the
+        # canonical outcome owner's complete agent-set checkpoint as one more
+        # bounded trigger, so the same ACK can cover both sources without
+        # dropping a held Todo or acknowledging an unseen outcome revision.
+        outcome_gap = next((gap for gap in compact_acceptance_gaps
+            if gap.get("kind") == "goal_outcome_uncovered"
+            and gap.get("agent_id") == agent_id), None)
+        if outcome_gap is not None and outcome_gap not in trigger_gaps:
+            trigger_gaps.append(outcome_gap)
         rearmed_after_obligation_id = _acknowledged_replan_obligation_id(
             latest_replan_ack
         )
@@ -1231,6 +1149,9 @@ def derive_goal_frontier_replan_obligation_from_summaries(
                             "completed_todo_ids",
                             "vision_todo_ids",
                             "frontier_revision",
+                            "outcome_id",
+                            "requirement_ids",
+                            "legacy_frontier_revision",
                             "reason_code",
                             "component_checks",
                             "resolution_hint",
@@ -1238,7 +1159,7 @@ def derive_goal_frontier_replan_obligation_from_summaries(
                         if gap.get(key) is not None
                     },
                 }
-                for gap in compact_acceptance_gaps[:3]
+                for gap in trigger_gaps
             ],
             guidance_actions=(
                 ["inspect_acceptance_binding", "select_eligible_successor", "record_evidence_gap"]
@@ -1419,12 +1340,17 @@ def build_goal_frontier_projection_from_summaries(
     acceptance_gaps: list[dict[str, Any]] | None = None,
     vision_wait_state: dict[str, Any] | None = None,
     fallback_gaps: list[dict[str, Any]] | None = None,
+    _frontier_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     user_counts = _summary_task_counts(user_todo_summary)
     agent_counts = _summary_task_counts(agent_todo_summary)
-    frontier_counts = _frontier_advancement_counts(
-        agent_todo_summary=agent_todo_summary,
-        agent_id=agent_id,
+    # Only the enclosing context reduction supplies this fresh, same-agent
+    # snapshot. Standalone callers still classify their current source.
+    frontier_counts = (
+        _frontier_counts if _frontier_counts is not None
+        else _frontier_advancement_counts(
+            agent_todo_summary=agent_todo_summary, agent_id=agent_id,
+        )
     )
     selectable_frontier_advancement = (
         frontier_counts["current_agent_claimed_advancement_count"]
@@ -1467,6 +1393,11 @@ def build_goal_frontier_projection_from_summaries(
         agent_todo_summary=agent_todo_summary,
         projection=projection,
     )
+    work_counts = (agent_todo_summary or {}).get("work_counts")
+    projection["normalized_progress"].update({
+        "agent_counts_complete": isinstance(work_counts, dict) and work_counts.get("complete") is True,
+        "agent_unclassified_open_count": work_counts.get("hidden") if isinstance(work_counts, dict) else None,
+    })
     if terminal_state:
         projection["source_completeness"] = source_completeness
         projection["terminal_state"] = terminal_state
@@ -1485,10 +1416,14 @@ def build_goal_frontier_projection_context_from_status(
     work_lane_contract: dict[str, Any] | None,
     neutral_replan_ack_classifications: set[str],
     agent_todo_source_items: list[dict[str, Any]] | None = None,
+    fallback_todo_source_items: FallbackTodoSource = None,
+    available_capabilities: Any = None,
     registered_agent_ids: list[str] | None = None,
     goal_status: str | None = None,
     agent_profile: dict[str, Any] | None = None,
     receipt_bound_replan_obligation_id: str | None = None,
+    receipt_bound_guard_recorded_at: str | None = None,
+    replan_explore_reader: Callable[[str, str | None], Mapping[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Build the quota-facing goal-frontier read model.
 
@@ -1579,6 +1514,7 @@ def build_goal_frontier_projection_context_from_status(
                 ),
             )
         )
+        + acceptance_gaps_from_outcomes(agent_todo_summary, agent_id=agent_id)
         + acceptance_gaps_from_held_goal_binding(
             agent_todo_summary, agent_todo_source_items, agent_id=agent_id,
         )
@@ -1629,6 +1565,12 @@ def build_goal_frontier_projection_context_from_status(
                 latest_agent_vision,
                 agent_todo_summary=agent_todo_summary,
                 agent_id=agent_id,
+                agent_todo_source_items=fallback_todo_source_items,
+                rollout_events=_latest_runs_for_goal(
+                    status_payload,
+                    goal_id=goal_id,
+                ),
+                available_capabilities=available_capabilities,
             ),
         )
         if isinstance(gap, dict)
@@ -1638,12 +1580,20 @@ def build_goal_frontier_projection_context_from_status(
         project_asset,
         agent_id=agent_id,
     )
-    effective_replan_ack = latest_agent_replan_ack or projected_replan_ack
+    effective_replan_ack = project_legacy_acceptance_hold_ack(
+        latest_agent_replan_ack or projected_replan_ack,
+        acceptance_gaps=source_acceptance_gaps, goal_id=goal_id, agent_id=agent_id,
+        runtime_root=status_payload.get("runtime_root"),
+    )
+    stride_strategy = ((project_asset or {}).get("execution_profile") or {}).get(
+        "stride_strategy", "off"
+    )
     replan_transition_ack = replan_successor_transition_ack(
         agent_todo_summary,
         agent_id=agent_id,
         replan_obligation=replan_obligation,
         agent_todo_items=agent_todo_source_items,
+        stride_strategy=stride_strategy,
     )
     # Keep the validated history-obligation transition distinct from any
     # successor frontier obligation derived below. Exact Turn settlement may
@@ -1658,6 +1608,7 @@ def build_goal_frontier_projection_context_from_status(
             replan_obligation=replan_obligation,
             acceptance_gaps=source_acceptance_gaps,
             todo_succession_gap_open=todo_succession_gap_open,
+            stride_strategy=stride_strategy,
         )
         and autonomous_replan_ack_matches_frontier(
             obligation_ack,
@@ -1679,16 +1630,23 @@ def build_goal_frontier_projection_context_from_status(
         agent_todo_source_items=agent_todo_source_items,
         latest_replan_ack=effective_replan_ack,
         current_transition_replan_ack=replan_transition_ack,
+        _frontier_counts=frontier_counts,
         acceptance_gaps=acceptance_gaps,
         monitor_lane_semantically_valid=not goal_vision_state_is_closed(
             (latest_agent_vision or {}).get("state")
         ),
+        capability_obligation=(status_payload.get("bounded_research_frontier") or {}).get("obligation"),
     )
-    frontier_transition_ack = replan_successor_transition_ack(
+    capability_transitions = (status_payload.get("bounded_research_frontier") or {}).get("settlement_transitions") or []
+    frontier_transition_ack = next((candidate.get("ack") for candidate in capability_transitions
+        if candidate.get("obligation", {}).get("obligation_id") == (frontier_replan_obligation or {}).get("obligation_id")), None) if (
+        frontier_replan_obligation or {}
+    ).get("capability_guard") else replan_successor_transition_ack(
         agent_todo_summary,
         agent_id=agent_id,
         replan_obligation=frontier_replan_obligation,
         agent_todo_items=agent_todo_source_items,
+        stride_strategy=stride_strategy,
     )
     frontier_obligation_ack = frontier_transition_ack or effective_replan_ack
     frontier_transition_candidate = {"obligation": frontier_replan_obligation, "ack": frontier_transition_ack}
@@ -1698,14 +1656,33 @@ def build_goal_frontier_projection_context_from_status(
             work_lane_contract=work_lane_contract, agent_id=agent_id,
             existing_replan_obligation=None, agent_todo_source_items=agent_todo_source_items,
             latest_replan_ack=effective_replan_ack, acceptance_gaps=acceptance_gaps,
-            vision_settlement_query=True,
+            vision_settlement_query=True, _frontier_counts=frontier_counts,
         )
         if (source or {}).get("obligation_id") == receipt_bound_replan_obligation_id:
             source_ack = replan_successor_transition_ack(
                 agent_todo_summary, agent_id=agent_id, replan_obligation=source,
                 agent_todo_items=agent_todo_source_items,
+                stride_strategy=stride_strategy,
             )
             frontier_transition_candidate = {"obligation": source, "ack": source_ack}
+
+    lifecycle_candidate = None
+    if receipt_bound_replan_obligation_id and receipt_bound_guard_recorded_at:
+        from ...work_items.lifecycle_recovery import receipt_bound_lifecycle_candidate
+        lifecycle_candidate = receipt_bound_lifecycle_candidate(
+            selected_obligation_id=receipt_bound_replan_obligation_id,
+            guard_recorded_at=receipt_bound_guard_recorded_at, agent_id=agent_id,
+            items=agent_todo_source_items or [],
+            derive=lambda summary: derive_goal_frontier_replan_obligation_from_summaries(
+                user_todo_summary=None, agent_todo_summary=summary,
+                work_lane_contract=work_lane_contract, agent_id=agent_id,
+                existing_replan_obligation=None, agent_todo_source_items=agent_todo_source_items,
+                # Reconstruct the admitted closed-row source, not the current
+                # frontier: independent agent work or user gates may have arrived
+                # after admission. This candidate still requires the original
+                # obligation digest; live gates retain authority over new work.
+            ),
+        )
 
     if (
         frontier_replan_obligation
@@ -1714,6 +1691,7 @@ def build_goal_frontier_projection_context_from_status(
             replan_obligation=frontier_replan_obligation,
             acceptance_gaps=source_acceptance_gaps,
             todo_succession_gap_open=todo_succession_gap_open,
+            stride_strategy=stride_strategy,
         )
         and autonomous_replan_ack_matches_frontier(
             frontier_obligation_ack,
@@ -1732,30 +1710,15 @@ def build_goal_frontier_projection_context_from_status(
             registered_agent_ids=registered_agent_ids,
         )
 
-    if replan_obligation and latest_replan_ack_feedback:
-        replan_obligation = dict(replan_obligation)
-        replan_obligation["replan_ack_feedback"] = latest_replan_ack_feedback
-        claims = latest_replan_ack_feedback.get("rejected_claims") or []
-        first_claim = next(
-            (item for item in claims if isinstance(item, dict)),
-            None,
-        )
-        if first_claim:
-            replan_obligation["recommended_action"] = (
-                "previous replan ACK was rejected: "
-                f"{first_claim.get('kind')}: {first_claim.get('reason')}; "
-                + str(replan_obligation.get("recommended_action") or "replan again")
-            )
+    replan_obligation = attach_rejected_replan_feedback(replan_obligation, latest_replan_ack_feedback)
 
-    if replan_obligation:
-        replan_obligation = dict(replan_obligation)
-        replan_obligation["replan_context"] = build_replan_context(
-            replan_obligation,
-            goal_id=goal_id,
-            agent_id=agent_id,
-            newest_first_runs=(), source_status=status_payload,
-            goal_acceptance_contract=(agent_todo_summary or {}).get("goal_acceptance_contract"),
-        )
+    replan_obligation = attach_receipt_replan_context(
+        replan_obligation, lifecycle_candidate, goal_id=goal_id, agent_id=agent_id,
+        source_status=status_payload, stride_strategy=stride_strategy,
+        explore_reader=replan_explore_reader, todo_items=agent_todo_source_items,
+        goal_acceptance_contract=(agent_todo_summary or {}).get("goal_acceptance_contract"),
+        receipt_bound_replan_obligation_id=receipt_bound_replan_obligation_id,
+    )
 
     goal_frontier_projection = build_goal_frontier_projection_from_summaries(
         goal_id=goal_id,
@@ -1767,6 +1730,7 @@ def build_goal_frontier_projection_context_from_status(
         acceptance_gaps=acceptance_gaps,
         vision_wait_state=vision_wait_state,
         fallback_gaps=declared_fallback_gaps,
+        _frontier_counts=frontier_counts,
     )
     if latest_replan_ack_feedback:
         goal_frontier_projection["replan_ack_feedback"] = (
@@ -1775,6 +1739,7 @@ def build_goal_frontier_projection_context_from_status(
     return {
         "schema_version": "goal_frontier_projection_context_v0",
         "replan_obligation": replan_obligation,
+        "stride_strategy": stride_strategy,
         "replan_scope": replan_scope,
         "goal_frontier_projection": goal_frontier_projection,
         "acceptance_gaps": acceptance_gaps,
@@ -1783,7 +1748,12 @@ def build_goal_frontier_projection_context_from_status(
         "projected_replan_ack": projected_replan_ack,
         "replan_transition_ack": replan_transition_ack,
         "run_replan_transition_ack": run_replan_transition_ack,
-        "replan_transition_candidates": [run_transition_candidate, frontier_transition_candidate],
+        "replan_transition_candidates": [
+            run_transition_candidate,
+            frontier_transition_candidate,
+            *capability_transitions,
+            *([lifecycle_candidate] if lifecycle_candidate else []),
+        ],
     }
 
 

@@ -11,9 +11,14 @@ from typing import Any
 # them solely to fit a historical character ceiling.
 INTERFACE_BUDGET_CHARS = {
     "full": 12_000,
-    "compact": 6_500,
-    "brief": 4_300,
-    "thin": 3_000,
+    # Matched scoped prompt: 7,286 -> 7,809 including Reward Memory.
+    # Default outcome intake/review preserves earlier continuation clauses.
+    "compact": 7_200,
+    "brief": 4_800,
+    # Matched public CLI fixture: 3,306 -> 3,829 normalized body chars.
+    # The same supported 320-char scope reaches 4,118, leaving 82 chars
+    # above the complete outcome, authority, continuation and settlement rules.
+    "thin": 4_200,
     "visible_goal": 4_000,
 }
 NATIVE_GOAL_HOST_MAX_CHARS = INTERFACE_BUDGET_CHARS["visible_goal"]

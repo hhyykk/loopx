@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { outputDir } from "./fixture.mjs";
 import { openWorkspacePage } from "./scenario-context.mjs";
+import { reconcileGoalAttention } from "../../loopx/control_plane/presentation/goal_attention.ts";
 
 // Execution is shown only from session-owner facts; open Todos, quota eligibility and bound host threads stay "queued".
-function taskSession(goalId, sessionId, activeTurnId, lastActivityAt, host = null) {
+function taskSession(goalId, sessionId, activeTurnId, lastActivityAt, host = null, mode = host ? "attached_host" : "managed_runtime") {
   return {
-    ...(host ? { session_mode: "attached_host", host_surface: host } : { session_mode: "managed" }),
+    session_mode: mode,
+    ...(host ? { host_surface: host } : {}),
     session_id: sessionId, goal_id: goalId, agent_id: "codex", adapter_kind: "codex",
     channel_id: `task.${sessionId}`, status: activeTurnId ? "busy" : "ready", active_turn_id: activeTurnId,
     last_error_code: null, created_at: lastActivityAt, updated_at: lastActivityAt, last_activity_at: lastActivityAt, resumable: true,
@@ -57,6 +59,22 @@ async function lane(page, key) {
     text: await section.innerText(),
     title: await section.locator("header span").innerText(),
   };
+}
+
+/** Whether the leading `prefix` of a row's status line is fully visible at the sidebar width. */
+async function leadVisible(row, prefix) {
+  return row.locator("small").evaluate((element, lead) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node && !node.textContent.includes(lead)) node = walker.nextNode();
+    if (!node) return false;
+    const start = node.textContent.indexOf(lead);
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, start + lead.length);
+    const clip = element.getBoundingClientRect();
+    return range.getBoundingClientRect().right <= clip.right + 0.5;
+  }, prefix);
 }
 
 /** Brief tiles that escape their container, so a new bucket cannot break the row. */
@@ -141,10 +159,10 @@ export const goalActivityScenario = {
       );
       await page.screenshot({ path: resolve(outputDir, "goal-activity-sidebar.png"), animations: "disabled" });
       await running.locator(".personal-goal-link").click();
-      await page.locator(".personal-channel-activity", { hasText: "执行中" }).waitFor();
+      await page.getByTestId("goal-vitals").locator(".goal-vital-value", { hasText: "执行中" }).first().waitFor();
       await page.screenshot({ path: resolve(outputDir, "goal-activity-running-goal.png"), animations: "disabled" });
       await queued.locator(".personal-goal-link").click();
-      await page.locator(".personal-channel-activity", { hasText: "已安排" }).waitFor();
+      await page.getByTestId("goal-vitals").locator(".goal-vital-value", { hasText: "已安排" }).first().waitFor();
       await page.setViewportSize({ width: 390, height: 844 });
       await page.screenshot({ path: resolve(outputDir, "goal-activity-mobile.png"), animations: "disabled" });
       coverageEntries.push(...await live.close());
@@ -222,6 +240,47 @@ export const goalActivityScenario = {
       }
     }
 
+    // Pair the packaged presentation with the same typed reconciliation rule
+    // exercised through real File/SQLite status reads in the integration suite.
+    const repair = await openWorkspacePage(browser, url, {
+      collectCoverage,
+      beforeGoto: (api) => {
+        api.transformStatus = (payload) => {
+          const failed = payload.attention_queue.items.find(item => item.goal_id === "product-release");
+          const failure = {goal_id: "product-release", status: "runtime_error", severity: "action",
+            waiting_on: "codex", source: "latest_run", recommended_action: "Retry the failed worker"};
+          if (failed) Object.assign(failed, failure);
+          else payload.attention_queue.items.push(failure);
+          const current = payload.attention_queue.items.find(item => item.goal_id === "progress-projection");
+          if (current) {
+            const rebuilt = reconcileGoalAttention({
+              item: {...current, source: "latest_run", recommended_action: "Obsolete routing"},
+              active_state_item: {...current, source: "active_state", status: "active_state_agent_todo", waiting_on: "codex"},
+              warning: {requires_refresh_state: true},
+              historical_run: {delivery_outcome: "outcome_progress"},
+            });
+            Object.assign(current, rebuilt.item);
+            delete current.stale_latest_run_warning;
+          }
+          return payload;
+        };
+      },
+    });
+    try {
+      const { page } = repair;
+      const failed = await goalRow(page, "Product Release");
+      await failed.locator("small", {hasText: "需修复"}).waitFor();
+      assert.equal(await page.getByTestId("personal-home-lane-running")
+        .locator(".personal-home-goal-card").filter({hasText: "Product Release"}).count(), 0,
+      "A repair request without observed execution never counts as running");
+      assert.match((await lane(page, "scheduled")).text, /Product Release/);
+      assert.doesNotMatch(await (await goalRow(page, "Progress Projection")).innerText(), /需修复|refresh-state/,
+        "A rebuilt projection asks the user for no technical repair");
+      await page.screenshot({path: resolve(outputDir, "goal-activity-auto-repair.png"), animations: "disabled"});
+    } finally {
+      coverageEntries.push(...await repair.close());
+    }
+
     // The same rule must hold for the English copy: the title, count and rows
     // are asserted independently so a localized regression cannot hide behind
     // the Chinese scenario.
@@ -256,6 +315,54 @@ export const goalActivityScenario = {
     } catch (error) {
       await english.page.screenshot({ path: resolve(outputDir, "goal-activity-english-failed.png") });
       await english.close();
+      throw error;
+    }
+
+    // A turn whose session mode is missing or outside the backend's closed set
+    // is not managed execution and not a host claim: it is named as unknown,
+    // never live, and the brief does not claim that nothing is running.
+    const unrecognized = await openWorkspacePage(browser, url, {
+      collectCoverage,
+      beforeGoto: (_api, page) => {
+        const recent = new Date(Date.now() - 2 * 60_000).toISOString();
+        page.__loopxRuntime.sessions.set("activity-unknown-mode", taskSession("progress-projection", "activity-unknown-mode", "turn-unknown-mode", recent, "codex-app", "cloud_runtime"));
+        const { session_mode: _omitted, ...missingMode } = taskSession("research-monitor", "activity-missing-mode", "turn-missing-mode", recent);
+        page.__loopxRuntime.sessions.set("activity-missing-mode", missingMode);
+      },
+    });
+    try {
+      const { page } = unrecognized;
+      for (const title of ["Progress Projection", "Research Monitor"]) {
+        const row = await goalRow(page, title);
+        await row.locator("small", { hasText: "执行方式未知" }).waitFor({ timeout: 15_000 });
+        assert.match(await row.locator("small").innerText(), /^执行方式未知 · 回合未结束/, `${title}: an unrecognized mode is named, not read as managed`);
+        assert.doesNotMatch(await row.locator("small").innerText(), /执行中|宿主已领取|Codex App 宿主/, `${title}: neither managed execution nor a host claim`);
+        assert.ok(await leadVisible(row, "执行方式未知"), `${title}: the unknown mode survives sidebar truncation`);
+      }
+      assert.equal(await page.locator(".personal-goal-list .personal-goal-mark.is-live").count(), 0, "An unrecognized mode is never live");
+      const runningTile = await briefTile(page, "running");
+      assert.equal(runningTile.count, 0, "An unrecognized mode never counts as running");
+      assert.match(runningTile.text, /没有可确认的执行 · 2 个 Goal 执行方式未知/, "The empty running tile discloses the open turns");
+      assert.equal(await page.getByTestId("personal-brief-claimed").count(), 0, "An unrecognized mode never counts as a host claim");
+      assert.equal(await page.getByTestId("personal-home-lane-running").count(), 0, "An unrecognized mode never enters the running lane");
+      await page.screenshot({ path: resolve(outputDir, "goal-activity-mode-unrecognized.png"), animations: "disabled" });
+      await page.evaluate(() => localStorage.setItem("loopx-pw-locale", "en"));
+      await page.reload({ waitUntil: "networkidle" });
+      const englishRow = await goalRow(page, "Progress Projection");
+      await englishRow.locator("small", { hasText: "Mode unknown" }).waitFor({ timeout: 15_000 });
+      assert.match(await englishRow.locator("small").innerText(), /^Mode unknown · turn open/);
+      assert.ok(await leadVisible(englishRow, "Mode unknown"), "The English unknown mode survives sidebar truncation");
+      assert.match(await page.getByTestId("personal-brief-running").innerText(), /No verified run · 2 Goal\(s\) with unknown execution mode/);
+      await page.screenshot({ path: resolve(outputDir, "goal-activity-mode-unrecognized-english.png"), animations: "disabled" });
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await briefTileOverflow(page), 0, "The disclosed empty state fits the 390px mobile width");
+      await page.locator(".personal-mobile-menu").click();
+      assert.ok(await leadVisible(await goalRow(page, "Progress Projection"), "Mode unknown"), "The unknown mode survives truncation in the mobile navigation");
+      await page.screenshot({ path: resolve(outputDir, "goal-activity-mode-unrecognized-mobile.png"), animations: "disabled" });
+      coverageEntries.push(...await unrecognized.close());
+    } catch (error) {
+      await unrecognized.page.screenshot({ path: resolve(outputDir, "goal-activity-mode-unrecognized-failed.png") });
+      await unrecognized.close();
       throw error;
     }
 

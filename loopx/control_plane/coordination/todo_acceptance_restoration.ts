@@ -19,7 +19,7 @@ export function acceptanceRestoration(
   input: CoordinationTodoUpdateInput,
 ): AcceptanceRestoration | null {
   const state = readGoalAcceptance(head, input.goal_id);
-  if (!state?.enabled || acceptanceTask(input.todo_id, todo, state).state !== "stale") return null;
+  if (!state || acceptanceTask(input.todo_id, todo, state).state !== "stale") return null;
   const unavailable = (reason: string): AcceptanceRestoration => ({kind: "unavailable", reason});
   if (todo.role !== "agent" || !input.actor_agent_id || todo.claimed_by !== input.actor_agent_id) {
     return unavailable("Only the same claimed Agent may restore this declaration; ask the owner to review and rebind the Todo");
@@ -41,7 +41,8 @@ export function acceptanceRestoration(
       input.completion_validation_revision !== undefined) {
     return unavailable("Exact restoration supports only the prior text/wait; ask the owner to review and rebind other work changes");
   }
-  const candidate = prepareUpdatedTodo(todo, input, head).next;
+  const {monitor_observation: _absentObservation, ...restorationInput} = input;
+  const candidate = prepareUpdatedTodo(todo, restorationInput, head).next;
   const binding = state.bindings.find(item => item.todo_id === input.todo_id)!;
   if (goalAcceptanceTodoDigest(candidate) !== binding.todo_semantic_digest) {
     return unavailable("The supplied text/wait does not reconstruct the exact owner-confirmed declaration; ask the owner to review and rebind this Todo");

@@ -5,6 +5,15 @@ through the TypeScript terminal transaction. File and SQLite use the same
 semantic owner; PostgreSQL exercises it through the service-owned provider.
 This does not select a default provider or promote an existing Goal.
 
+> **2.0 cutoff:** normal Todo, task-lease, handoff-mode, Monitor, team-plan,
+> bootstrap and registration writes require canonical File, SQLite or
+> PostgreSQL authority. An unmigrated Goal returns
+> `canonical_authority_required` with backup-and-migrate recovery. The later
+> "isolation" sections record the pre-cutoff migration stages; they no longer
+> describe an available Markdown write route. Projection/readback, reviewed
+> cold import, backup/history, historical receipt replay, outbox disposition,
+> exact legacy lease release and historical `fence_close` remain supported.
+
 ```sh
 loopx todo update --goal-id example --todo-id todo_observation \
   --agent-id agent-a --status done --note 'Observed outcome verified' \
@@ -14,7 +23,46 @@ loopx todo update --goal-id example --todo-id todo_observation \
 Use the same operation id and intent after a lost response. A new annotation
 uses a new id (omitting the id generates one). `--dry-run` validates and previews
 without running declared validation, writing a receipt, or delivering a display.
-Agent completion continues to require `loopx todo complete`.
+Agent completion keeps its dedicated terminal owner (`loopx todo complete` or
+the reviewed Chat action below).
+
+### Chat/App completion with original execution proof
+
+The existing `todo.update` Chat action with `operation=complete` also transports
+caller-supplied `agent_id`, `task_lease_idempotency_key` and
+`task_lease_expected_version` to the same terminal owner. Previously, Chat
+rejected these proof parameters before reaching that owner. Both proof fields
+are required together with an explicit Agent; other update operations reject
+them. Missing proof retains the existing mode-dependent refusal.
+
+In the App, open the Task's **Original execution proof** disclosure and paste the responsible
+Agent's original JSON proof containing those three fields. Use the existing
+**Mark complete** preview, inspect the intended effect, then confirm and read
+back the completed Task. A list completion refused for missing proof opens that
+same Task inspector. Editing the proof requires a fresh preview. The proof draft
+is cleared when changing Tasks and is not saved as a browser preference.
+
+The App neither inspects a lease to fabricate proof nor acquires a competing
+execution. Providing JSON does not grant ownership or waive validation.
+Where execution proof is required, the terminal owner checks current actor, claim, execution key, version, expiry,
+registry witness and provider revision. A changed or expired execution must be
+reconciled through its owning lifecycle. Retry the original reviewed proposal
+after a lost response; its receipt recovers the committed completion and display
+without releasing a new lease or repeating the completion effect. Proof-bearing
+proposal retries require a version supporting this transport; older versions do
+not supply these fields. This does not
+qualify live-model execution, other host surfaces, sustained SQLite operation or
+legacy writer retirement.
+
+App 的任务详情 **原执行证明** 折叠区接收负责 Agent 提供的原 JSON 证明，字段为
+`agent_id`、`task_lease_idempotency_key`、`task_lease_expected_version`。仍按
+**标记完成 → 检查 → 确认 → 读回** 操作；列表因缺少证明拒绝时打开同一任务详情。
+换任务会清除证明草稿，修改证明须重新预览。App 不读租约补造证明、不自动领取或
+改变归属；有效性、过期、CAS、验证与重放仍由原 TS owner 判定。失响应后重试原
+proposal，不重复完成效果。此路径不代表 live model、其他 Host、持续 SQLite
+运行或整个 legacy writer 退役已通过。
+
+Synthetic packaged examples: [desktop original-proof input](assets/todo-completion-proof/desktop.png) and [narrow English refusal](assets/todo-completion-proof/narrow-en.png). These illustrate the local transport journey, not a live Agent or native desktop qualification.
 
 ## Revising an open Todo validator
 
@@ -84,6 +132,26 @@ canonical 各自精确的历史字段清单，不接受任意子集或只增加�
 
 ## One edit, one terminal transaction
 
+The ordinary promoted update facade always reaches the existing typed decoder,
+including an empty edit. Empty or whitespace-only `--note` still means omission;
+the CLI retains its earlier missing-field check for absent/empty values.
+With no other edit, a whitespace-only note or direct empty facade edit reports
+`Todo update requires a non-empty patch` on File/SQLite
+without importing the legacy Markdown editor, committing a receipt or changing
+the record. This replaces the erroneous legacy-writer/fence diagnostic. A valid
+retry with the same operation id remains available. An unmigrated Goal rejects
+the edit with `canonical_authority_required`, including an empty edit. The
+retired source writer and capture producers are not loaded. Permanent Markdown
+display, reviewed cold import and historical recovery readers remain.
+
+普通 promoted 更新 facade 均交由既有 TS decoder，包括空修改。空白 `--note` 仍表示
+省略，不清除已有 note；CLI 对无字段和空字符串保留原参数检查。只有空白 note 或
+直接 facade 的空修改在 File/SQLite 返回明确的非空 patch 要求，不加载旧
+Markdown editor、不提交回执或修改记录。同一 operation id 仍可用于后续合法重试。
+这修正了误入旧 writer/fence 的诊断；未迁移 Goal 的空修改也返回
+`canonical_authority_required`。旧 writer 和 capture producer 已退役，不再加载；
+永久 Markdown 投影、审核冷导入和历史恢复 reader 继续保留。
+
 The update decoder, authoring planner and record materializer are shared with
 ordinary edits. The terminal owner checks the **original** Todo's completion
 authority and the edited record's update authority; clearing a claim or binding
@@ -149,9 +217,9 @@ Python 只复用 OS I/O；准入、声明、期限、源/租约见证和完成�
 An admitted `todo complete --decision-outcome approve|reject|cancel` now commits
 its exact linked Agent Todo effects in the **same** provider transaction as the
 User completion and receipt. Ordinary User actions completed through update or
-Chat use the same rule. `todos/user_completion.ts` owns this decision for both
-canonical providers and the legacy Markdown adapter; Python retains locked
-snapshot extraction and writeback, not a second scope/resume implementation.
+Chat use the same rule. `todos/user_completion.ts` owns this decision for all
+canonical providers. Python retains transport and readback adapters, not a
+second scope/resume implementation.
 
 | Decision / current target | Effect |
 | --- | --- |
@@ -170,10 +238,9 @@ User gate itself. Supersede never runs approval effects. An unrelated Todo or
 unlinked standing approval is outside this exact-target mutation.
 
 This fixes canonical completion previously leaving an approved target stranded.
-It also intentionally tightens **both** legacy and canonical behavior: partial
-approval cannot resume work with unmet requirements, and late rejection cannot
-revive terminal/deferred work. Normal completion without a linked target is
-unchanged. No provider selector or capability default changes.
+Partial approval cannot resume work with unmet requirements, and late rejection
+cannot revive terminal/deferred work. Normal canonical completion without a
+linked target is unchanged. No provider selector or capability default changes.
 
 `unblock_resume` and `decision_scope_resolution` are historical business results,
 not fresh permission. Existing receipt identities remain valid. Replaying a
@@ -206,6 +273,22 @@ edit under the existing provider CAS, not an execution grant. A foreign actor,
 an excluded/unregistered actor, an active lease holder or stale explicit lease
 proof is not exempted. No claim, lease generation or decision scope is created.
 
+Fresh acquire, renewal and transfer refuse `user_action` execution with
+`todo_not_executable`, including for its bound Agent. Retained acquire receipts
+cannot supply current execution proof. Before an administrative copy edit, a
+historical active or expired lease must be released with its exact
+owner/key/version. After release, the
+registered bound Agent may edit text, notes or evidence under the ordinary
+provider CAS without lease proof; the released record remains unchanged.
+Explicit old or partial proof still rejects. Recovery never recommends a new
+execution lease for a User action.
+
+`user_action` 不领取执行租约：新 acquire、renew、transfer 即使由绑定 Agent
+发起，也返回 `todo_not_executable`；历史 acquire 回执不能提供当前执行证明。
+行政编辑前，历史 active／expired lease 须先按原 owner／key／version 精确 release。之后，
+已注册的绑定 Agent 可不带租约 proof，按原 provider CAS 编辑文本、备注或证据，
+保留 released 历史；旧 proof 或部分 proof 仍被拒绝，恢复提示不再要求申请新租约。
+
 ```sh
 loopx todo complete --goal-id example --todo-id todo_observation \
   --role user --agent-id agent-a --decision-outcome cancel \
@@ -224,20 +307,18 @@ Compatibility: canonical `todo complete` continues to accept a `user_gate`
 without `--decision-outcome` as closure only, not approval, rejection or
 cancellation. Its required scopes, scope outcomes and blocked dependents remain
 unchanged, just as for `todo update --status done`. To record a decision and its
-linked effects, explicitly supply `approve|reject|cancel`. The legacy Markdown
-explicit-completion adapter keeps its pre-existing requirement for a decision;
-that adapter's stricter input rule is not imposed on native callers. Historical
-successful receipts remain replayable as recorded.
+linked effects, explicitly supply `approve|reject|cancel`. An unmigrated Goal
+cannot use this compatibility path; it must migrate first. Historical successful
+receipts remain replayable as recorded.
 
 The delivered cancellation entry point is CLI/managed CLI. Existing Chat
 completion continues through the shared terminal owner, and frontend/Lark
 consumers read the canonical completed status; no new cancellation button,
 configuration setting or chat-specific authority is introduced. Direct
 frontend/Lark cancellation controls are not part of this bounded slice. The
-canonical transaction is qualified on File, SQLite and real PostgreSQL. The
-legacy Markdown adapter shares outcome validation and cancellation effects,
-but its separate hard-lease terminal fence is not changed. Historical receipts
-are replayed as recorded, not reinterpreted as a new cancellation.
+canonical transaction is qualified on File, SQLite and real PostgreSQL.
+Historical receipts are replayed as recorded, not reinterpreted as a new
+cancellation or fresh write authority.
 
 已晋升且启用 `hard_lease` 的 Goal 中，精确绑定、已注册且未被排除的 Agent 可以
 关闭普通 `user_action`，无需取得执行租约。用户事项本来不能领取执行租约；这里是
@@ -294,6 +375,27 @@ new operation family; existing complete/supersede receipt identities remain vali
 
 ## Migration boundary
 
+Two unused internal Python policy queries are retired:
+`contract.resolve_todo_continuation_policy` and
+`mutation_authority.todo_lifecycle_authority_for_goal`. Neither has a production
+caller, dynamic registration or persisted operation identity. The current
+work-graph course is a teaching consumer; its examples and reading route now
+follow the active TS owners rather than the removed queries. Completion policy
+selection stays in `completion_policy.ts`; lifecycle grant admission stays in
+`todo_lifecycle_decision.ts`. The active Python source adapters retain metadata
+normalization, registry fact projection and grant validation. The continuation
+enum and persisted values remain readable. Only those two private imports stop
+working; package rollback restores them without converting state or rewriting
+receipts. This deletion changes no CLI, provider, ownership or upgrade default.
+
+退役两个没有生产调用方、动态注册或持久化操作身份的内部 Python 查询：
+`resolve_todo_continuation_policy` 与 `todo_lifecycle_authority_for_goal`。
+当前工作图课程仍是教学消费者，本批同步将示例和领读路线迁到活跃 TS owner。
+完成策略和生命周期 grant 准入继续由
+既有 TS owner 决定；仍活跃的 Python metadata、registry facts 和 grant 校验保留，
+continuation 枚举与历史值继续可读。只有这两个私有导入退出支持；回滚代码包即可恢复，
+无需转换状态或重写原回执，不改变 CLI、provider、ownership 或升级默认值。
+
 Unpromoted Goals retain their existing Python Markdown adapters. The
 shared host validation executor and failure projection replace duplicated
 transport plumbing; the TS edit decoder/materializer is no longer owned only
@@ -319,41 +421,19 @@ feedback、迁移和 team-plan 调用方复用同一 Host IO owner。旧编辑�
 三个定义，仍活跃的源编辑／读取函数保留。故障仍进入原调用方恢复契约，不切换
 provider、默认值、格式或权威策略，也不强制旧 Goal 升级。
 
-Canonical Todo creation, update, completion, supersession and archive do not
-import the Markdown line writer or source Todo capture producers during CLI
-registration. Bootstrap loads capture producers only for a source-state write;
-canonical creation and original-operation recovery do not need them. The source
-adapter loads them only when an unpromoted operation needs them. Explicit historic imports
-from `loopx.todos` still resolve to the same functions in
-`control_plane.todos.line_update`; they do not create another decision owner.
-Provider failure still rejects the canonical operation without a source write.
+Canonical Todo creation, update, completion, supersession and archive require
+File, SQLite or PostgreSQL authority. The Markdown line writer, source Todo
+capture producers and their compatibility imports are retired. Provider failure
+rejects the operation without a source write. The absence regression runs the
+real File/SQLite lifecycle and hard-lease settlement paths with those modules
+physically absent. Permanent Markdown projection, backup readers, reviewed cold
+import, historical receipt replay and bounded outbox disposition remain.
 
-The absence regression runs real File/SQLite new-Goal creation and Todo
-lifecycle commands with the line writer and four source Todo capture producer
-functions physically removed from a disposable package. Prose write guards and
-lease capture evidence remain in their owning adapter and keep their live callers.
-Original creation recovery preserves later work when the display is
-missing and device defaults change; an unavailable selected provider requires
-restoration rather than rebuilding source authority. It qualifies that caller
-boundary, not deletion of the supported Markdown writer, backup readers or
-receipt recovery. Those paths retain their own last-caller migration exits.
-The same absence check covers admitted hard-lease work through material vision
-writeback, one quota settlement and exact retry. Missing leases and provider
-outages still reject; rebuilding the display does not make it fallback authority.
-
-canonical Todo 创建、更新、完成、替代和归档不再在 CLI 注册时导入 Markdown
-行写入器或旧源 Todo capture producer；bootstrap 仅在源状态写入时加载 capture，
-canonical 创建和原操作恢复不依赖它。未迁移操作实际需要旧路径时才加载。
-`loopx.todos` 的历史显式导入仍指向
-同一实现，不新增决策 owner。provider 失效仍拒绝 canonical 写入，不回退到旧源。
-缺失模块回归在一次性包中物理移除行写入器及四个旧源 Todo capture 函数，并运行真实 File/SQLite 新 Goal 创建与
-Todo 生命周期。显示源缺失且设备默认值改变后，原创建操作恢复仍保留后续工作；所选
-provider 不可用时要求恢复，不重建旧源权威。
-同一 adapter 中仍有真实调用方的 prose 写入边界和 lease capture evidence 保留。
-相同缺失模块检查覆盖 hard-lease 工作的准入、实质 vision 写回、一次额度结算与原
-Turn 重试；缺租约和 provider 失效仍拒绝，重建显示不会使它成为回退权威。
-这验证调用方隔离；仍受支持的 Markdown writer、备份读取和原回执恢复保留各自的
-迁移与最后调用方退役条件。
+canonical Todo 创建、更新、完成、替代和归档只接受 File、SQLite 或 PostgreSQL
+authority。Markdown 行写入器、旧源 Todo capture producer 及兼容导入均已退役。
+provider 失效时明确拒绝，不回退写旧源。真实 File/SQLite 生命周期和 hard-lease
+结算会在这些模块物理缺席时运行。永久 Markdown 投影、备份读取、审核冷导入、
+历史回执重放和有限 outbox 处置继续保留。
 
 This closes the User completion-update caller within TS T1/T2 and local-default
 L2. It does not close every Monitor/event caller, executor-held effect fencing,
@@ -386,6 +466,26 @@ that must survive process termination should choose the id before dispatch.
 Legacy Markdown creation rejects this option instead of pretending to provide
 canonical idempotency.
 
+Public creation validates task class, role and User gate scope together through
+the existing typed create-authoring plan before provider dispatch. It no longer
+makes a separate class-only preflight call. The same plan returns normalized
+author and claim identities from one registry snapshot, removing repeated Python
+registration reads; the canonical transaction retains its fresh source fence.
+The standalone Markdown add codec
+retains its class check for callers outside that facade. Priority normalization
+still preserves the create request bound by historical operation receipts;
+removing a redundant check does not change replay identity or authorize a write.
+Requests with several invalid fields still fail; the reported error follows the
+complete create and input-validation order.
+
+Caller retirement must also preserve each field's original request behavior:
+creation compacts text and resolves priority/binding, preserves note bytes, and
+deduplicates capabilities in first-occurrence order. Sorting that list or using
+update-note compaction for an original create changes the receipt digest. Real
+File/SQLite CLI cases retry independently specified v1 requests after later
+canonical edits, checking the original receipt and unchanged newer data. This
+is a caller-compatibility gate, not full writer-retirement qualification.
+
 Validation content is prepared privately before create/revision dispatch. Its
 presence alone never activates a validator: the authoritative Todo selects its
 exact digest. Corrupt selected content fails closed. Legacy per-Todo sidecars
@@ -400,6 +500,18 @@ publication recovery, not cross-host distribution of private validation commands
 不会因 Todo 后来改名、完成或修订验证器而重复创建。相同编号搭配不同意图会被拒绝。
 省略编号时会自动生成并在成功或不确定超时错误中返回；需要应对进程终止的调用方
 应在发送前自行确定编号。旧 Markdown 路径不支持此参数。
+
+公开创建入口在 provider 调用之前，通过现有 TS 创建规划一并检查任务类别、角色与
+User gate 范围，移除重复的类别预检调用。独立 Markdown 添加 codec 仍为直接调用方
+保留类别检查。完整创建规划从一次注册表快照返回规范化的作者与认领身份，删除
+Python 重复注册读取；canonical 事务仍保留自己的新鲜来源检查。优先级规范化继续
+保持历史创建回执绑定的请求形态，不改变重放身份或
+写入准入。多个字段同时无效时，仍拒绝写入，错误由完整创建检查及输入检查顺序决定。
+
+退役调用方也须保留各字段的原请求行为：创建路径压缩文本、解析优先级与绑定，保留
+note 字节，按首次出现顺序对能力去重。能力排序或将更新时的 note 压缩套到历史创建
+会改变回执摘要。File/SQLite 真实 CLI 回归先提交独立指定的 v1 请求，在后续权威
+修改后重试，核对原回执与新数据保持；这是调用方兼容门，不代表完整 writer 退役。
 
 私有声明先持久保存，权威摘要再引用它；没有被权威 Todo 引用的内容不会成为验证要求。
 被选中内容损坏时仍拒绝执行。旧 sidecar 可继续读取，历史创建回执不能回滚新验证器。
@@ -421,40 +533,225 @@ The retired RPC rejects unsupported-method requests. Continuation selection,
 contradictory-intent rejection and historical terminal recovery remain covered
 through the production owner. Python normalization/cache, import-compatible
 enums, original receipt values, Markdown projection, backup readers and live
-Host IO remain. This removes neither the Markdown writer nor shadow capture,
-and changes no provider default. File/SQLite CLI completion and settlement
-recovery are the real-path checks; installation qualification also runs those
-paths from a wheel with the retired entries absent. Reverting this code restores
-the internal crossing without converting data or rewriting receipts.
+Host IO remain. The Markdown writer and shadow capture producers are retired.
+File/SQLite CLI completion and settlement recovery are the real-path checks;
+installation qualification also runs those paths from a wheel with the retired
+entries absent. Reverting this code restores the internal crossing without
+converting data or rewriting receipts.
 
 完成与 terminal update 已在现有 TS 事务中组合完成状态规则。本批只退役两个无生产
 调用方的 Python 入口及其不再使用的 RPC carrier；选择 continuation、拒绝矛盾意图
 和历史收尾恢复仍由原 TS owner 承担。Python 编解码/cache、兼容枚举、原回执、
 Markdown 投影、备份读取及活跃 Host IO 保留。真实 File/SQLite CLI 和删除旧入口后的
-wheel 路径验证完成与结算恢复；本批不删除 Markdown writer/shadow，也不改变默认
-provider。代码回滚不需要转换数据或重写回执。
+wheel 路径验证完成与结算恢复；Markdown writer 和 shadow capture producer 已
+退役。代码回滚不需要转换数据或重写回执。
 
-## Monitor source-writer isolation
+### Repairing imported completion metadata / 修复导入的完成元数据
 
-Canonical Monitor polling also loads no Markdown line writer or source Todo
-capture producer. The legacy adapter imports those functions only for a new
-unpromoted batch; reading a pre-promotion operation receipt remains available
-without them. Monitor decisions, lease proofs and original-operation replay
-continue through the existing TypeScript batch and canonical provider owners.
+An imported completed Todo may lack `completion_continuation`. Use an authorized
+Actor and its original completion identity to preview and apply the ordinary completion
+command without new note, evidence, successor, policy or validation intent.
+For a record without a stored Turn identity:
 
-The same real File/SQLite CLI oracle runs with the old functions present and
-physically absent: no-change and material-change observations, provider outage
-and restoration, replay after lease release, one event and no quota spend or
-duplicate successor. Existing interrupted Markdown batch and shadow/outbox
-recovery tests remain required. This qualifies another caller boundary, not
-removal of the supported writer, historical receipt readers or backup recovery,
-and changes no provider default or existing Goal's upgrade requirement.
+```sh
+loopx todo complete --goal-id example --todo-id todo_imported --agent-id agent-a --dry-run
+loopx todo complete --goal-id example --todo-id todo_imported --agent-id agent-a
+loopx todo list --goal-id example --todo-id todo_imported
+```
 
-canonical Monitor poll 同样不加载 Markdown 行写入器或旧源 Todo capture producer。
-旧适配器仅在未迁移 Goal 的新 batch 写入时导入这些函数；晋升前原操作回执的读取
-仍保留。决策、租约证明和原操作重放继续复用既有 TS batch 与 canonical provider。
-相同真实 File/SQLite CLI 检查覆盖旧函数存在／物理缺席两臂、无变化／实质变化、
-provider 失效后恢复、释放租约后的重放、一次 event、无额度消耗和重复 successor。
-未迁移 Markdown 的原子 batch、shadow/outbox 中断恢复仍须通过原反例。本批只完成
-该调用方隔离，不删除仍受支持的 writer、历史回执和备份恢复，不切换默认或强制
-已有 Goal 升级。
+A stored identity requires the original Turn tuple and any required execution
+proof; do not replace it with a new identity. The TypeScript owner accepts the
+ordinary transport's read-only policy facts, including an explicit `--claimed-by`
+that matches the stored claim, but applies no policy and acquires no lease during
+this repair. A different claim is rejected. It preserves identity, completion time, content,
+claim and original receipt. Preview/refusal has no effects; retrying the same
+operation preserves newer writes. Fresh edits require their own authorized
+operation after repair.
+
+导入的已完成 Todo 若缺少 `completion_continuation`，使用已授权 Actor、原完成身份和所需
+执行证明，通过普通完成命令预览并修复；不夹带新的 note、evidence、successor、
+policy 或验证意图。上例适用于未存储 Turn 身份的记录；已有身份必须提供原 tuple，
+不能替换身份。TS owner 接受普通入口携带的只读 policy 事实，包括与已存 claim 一致的
+显式 `--claimed-by`；不同 claim 会被拒绝。修复不应用 policy、
+不领取租约，并保留原 ID、完成时间、内容、claim 与回执。预览和拒绝无副作用；
+原操作重试保留后写。后续编辑仍须单独通过原授权入口。
+
+## 2.0 canonical mutation boundary
+
+Create, update, complete, supersede and archive share
+`control_plane/todos/mutation_api.py` and the existing TypeScript transaction
+owners. An unmigrated Goal receives `canonical_authority_required`; no mutation
+entrypoint loads a Markdown writer or capture producer. Shared validation,
+successor intent and historical receipt readers remain live.
+
+| Caller family | Current boundary and retained duty |
+| --- | --- |
+| CLI and App canonical Todo mutations | Existing provider-first create/update/terminal owners; missing selected authority fails without starting a Markdown writer. |
+| Unpromoted create/update/complete/supersede/archive | Reject before write and return backup-and-migrate recovery. |
+| Bootstrap, handoff, team-plan and Monitor | Require canonical authority for new writes; retain only historical receipt replay and outbox disposition. |
+| Markdown projection, reviewed source import and backup recovery | Retain qualified readers, historical bytes and Host IO without granting write authority. |
+
+The File/SQLite lifecycle and settlement oracle runs from source and installed
+packages with the retired writer, line editor and capture producers absent. It
+covers create, update, completion, supersede/archive, leased settlement, restart
+recovery and provider loss. Historical outbox tests seed persisted entries
+directly. Recovery preserves source bytes and original receipts, drains exactly
+once where disposition permits it, and rejects an unproved cursor without
+deleting pending entries.
+
+The cold-import oracle prepares and applies a reviewed source backup without
+calling a retired producer. After import, real File/SQLite operations acquire
+canonical authority and preserve later writes across original-operation replay.
+Losing the provider refuses recovery without creating a replacement.
+
+Production callers import those same owners directly: `mutation_api` for the
+five operations and archive constant, `list_readback` for complete Todo reads,
+`path_resolution` for configured source routing, and `active_state_editing` for
+supported source-display parsing. This includes CLI registration, quota/planning,
+capability consumers and Lark. The historic `loopx.todos` public surface remains
+an alias to the same function objects; no source-format support is withdrawn.
+The consumer oracle adds physical facade removal to whole-writer/four-producer
+removal in source and normal-wheel copies. It reuses the lifecycle, creation,
+lease/once-only settlement and Monitor negative/replay oracles, plus real App
+HTTP cold import, later mutations and server restart. The Lark dry-run refuses
+remote execution; Explore projection replays without duplicate events. These
+local extension checks do not qualify live Lark adoption. Restoring imports is
+a code rollback with no new schema, provider selection or receipt conversion.
+
+生产调用方直接导入相同 owner：`mutation_api` 负责五种操作及归档常量，
+`list_readback` 负责完整 Todo 读取，`path_resolution` 负责已配置的源路径，
+`active_state_editing` 负责受支持的源显示解析；覆盖 CLI 注册、quota／规划、能力
+消费者与 Lark。历史 `loopx.todos` 仍重导出相同函数对象，旧格式支持未撤销。
+消费者检查在源码及正常 wheel 中同时物理移除 facade、整个 writer 和四个 producer，
+复用生命周期、创建、租约／恰好一次结算及 Monitor 负例／重放，另验真实 App HTTP
+冷导入、后续写入与服务重启。Lark dry-run 不执行远端命令，Explore 重放不重复事件，
+这些本地扩展检查不认证 live Lark 采用。回滚只恢复代码导入，不转换 schema、provider
+选择或回执；有真实调用的旧源 IO 和历史恢复仍保留。
+
+The retained field adapter preserves blank Python resume values as omission,
+timezone normalization, explicit clears and rejection before source mutation.
+Invalid supplied conditions use the typed owner's actionable diagnostic. This
+removes a duplicate decision crossing on the compatibility entrypoint; canonical
+updates already use their whole transaction and gain no new route or authority.
+
+创建、更新、完成、替代和归档统一进入 `mutation_api.py` 与 TS 事务 owner。
+源码和安装包验收会物理移除旧 writer、行编辑器和 capture producer，再运行
+File/SQLite 生命周期、租约结算、重启及 provider 故障恢复。历史 outbox 用持久化
+样本直接构造，不调用已退役 producer。冷导入从审核备份开始，导入后只走
+canonical 写入；provider 丢失时明确拒绝，不重建空库。
+
+## 2.0 team-plan mutation boundary
+
+Canonical team-plan preview, confirmed batch commit and original-operation
+replay use the TypeScript batch transaction and canonical projection outbox.
+An unpromoted fresh request returns `canonical_authority_required`; it cannot
+load a capture producer or Markdown editor. An exact pre-cutoff receipt may be
+read back before import through the same typed identity validator, without
+creating tasks, capture evidence or execution authority. The locked source
+binding is revalidated first; a selected but unavailable provider still fails
+rather than replaying from Markdown as fallback.
+
+A missing Markdown display does not block an exact canonical receipt replay.
+After the typed owner verifies the original plan, actor and reviewed basis,
+the existing projection owner restores the current canonical Todos, including
+later work, without another provider commit. A fresh plan still requires a
+readable source; reviewing a missing display cannot authorize new assignments.
+An undecodable display also leaves the receipt readable, but projection stays
+pending without overwriting its bytes; repair the display before retrying.
+
+The real File/SQLite Chat oracle physically removes the capture adapter from
+the package before preview and confirmation. It checks provider outage without
+Markdown fallback, restoration, original replay after newer writes, stale
+reviewed intent and committed-but-undelivered projection recovery. Imported
+pre-promotion receipts remain historical readback: replay preserves newer work
+and the current provider revision. Normal wheel qualification uses the same
+oracle; the source checkout cannot substitute for its installed package.
+
+Projection IO and historical receipt readers remain necessary. Assignment still
+grants neither receiver adoption nor execution authority.
+
+canonical team-plan 的预览、确认后整批提交与原操作重放复用 TS batch 事务及
+canonical 投影 outbox。未迁移的新请求返回 `canonical_authority_required`，不能加载
+capture producer 或 Markdown editor。原 pre-cutoff 回执在导入前也可通过同一 TS
+身份校验读回，不创建 Todo、capture 或执行授权。先在原锁内核验来源绑定；已选定
+provider 不可用时仍明确拒绝，不能将 Markdown 历史读取当作 fallback。
+Markdown 展示文件缺失不阻断 canonical 原回执重放。TS owner 校验原计划、操作者及
+审阅依据后，既有投影 owner 恢复当前 canonical Todo（含后来工作），不增加 provider
+提交。新计划仍须可读的来源；对缺失展示的审阅不能授权新分派。
+展示内容不可解码时仍可读原回执，但投影保留 pending 且不覆盖原字节；修复展示后重试。
+真实 File/SQLite Chat 检查在预览及确认前物理移除该模块，验证 provider 失效无
+Markdown fallback、恢复、后续写入后的原操作重放、审核依据过期及提交后投影失败
+恢复；导入前的历史回执重放保留后来写入与当前 revision。正常 wheel 复用同一
+oracle，不能以源码检查代替安装包。投影 IO、历史 reader 继续保留，分派不授予
+receiver adoption 或执行权。
+
+## 2.0 Monitor mutation boundary
+
+Canonical Monitor polling uses the TypeScript batch planner and provider
+writeback. `legacy_monitor_poll.py` is retired. Immutable pre-promotion receipt
+codecs and replay live in `scheduler/monitor_batch_receipts.py`. There is no new
+decision owner, receipt format, provider setting or execution authority.
+
+On historical replay, ambiguous retained source outbox bytes remain inert and
+cannot grant current authority. Bounded disposition reads persisted historical
+entries; it does not reopen a Monitor business writer.
+
+Real File/SQLite CLI checks physically remove the entire Monitor writer from a
+copied source package or a normally installed wheel, together with all four
+shadow producer modules after CLI startup isolation. They cover no-change and
+material-change polling, provider outage/restoration, lease-release replay and
+recovery of an interrupted pre-promotion operation after newer canonical work.
+Recovery preserves the original successor identities, current provider revision,
+state and retained outbox bytes, with one event and no quota spend. Existing
+malformed-receipt, intent-conflict, writer-fence and historical outbox
+counterexamples remain required.
+
+Historical readers, backup/import recovery and original outbox disposition
+remain. No provider default, PostgreSQL transaction or Host lifecycle changes.
+
+canonical Monitor poll 使用 TS batch planner 和 provider writeback；
+`legacy_monitor_poll.py` 已退役。晋升前的 immutable 回执 codec／replay 归入
+`monitor_batch_receipts.py`。历史 outbox 字节保持静止，有限处置只读取持久化
+历史条目，不恢复 Monitor 业务 writer。
+
+真实 File/SQLite CLI 检查在复制源码／正常安装 wheel 中物理移除整个 Monitor
+writer，并在 CLI 启动隔离后移除四个 shadow producer module；覆盖无变化／实质
+变化、provider 失效恢复、释放租约后重放，以及旧操作
+中断后晋升、继续写入、再恢复原操作。原 successor 身份、当前 revision、state
+及原 outbox 字节保持，一次 event 且无 quota spend。冷 production provider 调用
+另证明模块仍存在时也不加载旧 writer／drain。损坏回执、意图冲突、writer fence
+和未晋升 outbox 恢复反例仍须通过。
+历史 reader、备份导入恢复及原 outbox 处置继续保留。不改变默认、
+PostgreSQL 事务或 Host 生命周期。
+
+## Frontier classification retirement
+
+Goal-frontier wait, fallback and replan readers keep their Python imports and
+legacy fact codecs. Summary-slot precedence, claimant/exclusion lanes and
+diagnostic count floors now belong to the existing TypeScript frontier owner,
+using the shared claim-scope rule. The compact internal request carries facts
+and row coordinates, not private Todo prose. An explicitly empty executable
+view wins over stale display rows; diagnostic count floors never create
+selectable work or grant execution. Decimal transport preserves Python integer
+observations beyond the JSON number precision boundary. No authority record or
+receipt changes. A Goal-context reduction shares its fresh count result with
+its replan and final projection helpers, including receipt-bound recovery.
+Standalone helpers still read their current summary; there is no cross-call
+cache or new public packet field.
+
+File/SQLite quota CLI checks use the same independent oracle before and after
+the move. The permanent Markdown narrative projection remains required by
+status; canonical storage does not retire that document IO. Old backups and
+historical original-operation recovery keep their declared readers. Code
+rollback restores the internal classifier without migrating Goal data or
+changing provider defaults.
+
+Goal frontier 的等待、fallback 与重规划调用方保留 Python import 和旧输入编码；
+summary 视图优先级、认领／排除分组及诊断计数下界交给既有 TS frontier owner，
+复用共同 claim-scope 规则。紧凑内部请求只携带事实与行坐标，不传 Todo 私有文案。
+明确为空的 executable 视图优先于旧显示行；诊断计数不会制造可执行工作或授予权限。
+十进制传输保留超出 JSON number 精度边界的 Python 整数观测值。
+同次 Goal context reduction 复用 fresh 计数给重规划及最终投影（含原回执恢复）；
+独立 helper 仍读取当前 summary，不新增跨调用缓存或公共 packet 字段。
+真实 File/SQLite quota CLI 使用迁移前后同一独立断言。永久 Markdown 叙事投影、
+旧备份及历史原操作恢复继续保留。本批不转换数据或回执，不改变 provider 默认。

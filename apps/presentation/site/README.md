@@ -46,9 +46,56 @@ Keep source-document exports, private references, and unreviewed media outside
 the public tree. Follow `docs/development/design.md` and obtain first-screen
 review before changing the Blog or its homepage entry.
 
-The header and primary homepage CTA download the latest Apple Silicon Mac App
-preview through the release's stable `LoopX.app.zip` asset name. The homepage
-states the Python 3.11+ prerequisite and links to the desktop first-launch guide.
+### Editorial responsibilities and reading routes
+
+Keep the chronological catalog, and offer question-based routes alongside it.
+The route is a reading aid, not another content store. Each article owns one
+explanation; new introductory pieces should link to that owner rather than
+repeat its full mechanisms, measurements, or history.
+
+| Reader question | Article owner | Follow-up |
+| --- | --- | --- |
+| How does agent-assisted coding become sustained development? | `semantic-software-development` — short introduction, public engineering case, and agentic-software framing | Scenarios or core architecture |
+| Which kinds of work fit? | `application-scenarios` — complex delivery, exploration, ongoing responsibilities | Handbook for use; research for measured evidence |
+| How does the semantic control plane work? | `from-one-shot-agents-to-long-horizon-control` — core architecture, effects and recovery | Kanban for collaboration objects |
+| How do agents coordinate work? | `agent-facing-kanban` — claims, leases, gates, evidence and transitions | Core architecture for system boundaries |
+| What has evaluation established? | `edgebench-feedback-and-memory` — scoped findings and counterevidence | Scenario-specific research briefs |
+| Where has reliability failed? | `five-freshness-incidents` — freshness failures and corrective contracts | Core architecture; retain unresolved limits |
+| How do improvements enter subsequent work? | `long-horizon-rsi` — bootstrapping history and self-improvement thesis | Development introduction; adoption evidence |
+
+Both editions preserve the same role, section anchors, and source boundaries.
+Related-reading links should state the next article's purpose, not just list
+titles. Historical publication dates and experimental settings stay with their
+original articles. The Developer Book owns current operating instructions;
+essays do not become a competing setup manual. A personal source document and
+its adapted Blog article remain separate editions, not automatic mirrors.
+
+Sharing sessions can combine an engineering case, the core mechanism, a
+collaboration walkthrough, and selected research or postmortem evidence. Do
+not expand the introductory essay into a second architecture reference merely
+to fit every speaking route into one document.
+
+The header and primary homepage CTA download the complete Apple Silicon Mac App
+preview from the highest complete stable `vX.Y.Z` release at build time. Pages
+opts in with `LOOPX_SITE_RESOLVE_DESKTOP_RELEASE=1`. The resolver in
+`scripts/desktop-download.ts` follows the complete-set, manifest-last
+contract owned by `scripts/desktop_release_artifacts.py`: all four desktop
+artifacts must be uploaded, nonempty and versioned in the official repository,
+and `DESKTOP-SHA256SUMS` must match their GitHub SHA-256 digests exactly. Draft,
+prerelease, plugin and mutable updater tags are excluded. An empty or incomplete
+new release retains the previous complete version; API/download failure or no
+eligible release fails the build and preserves the existing deployment.
+
+The homepage shows the selected version, states the Python 3.11+ prerequisite
+and links to the first-launch guide. A successful public desktop-artifact
+publication triggers Pages to rebuild trusted current `main`; the existing
+six-hour schedule also refreshes inventory. `GH_TOKEN` optionally authenticates
+only build-time GitHub API requests and is never sent to asset redirects or
+included in the browser bundle. No visitor API calls are needed. Ordinary local
+builds and Vite dev use the known v1.4.0 preview without network access. Use
+`LOOPX_SITE_RESOLVE_DESKTOP_RELEASE=1 npm run build` to validate live selection
+locally; removing this build-time flag restores the offline preview.
+This selection does not change the App's signed update channel or its runtime.
 The adjacent first-run CTA opens one setup dialog with an Agent path and a
 manual Shell path. The Agent option copies the localized, public-safe setup
 contract; the Shell option copies the commands shown in the terminal section.
@@ -61,6 +108,45 @@ not raw session logs. The full-screen viewer bundles only the two explicit
 `docs/assets/long-running-loop-*-trajectory.png` files. The site must not consume
 live LoopX state, local status feeds, private registries, raw logs, or write
 APIs.
+
+## Time Machine
+
+`/lab/time-machine/` is a read-only, decision-first public experience. Choose
+for an Agent, see the actual recorded outcome, then optionally inspect the
+original finding or browse each capture. The existing homepage research
+collection discovers it. English is the default; `?lang=zh` selects Chinese,
+and `?case=graph` or `?case=ad` opens another episode. Back/forward navigation
+restores the episode. Choices live only in page memory; reloading resets them.
+Both choices reveal the same historical outcome. They trigger no model,
+installation, restore, live Goal operation or simulated counterfactual.
+
+The three scenes distinguish a Portfolio local/native reversal, a scoped Graph
+finding with unproven native benefit, and an Ad screening/fresh-sample reversal.
+These are solver-authored diagnostic observations, not independent replications,
+countable benchmark results or evidence of a LoopX performance gain. The original
+status and text remain visible, including uncertainty. The record slider reads
+one original event in append order; it is not a historical-state projection.
+There are no inferred dependencies or causal links.
+
+The 76/134/105 events are byte-identical public fixtures from
+[the fixed research-history source](https://github.com/loopx-project/loopx/tree/44c7af3db271ab1991428d3ff1991ca922434eff/apps/presentation/dashboard/src/data/fixtures),
+selected against the
+[immutable public archive](https://huggingface.co/datasets/huangrt01/loopx-edgebench-research-checkpoints-20261015/tree/c858f51021dc1c1cf08263f9c04b692a5e29b40b).
+The browser verifies the capture SHA-256 before enabling a choice. A missing,
+changed or malformed capture clears the displayed records and offers retry;
+old content is never relabeled as another case. No raw native session is bundled.
+The existing Explore v0 owner defines record semantics; the local TS reader
+only checks the pinned artifact shape and renders its text. No shared vocabulary,
+capability or provider is introduced. The route loads separately from the home
+page and the static build includes the English question and archive link.
+
+Run `node --test scripts/time-machine.test.mjs` for capture integrity, negative
+cases and verbatim order checks, then `npm run build` and the ordinary SEO smoke.
+The packaged browser journey must also cover choices/results/original text,
+locale/case/history/reload, keyboard and narrow screens, plus a missing or
+changed capture and successful retry. Build at both `/` and `/loopx/` to qualify
+asset and navigation bases. Removing the route and its research entry reverts
+the experience without touching Explore state or live Agents.
 
 ## Search publication
 
@@ -89,9 +175,15 @@ referral signal without sending query strings or adding tracking identifiers to 
 conversion attribution. Search Console access and indexing are external steps;
 a successful build does not establish ranking or traffic improvement.
 
-Run `npm run smoke:seo` and `node scripts/analytics-smoke.mjs` after a local build (the browser smoke uses the dashboard Playwright dependency). The Pages workflow also runs it on
+Run `node --test scripts/desktop-download.test.mjs`, `npm run smoke:seo` and
+`node scripts/analytics-smoke.mjs` after a local build (the browser smoke uses
+the dashboard Playwright dependency). The Pages workflow also runs it on
 the complete artifact with `--with-docs`. It checks static content, route-specific
 metadata, sitemap targets and public asset paths. Preview with `npm run preview`.
+
+Run `npm run smoke:seo:bases` to build and check both the default root preview
+and `/loopx/` publication, including rejection of a guide link under the wrong
+base or a missing guide file.
 
 ## Google Analytics 4
 

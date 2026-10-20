@@ -17,6 +17,8 @@ from ..control_plane.work_items.task_lease_acquire_adapter import (
 )
 from ..file_lock import LockAcquireTimeoutError
 from ..presentation.markdown import append_operator_action_markdown
+from .action_help import install_action_help
+from .task_lease_arguments import LEASE_ACTION_FIELDS, TaskLeaseArgumentError, validate_task_lease_arguments
 
 
 PrintPayload = Callable[
@@ -36,6 +38,21 @@ def render_task_lease_markdown(payload: dict[str, object]) -> str:
         lines.append(f"- error: {payload.get('error')}")
     if payload.get("error_code"):
         lines.append(f"- error_code: `{payload.get('error_code')}`")
+    inspection = payload.get("inspection")
+    if isinstance(inspection, dict):
+        import shlex
+        lines.append(f"- inspect current state: `{shlex.join(['loopx', *inspection['cli_args']])}`")
+        lines.append(f"- {inspection['reason']}")
+    recovery = payload.get("recovery")
+    if isinstance(recovery, dict) and payload.get("error_code") == "canonical_authority_required":
+        lines.append(f"- recovery: `{recovery['action']}`")
+        lines.append(f"- backup_required: `{recovery['backup_required']}`")
+    elif isinstance(recovery, dict):
+        import shlex
+        lines.append(f"- repair: `{shlex.join(['loopx', *recovery['cli_args']])}`")
+        lines.append(f"- supply: `{', '.join(recovery['requires_flags']) or 'none'}`")
+        lines.append(f"- remove: `{', '.join(recovery['remove_flags']) or 'none'}`")
+        lines.append(f"- {recovery['reason']}")
     lease = payload.get("lease")
     if isinstance(lease, dict):
         lines.extend(
@@ -122,10 +139,9 @@ def register_task_lease_command(
             "renew, transfer, and release; optional for acquire."
         ),
     )
-
-
-def _requires_owner(args: argparse.Namespace) -> bool:
-    return args.task_lease_command in {"acquire", "renew", "transfer", "release"}
+    install_action_help(parser, command_dest="task_lease_command",
+                        action_fields=LEASE_ACTION_FIELDS,
+                        common_fields=frozenset({"goal_id", "todo_id", "subcommand_format"}))
 
 
 def handle_task_lease_command(
@@ -139,14 +155,7 @@ def handle_task_lease_command(
     if args.command != "task-lease":
         return None
     try:
-        if args.write_worktree and args.task_lease_command != "acquire":
-            raise ValueError("--write-worktree is valid only for task-lease acquire")
-        if args.transfer_claim and args.task_lease_command != "transfer":
-            raise ValueError("--transfer-claim is valid only for task-lease transfer")
-        if _requires_owner(args) and not args.owner:
-            raise ValueError("task-lease action requires --owner")
-        if _requires_owner(args) and not args.idempotency_key:
-            raise ValueError("task-lease action requires --idempotency-key")
+        validate_task_lease_arguments(args)
         runtime_root = runtime_root_from_registry(registry_path, runtime_root_arg)
         if args.task_lease_command == "acquire":
             payload = execute_native_task_lease_acquire(
@@ -162,8 +171,6 @@ def handle_task_lease_command(
                 expected_version=args.expected_version,
             )
         elif args.task_lease_command == "renew":
-            if args.write_scopes:
-                raise ValueError("task-lease renew does not accept --write-scope")
             payload = renew_task_lease(
                 registry_path=registry_path,
                 runtime_root=runtime_root,
@@ -175,10 +182,6 @@ def handle_task_lease_command(
                 expected_version=args.expected_version,
             )
         elif args.task_lease_command == "transfer":
-            if args.write_scopes:
-                raise ValueError("task-lease transfer does not accept --write-scope")
-            if not args.new_owner or not args.new_idempotency_key:
-                raise ValueError("task-lease transfer requires --new-owner and --new-idempotency-key")
             payload = transfer_task_lease(
                 registry_path=registry_path,
                 runtime_root=runtime_root,
@@ -193,10 +196,6 @@ def handle_task_lease_command(
                 expected_version=args.expected_version,
             )
         elif args.task_lease_command == "release":
-            if args.write_scopes:
-                raise ValueError("task-lease release does not accept --write-scope")
-            if args.ttl_seconds is not None:
-                raise ValueError("task-lease release does not accept --ttl-seconds")
             payload = release_task_lease(
                 runtime_root=runtime_root,
                 goal_id=args.goal_id,
@@ -207,27 +206,20 @@ def handle_task_lease_command(
                 registry_path=registry_path,
             )
         else:
-            unsupported = [
-                flag
-                for flag, value in (
-                    ("--owner", args.owner),
-                    ("--idempotency-key", args.idempotency_key),
-                    ("--new-owner", args.new_owner),
-                    ("--new-idempotency-key", args.new_idempotency_key),
-                    ("--ttl-seconds", args.ttl_seconds),
-                    ("--write-scope", args.write_scopes),
-                    ("--expected-version", args.expected_version),
-                )
-                if value
-            ]
-            if unsupported:
-                raise ValueError("task-lease inspect only accepts --goal-id and --todo-id; unsupported: " + ", ".join(unsupported))
             payload = inspect_task_lease(
                 registry_path=registry_path,
                 runtime_root=runtime_root,
                 goal_id=args.goal_id,
                 todo_id=args.todo_id,
             )
+    except TaskLeaseArgumentError as exc:
+        payload = {
+            "ok": False, "schema_version": "task_lease_v0",
+            "action": args.task_lease_command, "error": str(exc),
+            "error_code": "ValueError",
+            "recovery": exc.recovery(args, registry_path=registry_path,
+                                     runtime_root_arg=runtime_root_arg),
+        }
     except TaskLeaseError as exc:
         payload = {
             **exc.payload,
@@ -260,5 +252,16 @@ def handle_task_lease_command(
             "error": str(exc),
             "error_code": getattr(exc, "code", exc.__class__.__name__),
         }
+    if payload.get("ok") is not True:
+        # Presentation only: retain every native refusal and explicit proof.
+        # An exact read is useful for both grammar and semantic failures; it
+        # neither chooses another owner nor retries a mutation with new proof.
+        inspection_args = [f"--registry={registry_path}", "--format", "json"]
+        if runtime_root_arg is not None:
+            inspection_args.append(f"--runtime-root={runtime_root_arg}")
+        inspection_args.extend(["task-lease", "inspect", f"--goal-id={args.goal_id}", f"--todo-id={args.todo_id}"])
+        payload["inspection"] = {"cli_args": inspection_args,
+            "reason": "Read the current holder, state and version. Keep the original execution identity on retries; another holder requires an explicit handover, not borrowed proof.",
+            "execution_authority_granted": False}
     print_payload(payload, output_format(args), render_task_lease_markdown)
     return 0 if payload.get("ok") else 1

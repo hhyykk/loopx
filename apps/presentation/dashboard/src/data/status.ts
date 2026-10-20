@@ -88,6 +88,8 @@ export const todoItemSchema = z.object({
   watch_only: z.union([z.boolean(), z.string()]).optional().nullable(),
   task_domain: z.string().optional().nullable(),
   action_kind: z.string().optional().nullable(),
+  // Canonical author provenance, distinct from the Agent authorized to reply.
+  created_by: z.string().optional().nullable(),
   claimed_by: z.string().optional().nullable(),
   required_capabilities: z.array(z.string()).optional(),
   note: z.string().optional().nullable(),
@@ -115,8 +117,8 @@ export const todoItemSchema = z.object({
 export const todoGroupSchema = z.object({
   source_section: z.string().optional().nullable(),
   total_count: z.number().optional().default(0),
-  open_count: z.number().optional().default(0),
-  done_count: z.number().optional().default(0),
+  open_count: z.number().optional(),
+  done_count: z.number().optional(),
   advancement_done_count: z.number().optional(),
   items: z.array(todoItemSchema).optional().default([]),
   deferred_items: z.array(todoItemSchema).optional(),
@@ -257,8 +259,8 @@ export const goalChannelNotificationProjectionSchema = z.object({
 
 export const projectAssetTodoSummarySchema = z.object({
   source_section: z.string().optional().nullable(),
-  open: z.number().optional().default(0),
-  done: z.number().optional().default(0),
+  open: z.number().optional(),
+  done: z.number().optional(),
   total: z.number().optional().default(0),
   advancement_done_count: z.number().optional(),
   next: z.string().optional().nullable(),
@@ -537,7 +539,22 @@ export const runRecordSchema = z.object({
 });
 
 export const runGoalSchema = z.object({
+  source_access: z.object({namespace: z.string(), label: z.string(), read_only: z.literal(true)}).optional(),
+  parent_goal_id: z.string().nullable().optional().catch(null),
+  goal_objective: z.string().nullable().optional().catch(null),
+  zcode_goal_eligible_agent_ids: z.array(z.string()).optional().default([]).catch([]),
   acceptance_observation: goalAcceptanceObservationSchema.optional().nullable().catch(null),
+  host_worker_observations: z.object({
+    goal_id: z.string(),
+    read_status: z.enum(["read", "stale", "unreadable"]),
+    rows: z.array(z.object({
+      agent_id: z.string(),
+      status: z.enum(["replan_paused", "replan_outcome_unknown"]),
+      obligation_id: z.string(),
+      turn_instance_id: z.string().nullable(),
+      observed_at: z.string(),
+    })),
+  }).optional().nullable().catch({goal_id: "", read_status: "unreadable", rows: []}),
   id: z.string(),
   activation_state: z.enum(["active", "stopped"]).optional().default("active"),
   display_name: z.string().optional().nullable(),
@@ -575,6 +592,20 @@ export const runGoalSchema = z.object({
       turn_started_at: z.string().optional().nullable(),
       last_turn_ended_at: z.string().optional().nullable(),
       last_event_at: z.string().optional().nullable(),
+      // This is cadence evidence about observed host activity, not proof that
+      // a scheduled prompt was delivered or an agent started.
+      delivery_window: z.object({
+        schema_version: z.string().optional(),
+        state: z.enum(["fresh", "stale", "missing", "unknown"]).catch("unknown"),
+        reason: z.enum(["no_expectation", "no_observation", "unparseable_observation"]).optional().nullable(),
+        last_observed_at: z.string().optional().nullable(),
+        age_seconds: z.number().optional().nullable(),
+        age_hours: z.number().optional().nullable(),
+        expected_interval_minutes: z.number().optional().nullable(),
+        window_minutes: z.number().optional().nullable(),
+        tolerance: z.number().optional().nullable(),
+        source: z.string().optional().nullable(),
+      }).optional().nullable(),
     })).optional().default([]),
   }).optional().nullable().catch(null),
   index_exists: z.boolean().optional().default(false),
@@ -830,6 +861,12 @@ export const localDashboardApiSchema = z.object({
   configure_goal_dry_run_url: z.string().optional().nullable(),
   configure_goal_apply_url: z.string().optional().nullable(),
   control_plane_write_enabled: z.boolean().optional().default(false),
+  // Ephemeral, owner-prepared read sources; never execution registry entries.
+  read_only_sources: z.array(z.object({
+    id: z.string().min(1).max(96),
+    label: z.string().min(1).max(48),
+    status_url: z.string().min(1),
+  })).max(12).optional(),
 }).optional().nullable();
 
 // Core keeps the presentation status contract provider-neutral. A ready/

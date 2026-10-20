@@ -1561,6 +1561,7 @@ body[data-language="zh"] .hero h1 {
 
 .site-footer nav {
   display: flex;
+  flex-wrap: wrap;
   justify-self: end;
   gap: 22px;
 }
@@ -2109,4 +2110,5 @@ body.dialog-open {
 .resource-card { min-height: 244px; }
 .resource-card h3 { margin-top: 32px; }
 .resource-inline-link { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 24px; font-size: 14px; }
+.resource-inline-links { display: flex; flex-wrap: wrap; gap: 0 24px; }
 @media (max-width: 640px) { .resource-grid { grid-template-columns: minmax(0, 1fr); } }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import ts from "typescript";
 
@@ -13,7 +14,7 @@ import { delegationInventoryQuery } from "../../loopx/control_plane/collaboratio
 import { normalizeCollaborationBrief } from "../../loopx/control_plane/collaboration/semantic_request.ts";
 import { decodeOutboxCursor } from "../../loopx/control_plane/coordination/local_authority_shadow_outbox.ts";
 
-const PACKAGE_ROOT = new URL("../../loopx", import.meta.url).pathname;
+const PACKAGE_ROOT = fileURLToPath(new URL("../../loopx", import.meta.url));
 const OWNER_FILE = "control_plane/content_digest.ts";
 const CANONICAL_EXPORTS = ["BARE_SHA256_PATTERN", "ENVELOPED_SHA256_PATTERN"];
 const HEX_CHARS = [..."0123456789abcdef"];
@@ -90,16 +91,27 @@ const DECLARED_UNFOLDABLE: Record<string, { count: number; reason: string }> = {
 /** Every module that reads the owner, pinned so that dropping an import is loud. */
 const CANONICAL_CONSUMERS = [
   "control_plane/agents/supervisor_event_append.ts",
+  "control_plane/capabilities/change_quality_validation.ts",
+  "control_plane/capabilities/content_media.ts",
+  "control_plane/capabilities/explore_execution_observation.ts",
+  "control_plane/capabilities/explore_result_page.ts",
   "control_plane/capabilities/external_evidence.ts",
+  "control_plane/capabilities/goal_capability_organization.ts",
+  "control_plane/capabilities/trajectory_assessment.ts",
   "control_plane/collaboration/chat_mode.ts",
   "control_plane/collaboration/delegation.ts",
+  "control_plane/collaboration/delegation_result_use.ts",
   "control_plane/collaboration/goal_instance_lifecycle.ts",
+  "control_plane/collaboration/inbox_read.ts",
   "control_plane/collaboration/inbox_receipts.ts",
+  "control_plane/collaboration/request_control.ts",
   "control_plane/collaboration/result_publication.ts",
   "control_plane/collaboration/return_delivery.ts",
   "control_plane/collaboration/semantic_request.ts",
+  "control_plane/collaboration/turn_context.ts",
   "control_plane/coordination/authority_archive_read.ts",
   "control_plane/coordination/authority_source.ts",
+  "control_plane/coordination/cold_source_import.ts",
   "control_plane/coordination/legacy_writer_fence.ts",
   "control_plane/coordination/local_authority_migration.ts",
   "control_plane/coordination/local_authority_shadow.ts",
@@ -117,28 +129,45 @@ const CANONICAL_CONSUMERS = [
   "control_plane/effect_runtime_snapshot.ts",
   "control_plane/goals/acceptance_authority.ts",
   "control_plane/goals/acceptance_contract.ts",
+  "control_plane/goals/acceptance_oracle.ts",
+  "control_plane/goals/direction_authority.ts",
+  "control_plane/goals/first_party_host_runtime.ts",
+  "control_plane/goals/goal_amendment_authority.ts",
   "control_plane/goals/goal_amendment_proposal.ts",
   "control_plane/goals/operator_actions.ts",
+  "control_plane/goals/outcome_requirements.ts",
   "control_plane/goals/shared_goal_alignment.ts",
   "control_plane/goals/source_session_lifetime.ts",
   "control_plane/governed_capability.ts",
+  "control_plane/presentation/action_review_plan.ts",
+  "control_plane/presentation/goal_source_links.ts",
   "control_plane/quota/refresh_external_delivery.ts",
+  "control_plane/quota/turn_envelope.ts",
+  "control_plane/runtime/checkpoint_artifacts.ts",
+  "control_plane/runtime/checkpoint_retention.ts",
   "control_plane/runtime/execution_identity.ts",
   "control_plane/runtime/usage_statistics_cycles.ts",
   "control_plane/runtime/usage_statistics_goal_contract.ts",
   "control_plane/runtime/usage_statistics_goals.ts",
+  "control_plane/state_recovery_contract.ts",
   "control_plane/todos/completion_transaction.ts",
   "control_plane/todos/completion_validation_revision.ts",
   "control_plane/turn_driver/chat_turn_acceptance.ts",
   "control_plane/work_items/operation_agent_handoff.ts",
   "control_plane/work_items/interaction_contract.ts",
   "control_plane/work_items/pending_capability_intent.ts",
+  "control_plane/work_items/progress_review_evidence.ts",
+  "control_plane/work_items/replan_context.ts",
   "control_plane/work_items/replan_history_snapshot.ts",
+  "control_plane/work_items/replan_semantics.ts",
   "control_plane/work_items/refresh_recommendation.ts",
+  "control_plane/work_items/stride_policy.ts",
   "control_plane/work_items/task_lease_acquire.ts",
   "control_plane/work_items/task_lease_lifecycle.ts",
   "control_plane/work_items/task_lease_lifecycle_request.ts",
   "control_plane/work_items/task_lease_workspace.ts",
+  "zcode_goal_mode/cli.ts",
+  "zcode_goal_mode/runtime.ts",
 ];
 
 function packageFiles(dir: string, base = ""): string[] {

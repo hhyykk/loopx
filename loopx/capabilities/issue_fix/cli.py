@@ -18,7 +18,7 @@ from ...domain_packs.issue_fix import (
     upsert_issue_fix_feasibility_ledger_jsonl,
     upsert_issue_fix_pr_lifecycle_ledger_jsonl,
 )
-from ...todos import add_goal_todo
+from ...control_plane.todos.mutation_api import add_goal_todo
 from .acceptance_loop import (
     build_issue_fix_acceptance_fixture_packet,
     build_issue_fix_caller_repo_branch_packet,
@@ -1356,14 +1356,15 @@ def handle_issue_fix_command(
                         or todo_write.get("metadata_updated")
                         or todo_write.get("status_changed")
                     )
+                    created_todo = todo_write["todo"]
                     payload["todo_write"] = {
                         "schema_version": "issue_fix_maintainer_correction_todo_write_v0",
                         "write_performed": todo_changed,
                         "already_exists": bool(todo_write.get("already_exists")),
                         "todo_id": todo_write.get("todo_id"),
                         "role": todo_write.get("role"),
-                        "claimed_by": todo_write.get("claimed_by"),
-                        "blocks_agent": todo_write.get("blocks_agent"),
+                        "claimed_by": created_todo.get("claimed_by"),
+                        "blocks_agent": created_todo.get("blocks_agent"),
                         "path_recorded": False,
                     }
                     payload["todo_write_performed"] = todo_changed

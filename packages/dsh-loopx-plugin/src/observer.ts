@@ -73,6 +73,8 @@ const SUMMARY_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_./:-]{0,79}$/u
 const LOCAL_PATH_SURFACES = [
   /(?<![:/a-z0-9])\/(?:users|home|volumes|private|tmp|var|etc|opt|srv|mnt|root|workspace|workspaces)\/[^\s`'"<>]+/iu,
   /(?<![:/a-z0-9])[a-z]:[/\\](?:users|documents and settings)[/\\][^\s`'"<>]+/iu,
+  /(?<![\w:])path:[/\\][^\s`'"<>]+/iu,
+  /\bfile:\/+/iu,
 ] as const
 const SECRET_LIKE_SURFACES = [
   /\bbearer\s+[a-z0-9._~+/=-]{16,}/iu,
@@ -276,7 +278,12 @@ export function ledgerPath(config: ShadowObserverConfig): string {
   return join(config.ledgerDir, 'by-goal', `${digest}.ndjson`)
 }
 
-async function appendLedgerLines(config: ShadowObserverConfig, lines: readonly string[]): Promise<void> {
+/**
+ * The shipped ledger writer. Exported so the overhead bench measures this exact
+ * path (legacy-ledger refusal, directory creation, and append) instead of a
+ * bench-local copy that would drift from the production writer.
+ */
+export async function appendLedgerLines(config: ShadowObserverConfig, lines: readonly string[]): Promise<void> {
   if (lines.length === 0) return
   const legacy = join(config.ledgerDir, `${config.goalId.replaceAll(':', '_')}.ndjson`)
   if (lstatSync(legacy, { throwIfNoEntry: false })) {

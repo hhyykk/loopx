@@ -1,3 +1,6 @@
+import {NON_WORK_FIELDS, goalAcceptanceTodoDigest} from "./acceptance_work_basis.ts";
+export {goalAcceptanceTodoDigest} from "./acceptance_work_basis.ts";
+import {goalOutcomeCheckBasis, projectGoalOutcomes} from "./outcome_requirements.ts";
 /** Owner-configured acceptance basis. This is neither a permission grant nor
  * the full shared Goal intent/amendment authority. The Todo manifest is unchanged. */
 import type {JsonObject} from "../effect_program.ts";
@@ -7,19 +10,25 @@ import {indexCoordinationProjectionTodos, validateCoordinationTodoReadModel} fro
 import {COMPLETION_VALIDATION_BINDING_RECEIPT_SCHEMA,
   completionValidationRevisionHistory} from "../todos/completion_validation_revision.ts";
 import { BARE_SHA256_PATTERN } from "../content_digest.ts";
+import {parseWireExactGoalRef, readGoalAcceptanceLifecycle, sameExactGoalRef, type GoalAcceptanceLifecycle,
+  type WireExactGoalRef} from "./acceptance_lifecycle.ts";
 
-export const GOAL_ACCEPTANCE_SCHEMA = "loopx_goal_acceptance_v0";
+import {normalizeAcceptanceOracle, normalizeOracleEvidence, projectAcceptanceOracle, validateOracleResults, type AcceptanceOracle} from "./acceptance_oracle.ts";
+
+export const GOAL_ACCEPTANCE_SCHEMA = "loopx_goal_acceptance_v2";
 export interface AcceptanceCriterion extends JsonObject {
   id: string;
   description: string;
   validation_argv: string[];
   validation_timeout_seconds: number;
   validation_files: {path: string; sha256: string}[];
+  oracle?: AcceptanceOracle;
 }
 export type AcceptanceScope =
   | {kind: "all_advancement"}
   | {kind: "selected_work"; todo_ids: string[]};
 export interface AcceptanceDocument extends JsonObject {
+  outcome_id?: string;
   scope?: AcceptanceScope;
   objective: string;
   non_goals: string[];
@@ -48,12 +57,30 @@ export interface AcceptanceVerification extends JsonObject {
 }
 export interface AcceptanceState extends JsonObject {
   schema_version: typeof GOAL_ACCEPTANCE_SCHEMA;
-  enabled: boolean;
+  owner_goal_ref: WireExactGoalRef | null;
   revision: number;
   digest: string;
   document: AcceptanceDocument;
   bindings: AcceptanceBinding[];
   verification: AcceptanceVerification | null;
+}
+export type OwnedAcceptanceState = AcceptanceState & {owner_goal_ref: WireExactGoalRef};
+export type GoalAcceptanceAuthority =
+  | Readonly<{kind: "legacy"; state: AcceptanceState | null; configuration_revision: number}>
+  | Readonly<{kind: "exact"; lifecycle: GoalAcceptanceLifecycle; state: AcceptanceState | null;
+      configuration_revision: number; owner_matches: boolean}>;
+
+/** Removing checks retains the revision fence, without a feature switch or
+ * dormant command document. Immutable operation history keeps old evidence. */
+export function clearedGoalAcceptance(revision: number, goalRef: WireExactGoalRef | null): JsonObject {
+  return {schema_version: GOAL_ACCEPTANCE_SCHEMA, owner_goal_ref: goalRef, revision,
+    digest: null, document: null, bindings: [], verification: null};
+}
+
+/** Current readback has no enable flag. This boundary also reads retained
+ * pre-upgrade snapshots; consumers only ask whether actual checks exist. */
+export function configuredGoalChecks(value: JsonObject | null | undefined): JsonObject | null {
+  return value && value.enabled !== false && Array.isArray(value.criteria) ? value : null;
 }
 export type AcceptanceBindingState = "ready" | "unbound" | "stale";
 export interface AcceptanceTask extends JsonObject {
@@ -79,6 +106,7 @@ export function acceptanceValidationEffects(requirements: AcceptanceCompletionRe
     kind: "caller_validation", validation_command: null, validation_argv: criterion.validation_argv,
     validation_label: criterion.id, validation_timeout_seconds: criterion.validation_timeout_seconds,
     ...(criterion.validation_files == null ? {} : {validation_files: criterion.validation_files}),
+    ...(criterion.oracle === undefined ? {} : {oracle: criterion.oracle}),
     task_repository: todo.task_repository ?? null,
   }}));
 }
@@ -98,6 +126,14 @@ export function acceptanceText(value: unknown, label: string, limit = 4096): str
 function id(value: unknown): string {
   const result = acceptanceText(value, "acceptance identifier", 128);
   acceptanceRequire(result === value && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(result), "acceptance identifier must be a safe token");
+  return result;
+}
+function criterionId(value: unknown): string {
+  // Outcome requirements use opaque IDs. Preserve their identity through
+  // configured checks and receipts; they are never executable paths.
+  const result = acceptanceText(value, "acceptance criterion identifier", 128);
+  acceptanceRequire(result === value && /^[A-Za-z0-9][A-Za-z0-9_.:@-]*$/.test(result),
+    "acceptance criterion identifier must be an opaque token");
   return result;
 }
 function list(value: unknown, label: string, max: number, min = 0): unknown[] {
@@ -147,12 +183,12 @@ function acceptanceIncludes(scope: AcceptanceScope | undefined, todoId: string):
 
 export function normalizeGoalAcceptanceDocument(value: unknown): AcceptanceDocument {
   const raw = canonicalAuthorityObject(value, "acceptance document");
-  acceptanceKeys(raw, ["objective", "non_goals", "criteria", "bindings"], ["scope"]);
+  acceptanceKeys(raw, ["objective", "non_goals", "criteria", "bindings"], ["scope", "outcome_id"]);
   const scope = raw.scope === undefined ? undefined : normalizeAcceptanceScope(raw.scope);
   acceptanceRequire(canonicalAuthorityBytes(raw).length <= 262144, "acceptance document exceeds byte limit");
   const criteria = list(raw.criteria, "acceptance criteria", 64, 1).map(value => {
     const item = canonicalAuthorityObject(value, "acceptance criterion");
-    acceptanceKeys(item, ["id", "description", "validation_argv"], ["validation_timeout_seconds", "validation_files"]);
+    acceptanceKeys(item, ["id", "description", "validation_argv"], ["validation_timeout_seconds", "validation_files", "oracle"]);
     const argv = list(item.validation_argv, "validation argv", 128, 1).map(arg => {
       acceptanceRequire(typeof arg === "string" && arg.length > 0 && arg.length <= 8192 && !arg.includes("\0"), "validation argv contains an invalid argument");
       return arg;
@@ -160,9 +196,10 @@ export function normalizeGoalAcceptanceDocument(value: unknown): AcceptanceDocum
     acceptanceRequire(argv[0].trim().length > 0, "validation argv requires an executable");
     const timeout = item.validation_timeout_seconds ?? 5;
     acceptanceRequire(Number.isSafeInteger(timeout) && Number(timeout) >= 1 && Number(timeout) <= 25, "validation timeout must be 1..25 seconds");
-    return {id: id(item.id), description: acceptanceText(item.description, "criterion description"),
+    const criterion = {id: criterionId(item.id), description: acceptanceText(item.description, "criterion description"),
       validation_argv: argv, validation_timeout_seconds: Number(timeout),
       validation_files: validationFiles(item.validation_files === undefined ? [] : item.validation_files)};
+    return {...criterion, ...(item.oracle === undefined ? {} : {oracle: normalizeAcceptanceOracle(item.oracle, criterion)})};
   }).sort((a, b) => authorityUnicodeCompare(a.id, b.id));
   acceptanceRequire(criteria.reduce((total, item) => total + item.validation_timeout_seconds, 0) <= 25,
     "acceptance validation timeouts must total at most 25 seconds (default 5 seconds per criterion); lower the timeouts or run longer evaluations outside the completion wrapper");
@@ -170,32 +207,40 @@ export function normalizeGoalAcceptanceDocument(value: unknown): AcceptanceDocum
   const bindings = list(raw.bindings, "acceptance bindings", 4096).map(value => {
     const item = canonicalAuthorityObject(value, "acceptance binding");
     acceptanceKeys(item, ["todo_id", "criterion_ids"]);
-    const criterion_ids = unique(list(item.criterion_ids, "binding criteria", 64, 1).map(id), "binding criteria");
+    const criterion_ids = unique(list(item.criterion_ids, "binding criteria", 64, 1).map(criterionId), "binding criteria");
     acceptanceRequire(criterion_ids.every(key => criterionIds.includes(key)), "binding references an unknown criterion");
     return {todo_id: id(item.todo_id), criterion_ids};
   }).sort((a, b) => authorityUnicodeCompare(a.todo_id, b.todo_id));
   unique(bindings.map(item => item.todo_id), "bindings");
   acceptanceRequire(bindings.every(binding => acceptanceIncludes(scope, binding.todo_id)),
     "acceptance binding is outside the declared scope");
-  return {...(scope === undefined ? {} : {scope}), objective: acceptanceText(raw.objective, "acceptance objective"),
+  return {...(raw.outcome_id === undefined ? {} : {outcome_id: acceptanceText(raw.outcome_id, "outcome id", 128)}),
+    ...(scope === undefined ? {} : {scope}), objective: acceptanceText(raw.objective, "acceptance objective"),
     non_goals: list(raw.non_goals, "non-goals", 64).map(item => acceptanceText(item, "non-goal", 2048)), criteria, bindings};
 }
 
-// Exact field classification, never prose/substring relevance. Unknown future
-// domain fields remain digest inputs by default. Execution observations and
-// presentation must not revoke a confirmed work declaration.
-const NON_WORK_FIELDS = new Set([
-  "schema_version", "source_section", "index", "title", "priority", "status", "done", "archive_state",
-  "claimed_by", "created_by", "last_actor_agent_id", "updated_at", "completed_at", "completion_turn_key",
-  "completion_validation_sha256", "completion_recovery", "completion_continuation", "no_followup", "decision_outcome",
-  "completion_result", "completion_receipt_id",
-  "decision_scope_outcomes", "note", "evidence", "reason", "handoff_note", "resume_ready",
-  "resume_monitor_generation", "last_checked_at", "result_hash", "consecutive_no_change",
-  "material_change", "material_change_generation", "monitor_effect_id",
-]);
-export function goalAcceptanceTodoDigest(todo: JsonObject): string {
-  return canonicalAuthoritySha256(Object.fromEntries(Object.entries(todo).filter(([key]) => !NON_WORK_FIELDS.has(key))));
+/** Compact authoring references retained requirements instead of duplicating
+ * objective, descriptions and work. Expanded snapshots remain readable on disk. */
+export function resolveGoalAcceptanceDocument(head: JsonObject, goalId: string, value: unknown): AcceptanceDocument {
+  const raw = canonicalAuthorityObject(value, "acceptance document");
+  if (raw.outcome_id === undefined) return normalizeGoalAcceptanceDocument(raw);
+  acceptanceKeys(raw, ["outcome_id", "criteria"]);
+  const basis = goalOutcomeCheckBasis(head, goalId, raw.outcome_id);
+  const requirements = basis.requirements as {id: string; description: string}[];
+  const todoIds = basis.todo_ids as string[];
+  acceptanceRequire(todoIds.length > 0, "link outcome work before preparing executable checks");
+  const criteria = list(raw.criteria, "acceptance criteria", 64, 1).map(value => {
+    const check = canonicalAuthorityObject(value, "requirement check");
+    acceptanceKeys(check, ["id", "validation_argv"], ["validation_timeout_seconds", "validation_files", "oracle"]);
+    const requirement = requirements.find(r => r.id === check.id);
+    acceptanceRequire(requirement, "check references an unknown outcome requirement");
+    return {...check, id: requirement.id, description: requirement.description};
+  });
+  return normalizeGoalAcceptanceDocument({outcome_id: basis.outcome_id, objective: basis.objective, non_goals: [],
+    scope: {kind: "selected_work", todo_ids: todoIds}, criteria,
+    bindings: todoIds.map(todo_id => ({todo_id, criterion_ids: criteria.map(c => c.id)}))});
 }
+
 function acceptanceDigestMatches(todo: JsonObject, boundDigest: string): boolean {
   if (goalAcceptanceTodoDigest(todo) === boundDigest) return true;
   // Before completion checkpoints were classified as observations, an owner
@@ -298,14 +343,38 @@ export function goalAcceptanceWorkDigest(head: JsonObject, goalId: string, scope
     .map(todo => ({todo_id: todo.todo_id, digest: goalAcceptanceTodoDigest(todo)})));
 }
 
-/** Absent is the sole legacy/off shortcut; malformed present state fails closed. */
-export function readGoalAcceptance(head: JsonObject, goalId: string): AcceptanceState | null {
-  if (!Object.hasOwn(head, "goal_acceptance")) return null;
+/** Absent checks need no command guard; malformed present state fails closed. */
+export function readGoalAcceptanceAuthority(head: JsonObject, goalId: string): GoalAcceptanceAuthority {
+  const lifecycle = readGoalAcceptanceLifecycle(head, goalId);
+  if (!Object.hasOwn(head, "goal_acceptance")) {
+    return lifecycle === null
+      ? {kind: "legacy", state: null, configuration_revision: 0}
+      : {kind: "exact", lifecycle, state: null, configuration_revision: 0, owner_matches: false};
+  }
   acceptanceRequire(head.goal_id === goalId, "acceptance Goal identity mismatch");
   const state = canonicalAuthorityObject(head.goal_acceptance, "goal_acceptance");
-  acceptanceKeys(state, ["schema_version", "enabled", "revision", "digest", "document", "bindings", "verification"]);
-  acceptanceRequire(state.schema_version === GOAL_ACCEPTANCE_SCHEMA && typeof state.enabled === "boolean" &&
-    Number.isSafeInteger(state.revision) && Number(state.revision) > 0, "invalid acceptance state version");
+  // Normalize old storage once at this reader; all Goals share the same
+  // current runtime model. The old boolean never reaches execution logic.
+  const legacy = state.schema_version === "loopx_goal_acceptance_v0" || state.schema_version === "loopx_goal_acceptance_v1";
+  const owned = legacy ? state.schema_version === "loopx_goal_acceptance_v1" : state.owner_goal_ref !== null;
+  acceptanceKeys(state, ["schema_version", "revision", "digest", "document", "bindings", "verification",
+    ...(legacy ? ["enabled"] : []), ...(!legacy || owned ? ["owner_goal_ref"] : [])]);
+  acceptanceRequire((legacy || state.schema_version === GOAL_ACCEPTANCE_SCHEMA) &&
+    (!legacy || typeof state.enabled === "boolean") && Number.isSafeInteger(state.revision) && Number(state.revision) > 0,
+    "invalid acceptance state version");
+  acceptanceRequire((lifecycle === null) === !owned,
+    "goal acceptance state and lifecycle versions must be migrated atomically");
+  const ownerGoalRef = owned ? parseWireExactGoalRef(state.owner_goal_ref, "goal acceptance owner_goal_ref") : null;
+  if (ownerGoalRef) acceptanceRequire(ownerGoalRef.goal_id === goalId, "acceptance owner Goal identity mismatch");
+  const authority = (active: AcceptanceState | null): GoalAcceptanceAuthority => lifecycle === null
+    ? {kind: "legacy", state: active, configuration_revision: Number(state.revision)}
+    : {kind: "exact", lifecycle, state: active, configuration_revision: ownerGoalRef !== null && sameExactGoalRef(lifecycle.goal_ref, ownerGoalRef) ? Number(state.revision) : 0,
+        owner_matches: ownerGoalRef !== null && sameExactGoalRef(lifecycle.goal_ref, ownerGoalRef)};
+  if (!legacy && state.document === null) {
+    acceptanceRequire(state.digest === null && Array.isArray(state.bindings) && state.bindings.length === 0 && state.verification === null,
+      "removed checks must not retain active commands or verification");
+    return authority(null);
+  }
   const document = normalizeGoalAcceptanceDocument(state.document);
   acceptanceRequire(state.digest === canonicalAuthoritySha256(document), "acceptance contract digest mismatch");
   const bindings = list(state.bindings, "canonical bindings", 4096).map(value => {
@@ -341,8 +410,46 @@ export function readGoalAcceptance(head: JsonObject, goalId: string): Acceptance
     }
     verification = {...receipt, operation_id: operationId, todo_id: todoId,
       results: normalizeAcceptanceResults(receipt.results, expectedIds)} as AcceptanceVerification;
+    if (receipt.contract_revision === state.revision) validateOracleResults(document.criteria, verification.results);
   }
-  return {...state, document, bindings, verification} as AcceptanceState;
+  return authority(legacy && state.enabled === false ? null : {
+    schema_version: GOAL_ACCEPTANCE_SCHEMA, owner_goal_ref: ownerGoalRef,
+    revision: Number(state.revision), digest: String(state.digest), document, bindings, verification,
+  });
+}
+
+export function readGoalAcceptance(head: JsonObject, goalId: string): AcceptanceState | null {
+  const authority = readGoalAcceptanceAuthority(head, goalId);
+  if (authority.kind === "legacy") return authority.state;
+  return authority.owner_matches ? authority.state : null;
+}
+
+/** Private same-snapshot host inputs for read-only freshness observation.
+ * They contain only already pinned files and oracle refs, never commands or
+ * a new result. Public summaries keep using the acceptance projection. */
+export function goalAcceptanceOracleObservationBasis(head: JsonObject, goalId: string): JsonObject | null {
+  const authority = readGoalAcceptanceAuthority(head, goalId);
+  const state = authority.kind === "legacy" ? authority.state
+    : authority.owner_matches && authority.lifecycle.state === "active" ? authority.state : null;
+  const criteria = state?.document.criteria.filter(criterion => criterion.oracle !== undefined)
+    .map(criterion => ({id: criterion.id, validation_files: criterion.validation_files, oracle: criterion.oracle!})) ?? [];
+  return state && criteria.length ? {revision: state.revision, digest: state.digest, criteria} : null;
+}
+
+export function bindGoalAcceptanceStateOwner(
+  state: AcceptanceState,
+  ownerGoalRef: WireExactGoalRef,
+): OwnedAcceptanceState {
+  if (state.owner_goal_ref !== null) {
+    acceptanceRequire(sameExactGoalRef(state.owner_goal_ref, ownerGoalRef),
+      "goal acceptance state belongs to another Goal instance");
+    return {...state, owner_goal_ref: ownerGoalRef};
+  }
+  return {
+    ...state,
+    schema_version: GOAL_ACCEPTANCE_SCHEMA,
+    owner_goal_ref: ownerGoalRef,
+  };
 }
 
 export function acceptanceTask(todoId: string, todo: JsonObject | undefined, state: AcceptanceState): AcceptanceTask {
@@ -366,14 +473,15 @@ export function normalizeAcceptanceResults(value: unknown, expectedIds?: readonl
     // Existing caller-validation runner metadata is accepted at the host seam
     // but deliberately not persisted or projected (labels can contain context).
     acceptanceKeys(item, ["criterion_id", "passed", "exit_code"], ["schema_version", "command_label", "status", "summary",
-      "stdout_captured", "stderr_captured", "local_path_captured"]);
+      "stdout_captured", "stderr_captured", "local_path_captured", "oracle_evidence"]);
     for (const key of ["stdout_captured", "stderr_captured", "local_path_captured"]) {
       acceptanceRequire(item[key] === undefined || item[key] === false, "validation result must not capture private output or paths");
     }
     acceptanceRequire(typeof item.passed === "boolean" && (item.exit_code === null ||
       (Number.isSafeInteger(item.exit_code) && Number(item.exit_code) >= 0 && Number(item.exit_code) <= 255)), "invalid verification result");
     acceptanceRequire(item.passed === (item.exit_code === 0), "criterion pass/fail must agree with exit code zero");
-    return {criterion_id: id(item.criterion_id), passed: item.passed, exit_code: item.exit_code as number | null};
+    return {criterion_id: criterionId(item.criterion_id), passed: item.passed, exit_code: item.exit_code as number | null,
+      ...(item.oracle_evidence === undefined ? {} : {oracle_evidence: normalizeOracleEvidence(item.oracle_evidence)})};
   }).sort((a, b) => authorityUnicodeCompare(a.criterion_id, b.criterion_id));
   const ids = unique(results.map(item => item.criterion_id), "verification results");
   if (expectedIds) acceptanceRequire(canonicalAuthoritySha256(ids) === canonicalAuthoritySha256([...expectedIds].sort(authorityUnicodeCompare)),
@@ -381,9 +489,16 @@ export function normalizeAcceptanceResults(value: unknown, expectedIds?: readonl
   return results;
 }
 
-export function projectGoalAcceptance(head: JsonObject, goalId: string): JsonObject {
-  const state = readGoalAcceptance(head, goalId);
-  if (!state?.enabled) return {enabled: false};
+function projectAcceptanceChecks(head: JsonObject, goalId: string): JsonObject {
+  const authority = readGoalAcceptanceAuthority(head, goalId);
+  const exactProjection = authority.kind === "exact"
+    ? {lifecycle_state: authority.lifecycle.state, goal_ref: authority.lifecycle.goal_ref}
+    : {};
+  const state = authority.kind === "legacy" ? authority.state
+    : authority.owner_matches ? authority.state : null;
+  if (!state || authority.kind === "exact" && authority.lifecycle.state !== "active") {
+    return {...exactProjection};
+  }
   const todos = acceptanceTodos(head, goalId);
   const taskIds = new Set(state.document.scope?.kind === "selected_work" ? state.document.scope.todo_ids
     : [...todos.values()].filter(advancement).map(todo => String(todo.todo_id)));
@@ -400,11 +515,22 @@ export function projectGoalAcceptance(head: JsonObject, goalId: string): JsonObj
     else status = "accepted";
   }
   if (held.length) status = "held";
-  return {...(state.document.scope === undefined ? {} : {scope: state.document.scope}), enabled: true, revision: state.revision, digest: state.digest, objective: state.document.objective,
-    non_goals: state.document.non_goals, criteria: state.document.criteria.map(({id, description}) => ({id, description})),
+  return {...exactProjection, ...(state.document.scope === undefined ? {} : {scope: state.document.scope}),
+    ...(state.document.outcome_id === undefined ? {} : {outcome_id: state.document.outcome_id}),
+    revision: state.revision, digest: state.digest, objective: state.document.objective,
+    non_goals: state.document.non_goals, criteria: state.document.criteria.map(criterion => ({id: criterion.id, description: criterion.description,
+      ...(criterion.oracle === undefined ? {} : {oracle: projectAcceptanceOracle(criterion, receipt?.results.find(row => row.criterion_id === criterion.id), status === "stale" || status === "held")})})),
     tasks, held_todo_ids: held.map(task => task.todo_id), status,
     verification: receipt ? {operation_id: receipt.operation_id, contract_revision: receipt.contract_revision,
       contract_digest: receipt.contract_digest, todo_id: receipt.todo_id, results: receipt.results} : null};
+}
+
+/** Outcomes extend the existing acceptance read, even before checks are configured.
+ * No declaration preserves the original projection byte-for-byte. */
+export function projectGoalAcceptance(head: JsonObject, goalId: string): JsonObject {
+  const checks = projectAcceptanceChecks(head, goalId);
+  const outcomes = projectGoalOutcomes(head, goalId, checks);
+  return outcomes === null ? checks : {...checks, outcome_requirements: outcomes};
 }
 
 /** Explicit selection and confirmed bindings survive mutable work fields.
@@ -427,14 +553,19 @@ export function projectGoalAcceptanceWorkGuards(
   goalId: string,
   todoIds: readonly string[],
 ): Record<string, JsonObject> {
-  const state = readGoalAcceptance(head, goalId);
-  if (!state?.enabled) return {};
+  const authority = readGoalAcceptanceAuthority(head, goalId);
+  const state = authority.kind === "legacy" ? authority.state
+    : authority.owner_matches ? authority.state : null;
+  if (!state) return {};
   const todos = acceptanceTodos(head, goalId);
+  const retiring = authority.kind === "exact" && authority.lifecycle.state === "retiring";
   return Object.fromEntries(todoIds.flatMap(todoId => {
     const todo = todos.get(todoId);
     if (!acceptanceRequired(state, todoId, todo)) return [];
     const task = acceptanceTask(todoId, todo, state);
-    return [[todoId, {allowed: task.state === "ready", ...task,
+    return [[todoId, {allowed: !retiring && task.state === "ready", ...task,
+      ...(retiring ? {reason_code: "goal_acceptance_goal_retiring",
+        reason: "The Goal instance is retiring; acceptance cannot authorize more work."} : {}),
       revision: state.revision, digest: state.digest}]];
   }));
 }
@@ -442,8 +573,10 @@ export function projectGoalAcceptanceWorkGuards(
 /** Trusted execution adapter only. Run these commands at the inspected provider
  * revision and commit fresh results with completion in that same provider CAS. */
 export function acceptanceCompletionRequirements(head: JsonObject, goalId: string, todoId: string): AcceptanceCompletionRequirements | null {
-  const state = readGoalAcceptance(head, goalId);
-  if (!state?.enabled) return null;
+  const authority = readGoalAcceptanceAuthority(head, goalId);
+  const state = authority.kind === "legacy" ? authority.state
+    : authority.owner_matches ? authority.state : null;
+  if (!state) return null;
   const todo = acceptanceTodos(head, goalId).get(todoId);
   acceptanceRequire(todo, "acceptance completion Todo is missing");
   // Applicability follows the owner's binding, not the Todo's current shape:
@@ -451,6 +584,8 @@ export function acceptanceCompletionRequirements(head: JsonObject, goalId: strin
   // may rewrite. Its remaining job is to decide which *unbound* work must be
   // held, so it stays as the fallback for Todos the owner never bound.
   if (!acceptanceRequired(state, todoId, todo)) return null;
+  acceptanceRequire(authority.kind !== "exact" || authority.lifecycle.state === "active",
+    "goal_acceptance_goal_retiring");
   const task = acceptanceTask(todoId, todo, state);
   acceptanceRequire(task.state === "ready", task.reason_code);
   return {contract_revision: state.revision, contract_digest: state.digest, todo_id: todoId,

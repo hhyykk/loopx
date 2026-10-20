@@ -5,7 +5,7 @@ export const acceptance = {
   truncated: false, historical_progress: [], acceptance_gaps: [], guards: [], next_action: null, next_action_source: null,
 };
 export const contract = {
-  enabled: true, revision: 7, digest: "a".repeat(64), objective: "Deliver a recoverable release",
+  revision: 7, digest: "a".repeat(64), objective: "Deliver a recoverable release",
   non_goals: ["Publishing the release"], status: "held", held_todo_ids: ["todo_unbound", "todo_stale"], verification: null,
   criteria: [{ id: "recovery", description: "An independent recovery check passes." }],
   tasks: [
@@ -27,6 +27,19 @@ export function verifiedContract(status) {
       results: [{ criterion_id: "recovery", passed: status !== "failed", exit_code: status === "failed" ? 1 : 0 }],
     },
   };
+}
+export function oracleContract(state = "current") {
+  const value = structuredClone(verifiedContract("accepted"));
+  value.criteria[0].oracle = {
+    kind: "owner_pinned_oracle", source_id: "recovery-checker", source_digest: "d".repeat(64),
+    input_refs: ["expected.txt"], output_refs: ["recovery.txt"], state,
+  };
+  value.verification.results[0].oracle_evidence = {
+    source_id: "recovery-checker", source_digest: "d".repeat(64), checked_at: "2026-09-01T01:02:03Z",
+    input_versions: [{ref: "expected.txt", sha256: "e".repeat(64)}],
+    output_versions: [{ref: "recovery.txt", sha256: "f".repeat(64)}],
+  };
+  return value;
 }
 export const snapshot = {
   ok: true, goal_id: "release-demo", observed_at: "2026-09-01T00:00:00Z", acceptance,

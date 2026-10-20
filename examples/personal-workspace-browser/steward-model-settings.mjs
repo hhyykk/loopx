@@ -16,15 +16,21 @@ export const stewardModelSettingsScenario = {
     let capabilityReads = 0;
     const context = await openWorkspacePage(browser, url, {
       apiOptions: { managerChannelBinding: binding }, collectCoverage,
-      beforeGoto: async (_api, page) => page.on("request", request => {
-        if (new URL(request.url()).pathname === "/api/chat/capabilities") capabilityReads += 1;
-      }),
+      beforeGoto: async (_api, page) => {
+        await page.addInitScript(() => localStorage.setItem("loopx.personal-agent-selection.v1", JSON.stringify({ manager: "retired-endpoint" })));
+        page.on("request", request => {
+          if (new URL(request.url()).pathname === "/api/chat/capabilities") capabilityReads += 1;
+        });
+      },
     });
     const { api, page } = context;
     try {
       const modelControl = page.getByRole("button", { name: "调整管家模型与思考深度", exact: true });
       await modelControl.waitFor();
       if (!(await modelControl.innerText()).includes("xhigh")) throw new Error("Current binding effort is missing");
+      if (await page.getByRole("combobox", { name: "选择聊天 Runtime" }).count()) throw new Error("Steward exposed a second executor owner");
+      const savedAgent = await page.evaluate(() => JSON.parse(localStorage.getItem("loopx.personal-agent-selection.v1") ?? "{}").manager);
+      if (savedAgent) throw new Error("Legacy browser executor preference survived machine-owned settings");
       await page.screenshot({ path: resolve(outputDir, "steward-model-entry.png"), animations: "disabled" });
       await modelControl.focus();
       await page.keyboard.press("Enter");
@@ -33,6 +39,13 @@ export const stewardModelSettingsScenario = {
       if (await stewardTab.getAttribute("aria-current") !== "page") {
         throw new Error("Steward must be the primary settings destination");
       }
+      const scopeNote = page.locator(".personal-capability-scope-note");
+      await scopeNote.getByText("本机管家设置", { exact: true }).click();
+      const scopeText = await scopeNote.innerText();
+      for (const meaning of ["当前设备的管家", "Goal 对话和 Agent Loop 保留各自配置", "正在执行的回合沿用当前分配"]) {
+        if (!scopeText.includes(meaning)) throw new Error(`Steward settings lost their scope or adoption boundary: ${scopeText}`);
+      }
+      await scopeNote.getByText("本机管家设置", { exact: true }).click();
       const capabilityList = page.locator(".personal-capability-list");
       await capabilityList.getByRole("button", { name: "运行环境" }).waitFor();
       if (await capabilityList.getByRole("button").count() !== 2) {

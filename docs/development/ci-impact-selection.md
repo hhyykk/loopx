@@ -52,23 +52,130 @@ Frontstage Pages 只验收并发布公共网站和 projection demo，保留构�
 预算、静态宿主 prompt 和后端 Python/TS 逻辑暂不享受免跑；它们仍可能改变核心行为。
 新增一种豁免只需审阅其业务边界和保留的验收，不要求列举全部替代测试文件。
 
-## Four complete Python shards
+## Six complete Python shards
 
-Full Python qualification uses four runners with two xdist workers each:
-`--splits 4 --group N --splitting-algorithm least_duration`. It still partitions
+Full Python qualification uses six shard jobs with two xdist workers each:
+`--splits 6 --group N --splitting-algorithm least_duration`. It still partitions
 the whole collection, excluding only the separately executed Stage2c marker.
 No tests are removed. Without timing history the splitter uses equal weights;
-four-way parallelism is not a claim of perfect duration balancing.
+six shards do not establish perfect duration balancing. Each numbered shard
+shares its queue across workflow runs without replacing another current head.
 
-The aggregate requires every shard to succeed and all four coverage files to
+The existing `kernel-static-checks` lane now follows classification directly:
+the dependency lock, top-level module budget and existing Ruff scope run before
+the Chat build or any heavy matrix. Full PR, main-push and merge-queue candidates
+must pass that lane before the source bundle admits downstream work. A client-only
+exemption requires its static lane to be explicitly skipped. Scheduled and manual
+full runs may continue after a static failure to collect complete diagnostics;
+cancelled, missing or unexpectedly skipped prerequisites never grant admission.
+The downstream jobs retain explicit cancellation predicates so GitHub's implicit
+`success()` does not discard requested diagnostics after a failed ancestor.
+
+Python shards start after the admitted bundle, alongside TypeScript and browser
+qualification. The six repository-wide slots and two workers per shard remain.
+File-authority tests, mypy and CLI output budgets move to `kernel-contracts` and
+remain required by `checks`, as does the static lane. The existing `pytest` and
+`merge-gate` still reject any required failure, skip or missing coverage. This
+removes the full browser/TypeScript wait from Python's critical path, but allows
+up to six already-bounded Python jobs to overlap those lanes; a later browser
+failure may now coexist with running Python tests. It neither reserves hosted
+capacity nor proves a throughput improvement. `ci:full` selects all qualification,
+without overriding failed admission; use a manual run for complete diagnostics
+of a failing revision. Older queued workflow versions keep their own policy.
+
+既有 `kernel-static-checks` 现在直接等待分类：依赖锁、顶层模块预算和原有 Ruff
+范围在 Chat 构建及全部重型矩阵之前检查。全量 PR、main push 和 merge queue
+必须先通过此通道，源码 bundle 才准入下游；纯前端豁免要求静态通道明确 skipped。
+定时与手动全量运行可在静态 failure 后继续收集完整诊断；取消、缺失或意外 skipped
+均不放行。下游显式保留取消条件，避免 GitHub 隐含的 `success()` 因祖先失败丢弃
+本次请求的诊断。
+
+Python 分片在已准入的 bundle 完成后即可与 TypeScript／浏览器并行，仍受六个
+仓库级槽位、每片两个 worker 限制。File authority、mypy 与 CLI 输出预算移到
+`kernel-contracts`，与静态通道一起继续作为 `checks` 必过项。既有 `pytest` 和
+`merge-gate` 仍拒绝必需项失败、跳过或 coverage 缺失。这样缩短 Python 等待全套
+前端／TS 的关键路径，但最多六个已有上限的 Python job 会与这些通道重叠；稍后
+发生浏览器失败时，Python 可能已经运行。这不预留 hosted 容量，也不直接证明吞吐
+改善。`ci:full` 选择全部资格检查，不绕过准入失败；失败版本的完整诊断仍使用手动
+运行。旧版 workflow 已排队的任务保留其原有规则。
+
+The shard command explicitly loads `scripts.ci.pytest_timing`. Its controller
+streams pytest's setup/call/teardown durations to Actions logs as each report
+arrives, before final JUnit or duration summaries exist. To inspect a downloaded
+job log, run `node scripts/ci/pytest_timing.ts JOB_LOG`. The reader reports the
+selected and finished cases, observed elapsed time, measured worker-seconds,
+phase totals and longest observed cases.
+Only collected-item reports supply phase durations. Nested pytest/unittest
+subtests remain in pytest's result output; their cost is already included in
+the parent call, so they do not duplicate timing phases. Logs produced by the
+earlier observer that mixed subtest reports into ordinary phases remain rejected
+as contradictory evidence; the reader does not guess which duplicate to discard.
+The phase record identifies the full pytest node id by SHA-256 and displays the
+parent name without parameter payloads, bounded to 256 characters. Distinct
+parameter cases keep distinct hashes; huge values and hosted secret masking of
+parameter strings cannot expand or corrupt these JSON records. The existing
+verbose pytest result output remains available.
+Observation rows occupy their own lines with either quiet (`-q`) or verbose
+(`-v`) progress, including serial and xdist runs. The reader still requires
+line-framed records rather than guessing how to recover old progress-prefixed logs.
+Missing observations, malformed records or contradictory collections fail
+readback; an interrupted or incomplete run stays
+incomplete. A completed traversal with pytest exit code 1 still has test failures.
+Measured worker-seconds sum concurrent test phases and are not runner-minutes,
+queue delay, CPU time or the job's complete elapsed time. A partial log supplies
+only a lower bound; use job/step timestamps for setup and runner occupancy.
+These observations do not become a timing cache, change selection or establish
+qualification. Missing durations still use the existing equal-weight fallback.
+
+The same observer flushes failed reports as separate `LOOPX_PYTEST_FAILURE`
+JSON lines, including nested failures without counting their duration again.
+They retain the same hashed identity, phase, a known exception class and up to
+eight repository-relative source positions with literal-redacted assertion
+expressions. Messages, parameters, locals and captured IO are omitted from the
+new JSON; pytest's existing output is unchanged. Unknown classes or unavailable
+source context remain null, and an observer error may omit a diagnostic record.
+Only reports received by the controller are covered; collection failures,
+worker death before sending and unseen reports at interruption are excluded.
+These locations are diagnostic context, not complete cause attribution or
+authenticated evidence. JUnit, exit status, full collection and gates remain
+required. The timing reader ignores this separate prefix.
+
+分片在 controller 中随 pytest 的 setup/call/teardown 报告写入 Actions 日志，
+无需等待最终 JUnit 或耗时汇总。下载单个 job 日志后运行
+`node scripts/ci/pytest_timing.ts JOB_LOG`，可回读选中／完成数量、已观察耗时、
+worker 秒数、各阶段总和与最慢用例。缺失、损坏或矛盾记录拒绝回读；中断与不完整
+运行保持不完整。遍历完成且 exit code 为 1 仍代表测试失败。
+仅收集项的报告提供 phase 耗时；pytest/unittest 子测试仍由 pytest 输出结果，
+其成本已包含在父项 call 中，不重复记入 phase。旧 observer 把子测试混入普通 phase
+的日志仍作为矛盾证据拒绝，reader 不猜测应丢弃哪条重复记录。
+同一 observer 收到失败报告后立即输出 `LOOPX_PYTEST_FAILURE` 脱敏源码位置、异常类和
+断言结构；子测试单独保留失败位置，不重复计时。新增 JSON 不含消息、参数、locals 或
+捕获的 IO，原 pytest 输出不变。未知类、缺失源码或诊断异常仍是证据缺口；未送达的
+报告与收集失败不在覆盖范围，不能据此完成原因归因、证明真实性或豁免完整门禁。
+并发 phase 总和不是
+runner-minutes、排队时长或 CPU 时间；不完整记录仅给出下界，环境准备与占用须结合
+job/step 时间戳。记录不进入 timing cache、不改变测试选择、不替代门禁；没有耗时
+历史时仍按原等权规则分片。
+完整 pytest node id 用 SHA-256 标识；显示名去除参数内容并限制为 256 字符。
+不同参数仍有不同 hash；超长参数及宿主对参数字符串的脱敏不会扩大或破坏这些
+JSON 记录。原有 pytest 详细结果输出仍保留。
+无论使用 quiet（`-q`）还是 verbose（`-v`）进度，串行和 xdist 运行中的观察记录
+都独占一行。reader 仍要求完整行记录，不猜测如何修复旧的进度字符前缀日志。
+The reader accepts a line-leading BOM from concatenated GitHub log chunks before
+timestamp/ANSI framing; phase identity, ordering and completion checks remain strict.
+reader 接受 GitHub 日志分块拼接产生的行首 BOM，再读取时间戳和 ANSI 包装；
+phase 身份、顺序与完整性检查保持严格。
+
+The aggregate requires every shard to succeed and all six coverage files to
 exist before combining them. The existing full-suite coverage floor remains.
 No Python or backend TypeScript coverage artifact or Sonar run is manufactured
 when those lanes are exempt. Dashboard coverage remains scoped to the frontend.
 
-全量 Python 从 2 个分片扩大到 4 个，每片仍为 2 个 worker，不提高单机进程争抢。
-真实 pytest-split/xdist/coverage 回归覆盖分片集合互斥、并集完整、四份报告合并以及
+全量 Python 采用 6 个分片，每片仍为 2 个 worker，不提高单机进程争抢。
+各分片号在 workflow 之间共享队列，不替换其他当前 head 的待执行资格。
+真实 pytest-split/xdist/coverage 回归覆盖分片集合互斥、并集完整、六份报告合并以及
 缺失任意报告时拒绝通过。分片增加会增加安装开销与同时占用的 runner；应看实际
-critical path 和 runner-minutes，而不是宣称“4 片必然快一倍”。
+critical path 和 runner-minutes，而不是根据分片数宣称必然加速。
 
 ## Override and evidence
 
@@ -79,9 +186,34 @@ full qualification. A PR is classified from its merge base through its complete
 head, including changes from earlier commits, not just its latest commit.
 
 The `ci-impact-plan` artifact and job summary report exact revisions, change kind,
-per-job execution flags, reason and coverage scope. The merge gate requires
+per-job execution flags, reason and coverage scope. `python_shards` reads the
+static `test-shard.strategy.matrix.shard` axis from the immutable workflow at
+`checkout_sha`, currently six, rather than retaining a separate historical count.
+Unsupported or noncontiguous topology fails classification instead of publishing
+a fallback count. Docs/presentation exemptions still report zero. The number
+describes the workflow topology, not how many jobs actually ran.
+
+`python_shards` 从 `checkout_sha` 对应的不可变 workflow 读取静态分片轴，当前为六片，
+不另存历史计数；不支持或不连续的拓扑直接报错，不输出猜测值。文档／前端豁免仍为零。
+它描述 workflow 拓扑，不能证明任何分片实际执行或 JUnit／coverage 已完整。
+
+The merge gate requires
 success for required jobs and an explicit skip for exempt ones; failure,
 cancellation, missing outputs, contradictory flags or unexpected skips fail.
+
+The merge gate also writes a **Qualification evidence** summary: source head,
+workflow checkout, event base, attempt, dependency results and links to failed
+jobs and steps. It separates execution failures, aggregate failures and incomplete
+jobs without attributing a cause from status alone. The read-only job lookup uses
+the current run attempt; an unavailable API or missing evidence is reported as
+such. Advisory checks can appear in the report, but only the existing gate policy
+decides qualification. Summary errors cannot override that verdict. There is no
+inherited-main failure waiver or automatic flaky-test exemption.
+
+merge-gate 的摘要记录源码 head、实际 checkout、事件 base 与本次 attempt，
+分别列出失败作业、聚合失败和未完成作业，并链接到失败步骤所在 job。
+摘要不根据状态猜根因；API 不可用时明确标记证据缺口。它也会列出 advisory
+检查，但是否通过仍由原门禁规则决定，不因摘要失败而放行，不自动豁免历史失败。
 
 Specialized workflows already use GitHub's PR path filters: release artifacts
 follow packaged source/build inputs, desktop artifacts follow native/Desktop
@@ -124,12 +256,57 @@ to one and background shard occupancy from five runners to two; the complete
 sweep may take longer. The existing fleet-health readback still checks receipts.
 
 Python Tests also runs daily at `20:17 UTC`. Its event-scoped concurrency keeps
-that full run separate from main pushes and PRs. New PR heads and main pushes
-cancel superseded runs; scheduled, manual and merge-queue qualification is not
-cancelled by that policy. Release-artifact, desktop-artifact, signed-desktop,
+that full run separate from main pushes and PRs. New PR heads cancel their
+superseded runs. Active main qualification finishes; `queue: single` replaces
+only the pending main successor with the latest push instead of interrupting
+the running candidate or accumulating every intermediate commit. Scheduled,
+manual and merge-queue qualification is not cancelled by that policy.
+Release-artifact, desktop-artifact, signed-desktop,
 DCO and optional Ark PR checks cancel only superseded validation for the same PR.
 Signed-desktop PRs use separate groups from each other and from channel publication.
 Release publication remains serialized and is never cancelled by a PR update.
+
+Python Tests 每日 `20:17 UTC` 的完整运行与 main push、PR 保持不同并发组。
+PR 新 head 仍取消本 PR 的旧运行；正在执行的 main 资格验证会完成，`queue: single`
+仅用最新 push 替换等待中的主干后继，不中断运行中的候选，也不积压每个中间提交。
+该策略不取消定时、手动和 merge queue 的资格验证；发布仍保持原有串行规则。
+
+Trusted obsolete-PR cleanup runs in the separate **CI Maintenance** workflow on
+`pull_request_target` close/synchronize events. It never checks out PR content
+and retains the same PR/repository/head checks before cancellation. A green
+maintenance run means cleanup completed, not that Python tests passed. Its
+concurrency group is separate from current-head qualification; `Python Tests`
+still receives PR close events to cancel the old qualification lane.
+Delayed PR events can create runs after the close timestamp. Cleanup also retires
+those runs when their source repository, branch and exact head match the still
+closed PR and no open PR shares that branch. Later runs at a different head stay
+untouched, even with an association to the closed PR; reopening or source changes
+stop cancellation. This extends the earlier close-time cutoff for exact-head
+residue only. Cleanup can still wait for a runner or miss a run created after its
+snapshot; it is not a continuous admission service.
+For synchronize events, an omitted run-to-PR association may use the webhook's
+exact `before` head only when `after`, source repository and branch match the
+current PR. Other unassociated old heads remain protected; the same lifecycle
+and sibling-PR checks still run before both cancellation stages.
+
+Dashboard browser qualification retains all three shards. The unchanged unit
+coverage command runs only in shard 1, whose `lcov.info` the existing merger
+already consumes; browser coverage and acceptance receipts remain required from
+all three shards. The merger rejects missing unit coverage or incomplete browser
+acceptance. This removes two duplicate unit-coverage invocations per full or
+presentation run; it does not establish a hosted wall-time improvement.
+
+旧 PR 清理独立为 CI Maintenance，保留原有来源与 head 校验，也不执行 PR 代码。
+清理成功不再显示为一次 Python Tests 成功。Dashboard 的单元覆盖率只在第 1 片
+执行一次，三个浏览器分片与验收凭证仍全部必需；缺少单元覆盖率仍拒绝聚合。
+这减少了两次重复命令，实际等待时间与端到端耗时仍需上线后测量。
+延迟处理的 PR 事件可能在关闭后才创建运行。清理现在也覆盖与仍关闭 PR 的仓库、
+分支和 head 完全一致的残留；其他 head 的晚到运行仍保留，重开或来源变化会中止
+取消，同分支其他开放 PR 的保护不变。清理本身仍可能等待 runner，也可能遗漏其
+快照之后才创建的运行，不能代替持续的准入控制。
+同步事件若缺少运行到 PR 的关联，仅在 webhook 的 `after`、源仓库和分支与当前
+PR 一致时，允许用其确切 `before` head 识别被替换运行；其他无关联旧 head 仍保留，
+普通及强制取消前的状态和同分支 PR 检查不变。
 
 全量 smoke 改为每天一次与指定 ref 的手动运行，不再随普通主干提交启动。五个完整
 分片共享一次源码绑定的前端构建，同一时刻最多运行两个分片；全量用例仍保留，
@@ -150,6 +327,7 @@ only hosted before/after observations can establish latency or capacity gains.
 
 ```bash
 uv run --extra test python -m unittest discover -s scripts/ci -p 'test_*.py'
+node --test scripts/ci/qualification_summary.test.ts scripts/ci/merge-dashboard-coverage.test.mjs
 uv run --extra test python -m pytest tests/test_python_ci_workflow.py tests/test_sonarcloud_workflow.py tests/test_ci_resource_policy.py -q
 uv run --extra test python examples/full-public-smokes-workflow-smoke.py
 uv run --extra test python scripts/ci/review_gate.py classify --base origin/main --head HEAD --plan impact-plan.json

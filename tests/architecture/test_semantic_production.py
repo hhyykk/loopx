@@ -1,8 +1,10 @@
 """Guard the producer/owner distinction using independent finite counterexamples."""
 from __future__ import annotations
 
+import ast
 import pytest
 
+from loopx.semantics import python_production
 from loopx.semantics.production import collect_production, validate_production, quota_action_domain
 from loopx.semantics.python_production import Production
 from loopx.semantics.inventory import SourceFile
@@ -10,6 +12,47 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SITE = 'loopx/control_plane/quota/probe.py::emit'
+
+
+@pytest.mark.parametrize('text', [
+    "action = 'run'", "packet.action = 'run'", "dict(action='run')",
+    r"packet['\x61ction'] = 'run'", "𝖆ction = 'run'",
+    "packet.get('action') == 'run'",
+])
+def test_literal_scan_keeps_parsed_names_keys_and_keyword_arguments(text):
+    source = SourceFile('loopx/literal_probe.py', '.py', text)
+    assert python_production.python_literal_uses(source, 'action') == {'run'}
+
+
+def test_literal_scan_rejects_invalid_syntax_without_a_field_mention():
+    source = SourceFile('loopx/broken_probe.py', '.py', 'def broken(')
+    with pytest.raises(SyntaxError):
+        python_production.python_literal_uses(source, 'action')
+
+
+@pytest.mark.parametrize('first_text,second_text', [
+    ("action = 'run'", "action = 'wait'"),
+    ("def choose(): return 'run'\naction = choose()",
+     "def choose(): return 'wait'\naction = choose()"),
+])
+def test_shared_parse_keeps_distinct_source_text_despite_hash_collisions(first_text, second_text):
+    class CollidingText(str):
+        def __hash__(self):
+            return 0
+
+    first = SourceFile('loopx/collision_probe.py', '.py', CollidingText(first_text))
+    second = SourceFile(first.path, first.suffix, CollidingText(second_text))
+    assert python_production.python_literal_uses(first, 'action') == {'run'}
+    assert python_production.python_literal_uses(second, 'action') == {'wait'}
+
+
+def test_literal_queries_preserve_the_shared_parse_tree():
+    source = SourceFile('loopx/reused_probe.py', '.py', "action = 'run'\nother = 'wait'")
+    tree = python_production._parsed(source)
+    before = ast.dump(tree, include_attributes=True)
+    assert python_production.python_literal_uses(source, 'action') == {'run'}
+    assert python_production.python_literal_uses(source, 'other') == {'wait'}
+    assert ast.dump(tree, include_attributes=True) == before
 
 
 def test_composed_field_does_not_widen_canonical_return_or_establish_owner_liveness():
@@ -116,7 +159,7 @@ def test_declared_return_is_scanned_in_real_python_syntax():
 def test_real_return_producer_rejects_an_unregistered_result(vocabulary_name, module, original):
     import json
     from loopx.semantics.inventory import load_sources
-    v = json.loads((ROOT / 'loopx/semantics/vocabulary_v0.json').read_text())['vocabularies'][vocabulary_name]
+    v = json.loads((ROOT / 'loopx/semantics/vocabulary_v0.json').read_text(encoding='utf-8'))['vocabularies'][vocabulary_name]
     sources = load_sources(ROOT)
     replacement = 'return "unknown_action"'
     found = False
@@ -205,7 +248,8 @@ def test_real_effect_adapters_are_observed_as_unresolved_passthrough():
     import json
     from loopx.semantics.inventory import load_sources
 
-    v = json.loads((ROOT / 'loopx/semantics/vocabulary_v0.json').read_text())['vocabularies']['effective_action']
+    v = json.loads((ROOT / 'loopx/semantics/vocabulary_v0.json').read_text(encoding='utf-8'))['vocabularies']['effective_action']
+    v.pop('input_producer', None)  # Isolate static adapter evidence from the executed classifier witness.
     paths = {'loopx/control_plane/effect_program.py', 'loopx/control_plane/effect_program.ts'}
     owner = v['owners']['python'].split('::')[0]
     sources = [source for source in load_sources(ROOT) if source.path in paths | {owner}]
@@ -249,7 +293,7 @@ def test_real_reexported_turn_owner_is_attributed_through_one_hop():
     from loopx.semantics.inventory import load_sources
     # loop_controller imports LoopXTurnRoute from driver, which re-exports the
     # generated owner; the registered return producer must still resolve.
-    v = json.loads((ROOT / 'loopx/semantics/vocabulary_v0.json').read_text())['vocabularies']['turn_route']
+    v = json.loads((ROOT / 'loopx/semantics/vocabulary_v0.json').read_text(encoding='utf-8'))['vocabularies']['turn_route']
     rows = collect_production(ROOT, v, load_sources(ROOT))
     site = 'loopx/control_plane/turn_driver/loop_controller.py::_envelope_route'
     resolved = {value for r in rows if r.site == site and not r.unresolved for value in r.values}

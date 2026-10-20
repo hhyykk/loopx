@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
+from pathlib import Path
 
 from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
 from ..runtime.time import now_utc_iso
@@ -62,7 +64,6 @@ _PR_MERGED_EVENT_KINDS = {
     "pull_request_merge",
     "pull_request_merged",
 }
-_MAX_RESUME_MERGE_EVENTS = 256
 
 _RESUME_ITEM_FIELDS = (
     "todo_id",
@@ -77,6 +78,8 @@ _RESUME_ITEM_FIELDS = (
     "resume_ready",
     "resume_monitor_generation",
     "material_change_generation",
+    "next_due_at",
+    "expires_at",
 )
 
 
@@ -306,17 +309,34 @@ def _compact_resume_rollout_events(
     if not targets:
         return []
     compacted: list[dict[str, Any]] = []
-    for event in reversed(rollout_events or []):
+    # This is transport-only de-duplication. Different references remain visible
+    # to the typed evaluator; no global count may evict another dependency.
+    seen: set[str] = set()
+    for event in rollout_events or []:
         if not isinstance(event, Mapping):
             continue
         compact = _compact_merge_event(event, targets=targets)
         if compact is None:
             continue
+        identity = json.dumps({key: compact[key] for key in ("pr_ref", "code_refs", "source_refs")
+            if key in compact}, sort_keys=True)
+        if identity in seen:
+            continue
+        seen.add(identity)
         compacted.append(compact)
-        if len(compacted) >= _MAX_RESUME_MERGE_EVENTS:
-            break
-    compacted.reverse()
     return compacted
+
+
+class TodoResumeRolloutEvents(list[dict[str, Any]]):
+    """A display snapshot with its local, complete evidence source attached.
+
+    Only the resume adapter consumes this pointer. Other read-model consumers
+    still see the original bounded list, with unchanged counts and ordering.
+    """
+
+    def __init__(self, events: Any, *, runtime_root: Path, goal_id: str) -> None:
+        super().__init__(dict(event) for event in events)
+        self.source = {"runtime_root": str(runtime_root), "goal_id": goal_id}
 
 
 def normalize_todo_resume_when_via_runtime(value: Any) -> str | None:
@@ -339,7 +359,7 @@ def normalize_todo_resume_when_via_runtime(value: Any) -> str | None:
     return result
 
 
-def evaluate_todo_resume_conditions(
+def build_todo_resume_evaluation_request(
     items: list[dict[str, Any]],
     *,
     source_items: list[dict[str, Any]],
@@ -347,8 +367,8 @@ def evaluate_todo_resume_conditions(
     available_capabilities: Any = None,
     kinds: list[str] | None = None,
     evaluated_at: str | None = None,
-) -> dict[str, dict[str, Any]]:
-    """Return TS-owned resume conditions keyed by the waiting Todo id."""
+) -> dict[str, Any]:
+    """Encode bounded resume facts for direct or composed typed projections."""
 
     request: dict[str, Any] = {
         "schema_version": TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION,
@@ -356,12 +376,14 @@ def evaluate_todo_resume_conditions(
         "source_items": [
             _compact_item(item) for item in source_items if item.get("todo_id")
         ],
-        # Resume evaluation needs only bounded PR-merge identity evidence.
+        # Resume evaluation needs only compact PR-merge identity evidence.
         # Sending complete rollout rows made long-lived Goals exceed the
         # Effect-runtime transport budget even without a PR-waiting Todo.
         "rollout_events": _compact_resume_rollout_events(items, rollout_events),
         "evaluated_at": evaluated_at or now_utc_iso(),
     }
+    if isinstance(rollout_events, TodoResumeRolloutEvents):
+        request["rollout_event_source"] = rollout_events.source
     if available_capabilities is not None:
         request["available_capabilities"] = sorted(
             {
@@ -372,6 +394,23 @@ def evaluate_todo_resume_conditions(
         )
     if kinds is not None:
         request["kinds"] = kinds
+    return request
+
+
+def evaluate_todo_resume_conditions(
+    items: list[dict[str, Any]],
+    *,
+    source_items: list[dict[str, Any]],
+    rollout_events: list[dict[str, Any]] | None = None,
+    available_capabilities: Any = None,
+    kinds: list[str] | None = None,
+    evaluated_at: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return TS-owned resume conditions keyed by the waiting Todo id."""
+    request = build_todo_resume_evaluation_request(
+        items, source_items=source_items, rollout_events=rollout_events,
+        available_capabilities=available_capabilities, kinds=kinds, evaluated_at=evaluated_at,
+    )
     try:
         result = effect_runtime_result("todo.resume_condition.evaluate", request)
     except EffectRuntimeRejected as exc:

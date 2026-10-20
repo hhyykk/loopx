@@ -11,7 +11,18 @@ import sys
 import time
 
 from .planning import task_plan_packet, validate_plan_readback
-from .worker import loopx_command, run_once
+from .worker import PHASE_WORK_RESERVE_SECONDS, loopx_command, run_once
+
+# One planning wake whose native process exits non-zero without a harness
+# error or a validated plan (a dropped model stream, a failed turn) must not
+# strand the whole trial before execution. Retry within the same phase budget.
+PLANNING_WAKE_ATTEMPTS = 3
+
+
+def _retryable_planning_wake(receipt: dict) -> bool:
+    return (receipt.get("ok") is not True and receipt.get("timed_out") is not True
+            and "error_kind" not in receipt and "planning" not in receipt
+            and receipt.get("return_code") not in (None, 0))
 
 
 def prepare_entry(env: dict[str, str]) -> bool:
@@ -19,10 +30,9 @@ def prepare_entry(env: dict[str, str]) -> bool:
     if env.get("LOOPX_TASK_ENTRY") != "loopx-planned":
         raise ValueError("SForge planning entry requires loopx-planned")
     remaining = float(env["LOOPX_PHASE_DEADLINE_EPOCH"]) - time.time()
-    limit = float(env["LOOPX_PLANNING_TIMEOUT_SEC"])
-    if not math.isfinite(remaining) or not math.isfinite(limit) or limit <= 0:
+    if not math.isfinite(remaining):
         raise ValueError("Invalid planning budget")
-    if remaining <= 160:
+    if remaining <= PHASE_WORK_RESERVE_SECONDS:
         return False
     path = Path(env["LOOPX_PLANNING_RESULT"])
     if path.exists():
@@ -45,10 +55,21 @@ def prepare_entry(env: dict[str, str]) -> bool:
         # Original Todos may now be completed. Do not replan on every native
         # process resume or treat this historical receipt as new admission.
         return True
-    receipt = run_once(env | {
-        "LOOPX_TASK_STAGE": "plan",
-        "LOOPX_PLANNING_TIMEOUT_SEC": str(min(limit, remaining - 160)),
-    })
+    planning_env = env | {"LOOPX_TASK_STAGE": "plan"}
+    # Native SForge owns one absolute trial deadline for planning and execution.
+    # Do not inherit a separate planning cap from the shared worker environment.
+    planning_env.pop("LOOPX_PLANNING_TIMEOUT_SEC", None)
+    attempts = []
+    for attempt in range(1, PLANNING_WAKE_ATTEMPTS + 1):
+        receipt = run_once(planning_env)
+        attempts.append({"attempt": attempt, "ok": receipt.get("ok") is True,
+                         "timed_out": receipt.get("timed_out") is True,
+                         "return_code": receipt.get("return_code"),
+                         **({"error_kind": receipt["error_kind"]} if "error_kind" in receipt else {})})
+        remaining = float(env["LOOPX_PHASE_DEADLINE_EPOCH"]) - time.time()
+        if not _retryable_planning_wake(receipt) or remaining <= PHASE_WORK_RESERVE_SECONDS:
+            break
+    path.with_name("planning-attempts.json").write_text(json.dumps(attempts))
     if receipt.get("ok") is not True:
         raise RuntimeError("Planning failed; execution was not started")
     entry = receipt.get("planning") or {}
@@ -66,10 +87,16 @@ def main() -> int:
     signal.signal(signal.SIGTERM, cancelled)
     env = dict(os.environ)
     if not prepare_entry(env):
-        return 0
+        # A blocked or exhausted planning checkpoint never ran the solver.
+        # Native process completion must not qualify it as a finished trial.
+        return 1
+    # A successful plan may itself consume the remaining execution allowance.
+    if float(env["LOOPX_PHASE_DEADLINE_EPOCH"]) - time.time() <= PHASE_WORK_RESERVE_SECONDS:
+        return 1
     # Native SForge owns environment filtering and the outer phase deadline;
     # retain its proxy/isolation inputs rather than launching from setup hooks.
     env["LOOPX_TASK_STAGE"] = "execute"
+    Path(env["LOOPX_PLANNING_RESULT"]).with_name("execution-started").touch()
     os.execvpe(sys.argv[1], sys.argv[1:], env)
     return 0
 

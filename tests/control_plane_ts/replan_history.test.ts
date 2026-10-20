@@ -70,6 +70,33 @@ test("periodic review counts material work, not quiet monitor receipts", () => {
     "periodic_review_due");
 });
 
+test("unsuccessful replan records cannot create or rotate a periodic work obligation", () => {
+  for (const classification of ["replan_noop", "repair_noop"]) {
+    const noops = many(200, n => run(n + 20, {classification,
+      ignored_text: `A renamed review description ${n}`}));
+    const project = (rows: JsonObject[]) => trigger(rows, {operation: "periodic"});
+    assert.equal(project(noops), null);
+    assert.equal(trigger(noops.map(row => ({...row, progress: observation}))), null,
+      "legacy callers cannot turn repeated no-op observations into a progress duty");
+    assert.equal(project([...noops, ...many(19)]), null);
+    const original = project(many(20));
+    assert.ok(original);
+    assert.deepEqual(project([...noops, ...many(20)]), original,
+      "observing an unresolved review cannot move its work window");
+    // A no-op sharing a real work Turn must not hide that Turn's work row.
+    assert.deepEqual(project(many(20).flatMap(row => [{...row, classification}, row])), original);
+    // Settlement alone does not turn a no-op into eligible review work.
+    const qualified = new Set(noops.map(row => JSON.stringify([row.agent_id, row.turn_id])));
+    assert.equal(projectReplanHistory(request(noops, {operation: "periodic"}), qualified).trigger, null);
+  }
+  const negative = many(20, n => run(n, {classification: "validated_negative_result",
+    progress: {...observation, result_class: "advanced", fingerprint: `negative-${n}`}}));
+  assert.equal(trigger(negative, {operation: "periodic"})?.run_count, 20,
+    "a useful negative experiment still contributes work");
+  assert.equal(trigger(many(20, n => run(n, {classification: "repair_noop_followup"})),
+    {operation: "periodic"})?.run_count, 20, "only the canonical no-op classifications are neutral");
+});
+
 test("ACK is a lane-scoped cutoff, including an ACK sharing the newest turn id", () => {
   for (const operation of ["all", "progress", "periodic"]) {
     const material = many(25, n => run(n, { progress: observation }));
@@ -178,6 +205,52 @@ test("persisted monitor streak retains stable tie order and advancement ownershi
   assert.equal(trigger([], { operation: "monitor_streak", todos: { ...todos,
     monitors: [monitorTodo({ no_change_count: 4 })],
   } }), null);
+});
+
+test("current monitor streak ignores expiry at or before its observation, without changing live streaks", () => {
+  const source = request([], {operation: "monitor_streak", observed_at: 100,
+    todos: {monitors: [], advancements: [], resume: null}});
+  for (const [expiry, due, count, expected] of [
+    [99, 90, 8, false], [100, 90, 8, false], [101, 90, 8, true],
+    [null, 90, 8, true], [200, 110, 8, true], [200, 90, 4, false],
+  ] as const) {
+    const value = {...source, todos: {monitors: [monitorTodo({expires_at: expiry,
+      due_at: due, no_change_count: count})], advancements: [], resume: null}};
+    const before = structuredClone(value);
+    assert.equal(projectReplanHistory(value).trigger !== null, expected,
+      `expiry=${expiry}, due=${due}, count=${count}`);
+    assert.deepEqual(value, before);
+  }
+  const result = projectReplanHistory({...source, todos: {advancements: [], resume: null,
+    monitors: [monitorTodo({target: "retired", expires_at: 100, no_change_count: 99}),
+      monitorTodo({target: "active", expires_at: 101, no_change_count: 5})]}});
+  assert.equal((result.trigger as JsonObject).monitor_target_id, "active");
+});
+
+test("legacy replan requests retain their clockless behavior and independent history triggers", () => {
+  const todos = {monitors: [monitorTodo({expires_at: 0})], advancements: [], resume: null};
+  assert.equal(trigger([], {operation: "monitor_streak", todos})?.kind, "monitor_no_change_streak");
+  assert.equal(trigger(many(20), {observed_at: 100, todos})?.kind, "periodic_review_due");
+  assert.equal(trigger([run(2, {progress: observation}), run(1, {progress: observation})],
+    {observed_at: 100, todos})?.kind, "typed_progress_repeat");
+  for (const clock of [NaN, Infinity, "100"]) {
+    assert.throws(() => projectReplanHistory(request([], {observed_at: clock})), /observed_at/);
+  }
+});
+
+test("the current frontier uses the same expiry owner and preserves its public trigger and target tie order", () => {
+  const todos = {monitors: [monitorTodo({target: "retired", expires_at: 100, no_change_count: 99}),
+    monitorTodo({id: "todo_z", target: "z", expires_at: 101, no_change_count: 8}),
+    monitorTodo({id: "todo_a", target: "a", expires_at: 101, no_change_count: 8})],
+    advancements: [], resume: null};
+  assert.deepEqual(trigger([], {operation: "frontier_monitor_streak", observed_at: 100, todos}), {
+    kind: "monitor_no_change_streak", section: "agent_todo_summary.monitor_open_items",
+    text: "monitor a recorded 8 consecutive unchanged polls without selectable advancement",
+    todo_id: "todo_a", monitor_target_id: "a", run_count: 8, threshold: 5, agent_id: "worker-a",
+  });
+  for (const observed_at of [undefined, null]) {
+    assert.throws(() => trigger([], {operation: "frontier_monitor_streak", observed_at, todos}), /observed_at/);
+  }
 });
 
 for (const [key, bad, message] of [

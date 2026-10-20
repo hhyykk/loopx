@@ -44,6 +44,29 @@ curl -fsS http://127.0.0.1:8767/status.json
 
 ---
 
+### 1.1 Agent 运行环境未就绪 / When no Agent runtime is ready
+
+![没有可用 Agent 运行环境时的管家总览](../assets/personal-workspace/runtime-readiness-none.png)
+
+LoopX 通过本机已安装的命令行工具驱动 Agent（Codex、Claude Code、Kiro CLI），或通过 API 密钥。
+如果这台机器上一个都没有就绪，管家总览会在顶部说明原因，逐项列出缺什么（未在 PATH 中找到的命令、
+未设置的环境变量），并提供「重新检查」和「安装指引」。安装并登录后点「重新检查」，页面重新读取
+服务的运行环境目录并回读结果；本页不会安装任何东西，也不授予任何权限。打开 Goal 对话时，如果选中的
+运行环境在本机不可用，输入框上方会给出同样的说明和重新检查。
+执行环境缺失不影响管家和 Goal 中的「仅查状态」：它保存原问题与状态回答，不启动 Agent。
+没有该选项的项目对话会明确拒绝未就绪的执行路线，并保留未发送的草稿。
+
+LoopX drives Agents through a command-line tool installed on this machine (Codex, Claude Code,
+Kiro CLI) or through an API key. When none is ready, the manager overview says so at the top,
+lists what each runtime needs (a command not found on PATH, an environment variable not set), and
+offers **Check again** and a **Setup guide** link. After installing and signing in, **Check again**
+re-reads the service's runtime catalog and reads the result back; the page installs nothing and
+grants nothing. In a Goal conversation, the same notice and re-check appear above the composer when
+the selected runtime is unavailable here.
+Missing execution runtimes do not disable **Status only** in manager and Goal conversations: it
+stores the original question and status answer without starting an Agent. A project conversation
+without that option refuses an unavailable execution route and retains the unsent draft.
+
 ## 🧭 2. 控制台核心架构
 
 ```mermaid
@@ -69,6 +92,32 @@ graph TD
 
 ![LoopX 管家总览与 4 泳道流](../assets/personal-workspace/guide_manager_overview.png)
 
+### 首次打开 / First open
+
+![还没有 Goal 时的管家总览](../assets/personal-workspace/first-goal-home-desktop.png)
+
+还没有任何 Goal 时，总览不显示空泳道或健康告警，而是一个「还没有 Goal」状态：一句话说明
+Goal 是什么、一个 **创建 Goal** 按钮（打开与侧边栏 `+` 相同的创建表单），以及三条示例
+请求。点选示例只会填入输入框，按发送前不会发出任何内容。状态来源自身的检查行（例如
+本机尚未建立注册表）折叠在「状态来源详情」里。只有状态来源真的不健康（例如注册表损坏）
+时才显示健康告警，并以可读句子描述问题，原始检查行同样折叠在「诊断信息」里。本机还没有可用的
+Agent（例如 Codex 未安装或未登录）时，「创建 Goal」的检查会直接告诉你是哪个 Agent、缺什么（命令
+或环境变量）以及下一步怎么做，不会写入任何内容，表单内容也会保留。
+可用的 Agent 也可能因工具能力、信任范围或远程工作区映射而拒绝创建。此时表单显示实际原因，
+不会把配置拒绝当成安装或登录问题。修复后可直接再次检查；未修改的内容及操作身份保持，
+修改内容则形成新请求。检查仍不创建 Goal，只有原来的确认动作才能创建。
+
+When no Goal exists yet, the overview shows a first-Goal state instead of empty lanes or a
+health banner: what a Goal is, a **Create a Goal** button (the same form as the sidebar `+`),
+and three example requests that only fill the composer. The status source's own check
+lines (such as "no registry yet on this machine") stay collapsed under "Status source
+details". A health banner appears only when the source is actually unhealthy, in plain
+sentences, with the raw check lines collapsed under "Diagnostics". When this machine has no usable Agent yet (Codex not installed or not signed in), the Goal creation review names that Agent, what is missing (the command or the environment variable) and the next step; nothing is written and the form keeps what you typed.
+An available Agent may still refuse creation because of tools, trust scope or a remote workspace
+mapping. The form shows the actual reason instead of an installation or sign-in instruction.
+Repair that configuration and review again: unchanged contents retain their request identity;
+editing them starts a new request. Review creates no Goal; the original confirmation is still required.
+
 ### 核心功能区
 1. **「你不在的时候」离线概览**：
    - 聚合展示你离开期间所有 Agent 的运行结果：`已完成` 数量、`异常/失败` 数量以及当前 **`等你确认`** 的阻塞项。
@@ -82,7 +131,28 @@ graph TD
    - `[汇总所有 Goal 进展 (立即发送)]`：带有蓝色高亮标识，点击后**立即发送**并在右下角弹出托盘展示全局总结；
    - `[创建新 Goal (草稿)]`：快速填入目标模板草稿。
 
+### Unrecognized execution observations / 执行方式未知
+
+A session with an open Turn but a missing or unknown execution mode is shown
+as unknown. It contributes neither managed execution nor a host claim, and its
+timestamp cannot refresh another worker's activity. The workspace brief,
+sidebar and Goal vitals use the same distinction. Explicit managed activity or
+an independent host observation still establishes execution.
+
+会话有未结束的回合，但执行方式缺失或未知时，界面显示“执行方式未知”，
+不计入正在执行或宿主已领取，也不会用它的时间刷新其他工作的活跃状态。
+首页摘要、侧栏和 Goal 状态保持一致；明确的托管执行或独立宿主观测仍正常显示。
+
 ### 问答中的等待与失败
+
+前端与飞书的 Chat 回答保留项目内文件的相对位置，例如 `./notes/report.md`，便于核对产物；机器目录、项目外路径及另外声明为私有的目录仍隐藏。项目根目录本身显示为 `[project]`。本机 Markdown 链接保留可读标题，不发送无法在飞书使用的本地链接；状态、提议和权限门禁仍使用完整路径脱敏。这仅改变展现，不授予读取或写入权限。
+
+Frontend and Lark Chat answers retain project-relative filenames such as
+`./notes/report.md`, while hiding machine roots, other local paths and separately
+protected directories. The project root itself remains `[project]`. Local
+Markdown links keep their readable labels instead of unusable local destinations;
+status, proposals and gates still redact entire local paths. This changes answer
+presentation, not read or write authority.
 
 管家与 Goal 的前端对话共用运行视图，适用于查询、编码、投研等各种任务：回答下方显示当前正在做的一步，例如「正在读取 notes.md」。使用 Codex 执行器时，展开「执行过程」可逐步查看思考、读取、搜索、运行的命令、调用的工具和修改的文件；同一步的开始与结束合并为一行，失败的步骤标出退出码，点击一行可查看完整命令、改动文件列表或思考内容。思考内容仅在模型向宿主公开时显示（有的模型只给出思考用时）；不显示命令输出、工具参数与结果或文件改动内容，项目内路径显示为相对路径，其余本机路径和疑似凭据会被隐藏。「完成」只表示该步结束，不代表检查通过。这些步骤只保存在本机、仅所有者可读的会话回放记录中；回合结束超过 24 小时后，下次启动 LoopX Chat 时清理。其他执行器继续显示「最近活动」中的最近六条记录。尚未收到活动时保留等待提示，不根据等待时长推测执行进度。
 
@@ -92,9 +162,9 @@ graph TD
 
 The steward and Goal conversations share the same frontend activity view across task types. The reply shows the step in progress, such as "Reading notes.md". With the Codex executor, expand **Work steps** to follow each thought, read, search, command, tool call and file edit; a step's start and end share one row, failures show their exit code, and clicking a row reveals the full command, the changed files or the thinking text. Thinking text appears only when the model exposes it to the host (some models report only how long they thought). Command output, tool arguments and results, and file diffs are never shown; project paths read as relative paths, other local paths and credential-like values are hidden. A completed step means it ended, not that a check passed. Steps live only in the owner-only local session replay; the next LoopX Chat start after a Turn is more than 24 hours old clears them. Other executors keep **Recent activity** with the latest six observations; missing activity stays an honest waiting state. **Interrupt turn** targets that reply, preserves already visible text, and keeps the conversation available for continuation. A rejected interruption leaves the live reply visible; completion wins a race with interruption. This control does not stop the Goal. Attached hosts that do not expose interruption report that limitation.
 
-运行中可点击「调整本轮」，向原任务追加指令。当前支持原生 Codex 执行器；只有收到匹配的执行器回执后才显示已接收，这不代表调整后的任务已经完成。不支持的执行器、过期回合或无法确认的回执会保留草稿，不自动变成新任务。送达状态未知时，重试沿用同一请求编号，防止重复投递；执行器明确拒绝且确认未送达时，条件恢复后可用原文安全地重新发起。回合结束后，未发送的草稿仍可复制到输入框。草稿仅保存在当前页面，刷新前请自行保存。
+运行中可点击「调整本轮」，向原任务追加指令。当前支持原生 Codex 执行器；只有收到匹配的执行器回执后才显示已接收，这不代表调整后的任务已经完成。不支持的执行器、过期回合或无法确认的回执会保留草稿，不自动变成新任务。送达状态未知时，重试沿用同一请求编号，防止重复投递；执行器明确拒绝且确认未送达时，条件恢复后可用原文安全地重新发起。回合结束后，未发送的草稿仍可复制到输入框。「调整本轮」和普通会话输入框中的追加指令，在发送前必须将重试信息保存到当前标签页的浏览器存储并读回；刷新后恢复原请求身份，不自动发送。存储不可用时会提示尚未发送，草稿仅保留在当前页面；恢复存储后再重试。
 
-Use **Adjust turn** to add instructions to the running task. Native Codex executors currently support this control. A matching executor receipt confirms acceptance, not completion. Unsupported executors, expired turns and unconfirmed receipts retain the draft without starting another task. An unresolved delivery keeps the request identity on retry to prevent duplicates; a confirmed pre-delivery rejection allows the unchanged draft to start a new request after recovery. After the turn ends, copy an unsent draft to the composer. Drafts are page-local; save them before refreshing.
+Use **Adjust turn** to add instructions to the running task. Native Codex executors currently support this control. A matching executor receipt confirms acceptance, not completion. Unsupported executors, expired turns and unconfirmed receipts retain the draft without starting another task. An unresolved delivery keeps the request identity on retry to prevent duplicates; a confirmed pre-delivery rejection allows the unchanged draft to start a new request after recovery. After the turn ends, copy an unsent draft to the composer. Both **Adjust turn** and an ordinary conversation's in-turn composer save and read back retry information in tab-local browser storage before dispatch. Reload restores the original identity without sending. If storage is unavailable, the adjustment is not sent and its draft stays in the current page; restore storage before retrying.
 
 For API callers, `POST /api/chat/sessions/{session_id}/turns/{turn_id}/steer`
 accepts `message` (1–12000 characters) and a stable `client_ingress_id`.
@@ -149,6 +219,57 @@ loopx goal-lifecycle --goal-id <goal-id> --operation resume --actor-kind owner -
 
 ---
 
+### 创建 Goal 时选择工作目录 / Choose a working directory when creating a Goal
+
+打开侧边栏的「创建 Goal」，填写目标和完成标准后，在「工作目录」中选择：
+
+- **Dashboard 工作区**：启动 Dashboard 时配置的目录（见下文），即使还没有 Goal 使用它；
+- **已有 Goal 的工作目录**：沿用该 Goal 绑定的目录；
+- **默认工作区**：由当前会话与连接配置解析。
+
+检查配置时，预览的「执行工作区」会写明目录名称、来源（Dashboard 工作区或与已有 Goal
+共用），以及是否为默认解析结果；确认后的 Goal 一定在预览所示目录中创建，执行权限仍由表单中的
+权限选择与后端校验决定。对话草稿也会显示同样的执行工作区，并可通过「修改」打开同一个表单改选。
+如果检查配置失败，目标文本与目录选择会保留供重试；失效或不可用的目录不会自动换成另一目录。
+预览只显示目录名称，不显示本机完整路径；同名目录（包括已有 Goal 的目录）会逐级附带上级目录名，直到可以区分。
+
+要管理多个项目，可在启动时一次配置多个目录，之后每次创建 Goal 时分别选择：
+
+```bash
+loopx dashboard --scan-path ~/projects/app --scan-path ~/projects/docs-site
+```
+
+不在列表中的目录无法在页面上直接输入；请用 `--scan-path` 重新启动 Dashboard，或先通过
+[项目连接流程](../guides/newcomer-command-path.md)接入。选择目录不会增加执行权限。
+
+Open **Create Goal** in the sidebar, enter the objective and completion criteria, and choose a
+**Working directory**:
+
+- a **Dashboard workspace** — a directory the Dashboard was started with (below), even before any
+  Goal uses it;
+- an **existing Goal's directory** — reuse the directory that Goal is bound to;
+- the **default workspace** — resolved from the current conversation and connection routing.
+
+The review's **Workspace** field names the directory, where it comes from (a Dashboard workspace or
+shared with an existing Goal), and whether the default chose it. Confirming creates the Goal in
+exactly that directory, under the selected execution permission and the existing backend checks.
+Conversational drafts show the same field, and **Edit** opens the form to choose another directory.
+A failed preview retains the text and selection for retry; unavailable selections never silently
+redirect to another directory. The review shows directory names, not local paths; two directories
+with the same name, including existing Goals' directories, gain parent directory names until they
+read apart.
+
+To work on several projects, start the Dashboard once with each directory and pick one per Goal:
+
+```bash
+loopx dashboard --scan-path ~/projects/app --scan-path ~/projects/docs-site
+```
+
+Directories that are not listed cannot be typed into the page; restart the Dashboard with
+`--scan-path`, or connect the project first through the
+[project connection flow](../guides/newcomer-command-path.md). Choosing a directory does not expand
+execution permissions.
+
 ## 🎯 4. Goal 深度工作区
 
 在侧边栏点击具体的 Goal（例如 `Apollo Spacecraft Telemetry Pipeline`），进入该 Goal 的独立工作台。
@@ -175,14 +296,90 @@ loopx goal-lifecycle --goal-id <goal-id> --operation resume --actor-kind owner -
 
 ---
 
+### 4.1.1 状态感知的快捷建议 / State-aware suggestions
+
+![根据 Goal 当前状态推导的建议行](../assets/personal-workspace/goal-suggestions-row.png)
+
+Goal 对话页的「快捷提问」折叠行，除了固定的几条问题外，会根据这个 Goal 的当前投影给出至多三条
+建议，每条只引用投影里的真实事实：有事项等你决定时是「先处理 N 项等你决定的事项」，点击直接打开
+概览页的需要你栏；有受阻任务时是「解释 N 项受阻任务」，点击把这些任务的标题带进问题立即发送；
+验收条件未通过时是「为什么「…」未通过」；观察到没有运行中的工作且仍有未完成任务时是「继续推进」；
+任务全部完成时是「查看成果」。「等你决定」只计需要你介入的事项，可选提醒会列出但不计入；
+「查看成果」只在工作列表完整且已知没有未完成任务时出现，只列出一部分的投影不会被当作全部完成。
+已停止的 Goal 不给建议；执行状态未知时不会假装空闲。折叠时摘要行会带出第一条建议，便于一眼看到。
+
+The "Suggestions" disclosure on a Goal's Chat view adds up to three suggestions derived from the
+Goal's current projection, each citing a real fact: decisions waiting on you (opens the overview's
+needs-you rail), blocked tasks (sends a question naming those tasks), a failing acceptance
+criterion, no observed running work with open tasks, or all tasks done. "Decisions" counts only
+items that wait on you; an optional reminder is listed but not counted. "All done" appears only
+when the work list is complete and the owner's open count is known to be zero; a partial listing is
+never read as finished. A stopped Goal gets no
+suggestion and unknown execution is never read as idle. The collapsed summary line shows the first
+suggestion.
+### 4.1.2 自你上次查看 / Since you looked
+
+![回到 Goal 概览时的「自你上次查看」一行](../assets/personal-workspace/since-you-looked-line.png)
+
+回到一个 Goal 的概览时，如果自你上次查看以来有实质变化，概览顶部会出现一行安静的摘要：
+「自你上次查看（3 小时前）：新完成 2 项、新增 1 项等你决定、新受阻 1 项、新成果 1 项」，以及
+「标记已读」。它来自这个浏览器本地保存的上次查看标记（只有计数和编号，不含标题、内容或费用），
+不写回服务，也不是通知。「等你决定」只计需要你介入的事项，可选提醒会列出但不计入。没有实质变化时
+不显示；点「标记已读」以当前画面为基线，离开这个 Goal 则以这次进入时看到的那一眼为基线，期间到达但
+没有呈现的变化下次回来仍会算入；已点过的「标记已读」不会被离开撤回。标记只保留每类最近 200 个编号，
+超出后只按数量增长判断新增，没有总数时就不再报告，不会把没保留的旧项当成新项。浏览器不允许本地存储时只是失去这份记忆，
+Goal 照常可读。费用变化暂不纳入：用量投影还不能可靠地界定两次查看之间的区间。
+
+When you return to a Goal's overview after a material change, one quiet line at the top says what
+changed since your last look ("Since you looked (3 hours ago): 2 newly done, 1 new decision for
+you, 1 newly blocked, 1 result returned") with **Mark seen**. It comes from a marker this browser
+keeps locally (counts and ids only, never titles, content or cost), writes nothing to the service
+and is not a notification. "Decisions for you" counts only items that wait on you; an optional
+reminder is listed but not counted. Nothing shows when nothing material changed. **Mark seen** makes
+what is on screen the new baseline; leaving the Goal keeps the look you arrived to, so a change that
+landed during the visit without being shown is still reported next time, and leaving never undoes a
+**Mark seen**. The marker keeps the latest 200 ids of each kind; beyond that only growth of the
+count reports something new (nothing at all when there is no total), never an older item the marker
+did not retain. A browser that denies
+local storage only loses this memory; the Goal stays readable. Spend is left out until the usage
+projection can qualify the exact interval between two looks.
+
 ### 4.2 Goal 概览与交付依据 / Goal overview
+
+手机默认折叠目标与验收条件，可随时展开；顶部「全部工作」打开侧栏，Escape 关闭并返回入口。
+窄屏侧栏选择任务后关闭，沿用同一详情与 URL 选择；未知远端链接明确提示当前快照没有该任务。
+
+On phones, direction and criteria start folded. The top-bar **All work** control opens the rail; Escape closes it and returns focus. Selecting work opens the existing task details. Unknown remote links report unavailable snapshot details without querying local task owners.
 
 Goal 顶部直接提供 **概览、任务、对话、成果**，分别用于判断进展、推进工作、
 与 Agent 沟通和查看产出。选择一个 Goal 后仍默认进入四列任务看板；
 看板与列表保持原有任务范围。切换页面后，任务筛选、已加载历史和各页滚动位置保留。
 右上角设置直接打开既有能力配置；返回后保留工作区。切换 Goal 或数据源则重新建立页面上下文。
 
-点击一次 **概览**，即可查看当前进展、需要处理的决定、执行记录和用量。
+点击一次 **概览**，即可查看方向、需要处理的决定、当前工作和成果。
+「当前工作」默认按实际负责人分组，未分配的任务单列；延后与完成记录保留在「全部工作」。
+可在同一区域切换既有看板与关系图。选择任务打开原有详情，关闭详情后保留选中项；
+URL 的 `todo` 参数支持刷新与返回恢复检查上下文。来源中已找不到的任务仅能读取完整要求，
+不能沿用旧快照的操作权限。
+
+「添加任务」就在当前工作区域：输入一次，检查后确认一次，创建结果通过刷新读回。
+检查或应用失败时保留草稿，可从原有动作流程重新检查和确认；选择视图不会执行任务。
+右侧「全部工作」可按状态筛选并搜索已载入的任务；完成记录沿用既有分页与虚拟化历史。
+「活动」显示时间线中已结束的执行、已返回成果和已记录决定，覆盖范围取决于来源。
+
+The Overview composes Direction, Needs you, Now and Results. Now groups work by its recorded owner,
+with an explicit Unassigned group. Board and Map are lenses of the same work. Selecting a task opens
+its existing inspector; closing it retains selection, and `todo` in the URL restores inspection after
+reload or browser back. A task absent from the current source can read its exact request without
+retaining stale action authority. Add task uses one input and the existing preview/confirmation path;
+a failed preview or apply retains the draft. All work filters/searches listed tasks and reuses paginated,
+virtualized completed history. Activity shows ended runs, returned results and recorded decisions from
+the available timeline; it makes no complete-history claim.
+
+工作指标保持明确的覆盖范围：
+工作指标只有在来源提供完成数、且未完成列表覆盖已知时显示“完成 / 总数”。
+缺失或有界数据会保留“总数未知”，显示当前所列未完成项而不绘制完成比例；实际报告的零仍是零。
+任务卡片与时间线区分已安排、执行中、等待、需检查、已中断和已完成；排队不表示已开始执行。
 决定与执行记录直接打开原有详情；「查看任务」「查看成果」前往对应页面。
 低频仓库、连接和运行信息保留在「Goal 信息」中，不再充当查看进展的必经路径。
 
@@ -190,7 +387,7 @@ Goal 顶部直接提供 **概览、任务、对话、成果**，分别用于判�
 不需要额外打开复盘弹窗。可按标题、负责人或引用搜索，选择节点沿关系追溯，
 并打开当前工作区中的任务、决定或执行记录。交付链默认列表，桌面可切换关系图。
 
-**工作地图：**交付链上方展示整个 Goal 的工作形状：全部未归档任务、决定和持续监控，
+**工作地图：**在当前工作的「关系图」中查看 Goal 的工作形状：全部未归档任务、决定和持续监控，
 以及已记录的依赖、延续与替代关系。默认「当前工作」显示进行中和受阻的事项、它们的直接前序
 （单项超过 2 个已完成前序时折叠为计数），以及待决定事项会解锁的工作；已完成或延后的其余工作
 隐藏并计数。「全部」包含早期已完成工作。互不相连的工作链分框排列，需要决定的链在前；
@@ -200,7 +397,7 @@ Goal 顶部直接提供 **概览、任务、对话、成果**，分别用于判�
 
 **范围与刷新：**交付链覆盖当前选中工作及有限前序；完整 Goal 关系请看工作地图。
 缺失前序、来源裁剪与未展开决定可展开查看；任务完成或缺口列表为空都不代表通过验收。
-仅进入概览或点击「刷新快照」时读取交付链；离开概览取消未完成请求，
+概览与任务页共用一次交付快照读取；「刷新快照」可更新它，离开两页时取消未完成请求，
 不增加普通状态读取的图计算。状态变化后自动重读快照，重读完成前暂停来源跳转和导出；
 重读失败才提示快照已过期。
 读取失败保留其他概览内容并显示重试提示，不将失败视为工作已完成。
@@ -228,6 +425,10 @@ task filters, loaded history and scroll; a different Goal or source starts a new
 view session. Settings opens the existing capability editor directly.
 
 Overview brings progress, pending decisions, execution and usage into one page.
+The Work vital shows done/total only with a reported completion count and known complete open-work coverage.
+Missing or bounded totals show the listed open work and an explicit unknown-total notice, without a completion ribbon;
+a reported zero remains zero. Task cards and the timeline distinguish scheduled, running, waiting, failed,
+interrupted and completed observations. Scheduled work is not presented as executing.
 Its delivery section reads the bounded current chain and acceptance observations
 on entry or explicit refresh, with search, map/list layouts, source navigation
 and Markdown export. Leaving Overview aborts pending reads. A changed workspace
@@ -388,6 +589,29 @@ Goal 的 Topic 路由，不删除 Goal、Agent Session、历史 Todo 或其他 G
 ![野兽派 Brutal 主题](../assets/personal-workspace/guide_manager_brutal_theme.png)
 
 ---
+
+### 7.1 桌面通知 / Desktop notifications
+
+![设置 → 外观 → 桌面通知](../assets/personal-workspace/attention-notifications-settings.png)
+
+「设置 → 外观 → 桌面通知」是每个浏览器各自的开关，默认关闭。开启时浏览器会询问一次通知权限，
+只有允许后开关才会保持开启；页面会回读浏览器的答复（已允许、已拒绝、不支持）。开启后，页面
+每 30 秒在后台重新读取一次工作区（标签页隐藏时每 60 秒），当出现一条**新的、等你决定**的事项且你
+没有正看着这个页面时，发出一条桌面通知；点击通知会回到该 Goal 并打开这条事项。进展、运行和数量
+变化不会通知；开启当下已经在等你的事项也不会重复提醒；可选提醒（不阻塞 Agent 的用户操作）会列在
+工作区里，但不会打扰你。关闭开关后立即停止后台读取。如果浏览器曾拒绝通知，之后在站点设置里允许，
+回到本页面或打开设置时会重新读到允许，开关即可再次开启；反过来在站点设置里撤销，页面也会如实显示
+并停止后台读取。这只在本页面保持打开时生效，不是服务端推送，也不替代飞书等渠道通知。
+
+"Settings → Appearance → Desktop notifications" is a per-browser switch, off by default. Turning it
+on asks the browser for permission once and keeps the switch on only when granted; the page reads
+the browser's answer back (allowed, blocked, unsupported). While on, the page re-reads the workspace
+every 30 seconds in the background (60 seconds when the tab is hidden) and sends one desktop
+notification for each **new item that waits on you** while you are not looking at this page.
+Clicking the notification returns to that Goal and opens the item. Progress, runs and counts never
+notify, and items already waiting when you turn it on are not replayed. Turning it off stops the
+background reads. This works only while this page stays open; it is not a server push and does not
+replace channel notifications such as Lark. An optional reminder (a user action that does not block the Agent) is listed in the workspace but never interrupts you. If this browser once blocked notifications and you allow them in its site settings later, returning to this page or opening Settings reads the answer back and the switch can be turned on again; a permission revoked in the site settings shows as blocked and stops the background re-read.
 
 ## 🛡️ 8. 安全与不可逆操作保护
 

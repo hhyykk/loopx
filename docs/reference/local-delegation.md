@@ -136,6 +136,50 @@ workspace、Goal、registry、runtime 与 operator execution configuration；模
 Todo 或外部动作权限。下方 shell 命令继续作为既有 Session、无 MCP host 或显式
 shell-only 协调的兼容入口；两种入口复用同一个 `Delegations` 服务和同一套验收规则。
 
+## Original task revalidation
+
+An independent task postcondition failure instead returns `task_failure`,
+including repair/replan direction, its original Turn and validator summary.
+After repairing the actual artifact or validation environment, explicitly run:
+
+```bash
+loopx --registry "$REGISTRY" --runtime-root "$RUNTIME_ROOT" --format json \
+  delegation revalidate --goal-id "$GOAL_ID" --agent-id "$AGENT_ID" \
+  --execution-config "$DELEGATION_CONFIG" --operation-id review-round-1 --execute
+```
+
+The team view offers **复核原任务** for that qualified failure, and MCP exposes
+`revalidate_delegation`. This is an effectful revalidation and original settlement
+continuation. It retains the original failed evidence, operation and Turn;
+Host work is not repeated. A failed check remains rejected. Unknown external
+effects still require the original Turn's reconciliation. Revalidation does not
+edit code, switch Agents or authorize compensation; new execution needs a
+separately admitted task. If the original recheck committed but its response was
+lost, readback exposes recovery and the team view offers **恢复原执行**. Repeating
+`revalidate` or using `resume` reconciles the original committed receipts without
+repeating Host work or quota spending.
+
+Current grants, stop state and declared ancestry are checked again before
+revalidation or committed-result recovery. Restoring the task output alone
+does not restore unavailable source inputs.
+
+中文：先修复真实产物或校验环境，再复核原执行；通过后继续原 Turn 结算，保留失败证据，不重复 Host 或扣额。停止、撤权与来源链失效仍阻止复验或提交后的恢复；仅修复输出不能恢复失效的来源输入。
+
+## Source use and recheck
+
+`read` qualifies the current use of declared source operations separately from
+historical acceptance. A result with `current_use.state`
+`unavailable` cannot supply current evidence for another launch or adoption.
+The team evidence view shows the blocking input/source and withdraws its report.
+Repair the declared input/source under its existing authority, then use `read`
+or the view's recheck. That read runs validators; it never redispatches an
+accepted worker. Traversal is limited to 64 operations, 16 levels and a
+15-second elapsed budget for starting checks. An already running validator keeps
+its configured timeout. Undeclared assumptions and concurrent file snapshots
+are outside this check.
+
+中文：历史 accepted 与当前来源资格分开；获授权修复声明输入或来源后，重新读取恢复资格，不重派已验收 worker。
+
 ## Use an existing Agent conversation through its shell
 
 An attached Codex or other shell-capable Agent can use the same execution
@@ -722,6 +766,31 @@ of the new tool description, not injected into those older threads' shared promp
 `page_readback_complete` 只表示本页是否均成功读取；二者都不代表整个团队已完成。
 此入口不创建 Agent、不扩大授权，也不唤醒闲置的 Codex 对话。Goal Chat LoopX 模式的协调员由 Chat 服务在结果被接受后唤醒一次，且只回到「启动该操作的回合所属会话」——该绑定由受信任的 Chat 宿主写在操作记录旁，模型不提供路由；见 [Goal Chat 续跑](goal-chat-continuation.md)。
 
+### Prepare a code-edit worktree
+
+Use the existing `task-lease acquire --write-worktree "$PWD"` from the root of
+an independent Git worktree, with the Todo's full declared scopes and current
+lease version. Overlapping files in another verified checkout are integration
+advisories; the same physical checkout and shared-state leases retain their
+exclusion rules. This does not change task ownership, permissions or acceptance.
+
+Normal npm executable links are supported when they point directly to a regular
+file inside that physical checkout **and inside the declared scopes**. Targets
+must use the checkout's resolved path; directory aliases, chained or unresolved
+links, external targets and Git administration remain unsupported. Ignored
+dependencies are inspected too. A rejected link returns a path-free explanation;
+restore it and retry the original acquisition identity. A saved receipt cannot
+authorize a workspace that has since become redirected. No dependency deletion,
+scope reduction or configuration switch is needed for normal `.bin` links.
+
+中文：在独立 Git worktree 根目录按原 Todo 的完整范围与当前 lease 版本申请
+`--write-worktree "$PWD"`。不同工作树的文件重叠只提示集成风险，同一物理工作树
+和共享状态的排斥规则保持。正常 npm `.bin` 链接可直接指向同一物理工作树、
+已声明范围内的常规文件；目标使用工作树解析后的路径。目录别名、链式或无法解析
+的链接、外部目标及 Git 管理目录仍不支持，ignored 依赖也会检查。拒绝原因不泄露
+本机路径；恢复链接后复用原申请身份重试，历史回执不能授权已经跳转的工作树。
+无需删除正常依赖、缩小声明或新增开关，不改变任务归属、权限或验收。
+
 ### Check a binding before new work
 
 `delegate inspect --binding-id independent-review` uses the same task,
@@ -953,6 +1022,32 @@ Validation stability is scoped to this task, its current claim/lifecycle, select
 
 A revision can have current task acceptance and valid requester adoption while independent-verifier evidence is missing. These are distinct facts. The correction path explicitly says **Independent verification · evidence not provided**; neither `responds_to`, a reviewer's name nor a successful validator is an exact-version independent-verifier receipt.
 
+In the original Goal conversation or Team execution report, expand **Confirm
+adoption into a downstream result**. Find an accepted result using the displayed
+version, read it, then explicitly confirm adoption. Discovery and reading never
+record the decision. The operation reuses `delegation adopt` with the configured
+coordinator's existing grants; it rechecks current task acceptance, receiver
+inputs and output versions. It starts no task, resumes no paused coordinator,
+and supplies no independent-verifier evidence. A lost acknowledgement triggers
+one readback; an unresolved response keeps the same source/consumer pair for an
+explicit retry. Reload reads the durable receipt. Changed input or revoked
+bindings withdraw current adoption or reject confirmation.
+
+中文：在原 Goal 对话或团队执行的报告详情展开「确认采用于后续结果」，查找使用
+当前版本的已验收结果，阅读后显式确认。查找、阅读、刷新均不自动采用；复用既有
+协调身份、grant 和 `delegation adopt`，重新核验输入与产物版本，不启动任务或恢复
+暂停的协调员。丢失回执先读回；仍未确认时仅重试同一版本与结果。输入变化或绑定
+撤销会使采用失效或拒绝确认，采用不补足独立验收。
+
+These packaged desktop and 390px views use synthetic workspace navigation with
+the real isolated SQLite/HTTP adoption owner. The same journey verifies lost
+acknowledgement recovery and withdrawal after a receiver input changes. It
+does not qualify live-model correction or the installed native App.
+
+![Confirmed requester adoption through the packaged report reader](../assets/personal-workspace/team-adoption-confirmed-desktop.png)
+
+![390px readback of the same confirmed adoption](../assets/personal-workspace/team-adoption-confirmed-mobile.png)
+
 The following packaged transport-fixture views show current check records and their withdrawal. A separate isolated production SQLite/HTTP/CLI journey exercises the same reader with actual host checks, missing output and explicit restoration. All data is synthetic; these checks do not qualify a live-model correction or the installed native App.
 
 ![Packaged validation detail: host check time and stable declared output versions](../assets/personal-workspace/team-check-records-desktop.png)
@@ -1093,6 +1188,17 @@ for example, `committed` requires the full phase prefix. These are enforced
 checks, not guidance. `turn inspect-journal` reports a contradictory snapshot
 as `replay_blocked` with `journal_status_phase_mismatch`.
 
+With `--retry-failed-turn`, journal inspection selects the persisted session
+reader from the retained plan's host and binding scope, for both one-shot and
+`--watch` reads. A DSH Turn therefore checks its DSH binding rather than the
+operator's current default host. Missing or mismatched host/scope/owner bindings
+remain blocked; inspection reports a recovery plan with no execution effects.
+This does not retry a failed Turn or authorize a new host invocation.
+
+`--retry-failed-turn` 的单次及 `--watch` 检查均按原计划的 host 和绑定范围读取
+原会话，DSH 不再被当前默认 Codex reader 误报为会话缺失。缺失或 host、范围、
+owner 不匹配仍拒绝；诊断读回不执行重试，也不授予新的执行权限。
+
 A digest-named journal that cannot be read cannot safely be skipped as evidence
 of absence or uniqueness. This also holds when another matching file is readable.
 Non-journal sidecars and identifiable other Turns are ignored; duplicate exact
@@ -1163,10 +1269,54 @@ This is a fragment, not a complete collector configuration. `execution_config`
 is project-relative, without traversal or symlinks, and remains outside the
 member workspace. The selected binding must grant that registered requester
 the operation's exact Agent/Todo. Use `codex-cli`, `--codex-operation-tools`
-and the original pinned model/effort. Do not select `fresh`, change the owning
+and the original pinned model/effort, or the explicit DSH entry described below.
+Do not select `fresh`, change the owning
 home, binary, sandbox or effective MCP configuration, or retarget the Todo.
 Prepare the operation in this same managed session/profile. Existing delegation
 inspection and ordinary Turn admission still determine whether it can run.
+
+If text messages already have an owner, set `"callbacks_only": true` inside
+the v1 collector's `operation_callbacks` object and retain `enabled: true`.
+The collector then starts only `card.action.trigger`, using the same callback,
+wake and result-recovery owners. It does not start an IM listener, ingest text,
+or change the existing text consumer. `callbacks_only` defaults to `false`,
+preserving message collection. Older releases reject this nested option before
+starting a consumer instead of silently starting another IM stream. Disabling
+both inputs or enabling message turn-start sync in callback-only mode is
+rejected. Keep the configured routes as the result-delivery chat allowlist;
+their inboxes need not be enabled when text collection is disabled. Plans and
+status expose `collect_messages: false` and do not claim complete text capture.
+Listener readiness, a real authenticated callback, native continuation and
+original-card result delivery remain separate evidence.
+
+For the candidate DSH transport, prepare through the normal CLI with
+`--host dsh --dsh-operation-module /absolute/native-operation.js` and retain
+those exact options in the original delegation binding. Also pin the original
+`--dsh-runtime-bin`, `--dsh-home`, `--dsh-cordis`, provider/model/effort and token
+budget. The supported restart candidate is Python SDK `0.2.1a3` built from
+official source `2fbf4359` plus explicit npm runtime
+`@deepseek-ai/dsh@0.2.1-alpha.3`; it is not a published Python runtime release.
+SDK/bundled runtime `0.1.5rc1` cannot resume across processes. Do not substitute
+`--dsh-runner`, a replacement home/session, or a changed provider endpoint.
+The native module, SDK/runtime closure, effective profile, patch and endpoint
+hash are compared again before model input. Missing/corrupt history refuses.
+
+`--operation-source-route-json '{"host_surface":"registered-surface","thread_id":"registered-thread"}'`
+selects an already registered return audience when required. The original
+source is not executor authentication. `--confirmed-operation-id` is the
+callback-owned exact locator; both flags retain their old Codex aliases.
+Do not supply a locator as proof of confirmation. Removing
+`--dsh-operation-module` disables this transport for subsequent Turns; it does
+not cancel an existing operation or reconcile an uncertain result. Keep the
+old pinned SDK/runtime/profile available for rollback and original recovery.
+Ordinary DSH and legacy Codex paths retain their existing behavior.
+
+中文：DSH 候选通过正常 CLI 显式加载绝对路径原生模块，并把相同参数保留在原
+delegation binding。保持原 runtime/home/patch、provider、模型/深度、token
+预算及 endpoint；不能换 session 绕过恢复失败。缺失/损坏历史在模型输入前拒绝。
+配置可用不等于运行资格；夹具确认、派发、规范结果、原卡回传和真实交易分别验收。
+移除模块开关只关闭后续 Turn 的该 transport，不取消旧操作或解除未知结果；保留
+旧 pin 供回滚与原操作恢复，不改全局安装。
 
 If the original standalone operation Session was prepared **without** a
 delegation MCP server, its profile includes `mcp_server: null`. Preserve that
@@ -1236,6 +1386,118 @@ frame, but does **not** edit this grant. Frontend grant editing and genuine
 original-source outcome delivery remain partial; synthetic startup tests do
 not establish an end-to-end user or trading loop.
 
+### Freeze an operator-authored operation request
+
+An owned Codex or DSH Turn can prepare an operator-authored immutable request
+without asking the model to reproduce the whole JSON object. This optional
+transport reuses `loopx_operation` and the canonical prepare service. It creates
+no actor, approval, budget, or execution authority.
+
+Keep one complete `operation.execute` preparation request in an operator-private
+file. Compute the SHA-256 of its exact UTF-8 bytes, then add both options to the
+existing `turn run-once` invocation:
+
+```sh
+request_sha=$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$request_file")
+# request_file must be absolute. Retain the original Goal/Agent/Todo and host options.
+loopx turn run-once ... \
+  --operation-request-file "$request_file" \
+  --operation-request-sha256 "$request_sha"
+```
+
+This requires the existing `--codex-operation-tools` or
+`--host dsh --dsh-operation-module ...` opt-in. With neither file option set,
+the tool schema, inline prepare form and session profile remain unchanged.
+When configured, `context` returns `prepared_request.ref`; the model uses:
+
+```json
+{"action":"prepare","request":{"ref":"request-<exact-context-locator>"}}
+```
+
+Configured preparation refuses an inline replacement, extra fields, unknown
+locators and model-selected paths. The private handler resolves the locator
+**after** matching the actual native call's original arguments. DSH socket
+pairing is unchanged. The locator is bound to the current Turn, Goal instance,
+Agent, Todo, native Session and profile; it is not a transferable permission.
+Context exposes neither the file path nor its full payload. Inspect the
+canonical proposal to read the accepted terms.
+
+The host checks the hash before SDK startup and again when the authenticated
+prepare call resolves the file. Files are bounded to the operation transport's
+256 KiB frame limit and must contain strict JSON without duplicate keys or
+non-finite values. The existing prepare service still checks current Goal
+admission, terms, expiry and audience, injects its own executor, and writes the
+only canonical proposal. It does not infer human confirmation or allow domain
+effects. Duplicate preparation with the same unchanged request uses existing
+canonical idempotency; this does not authorize retrying a consumed or unknown
+external effect.
+
+For callback continuation, keep the original file bytes/hash and both options
+in the same operator-owned binding's `host_args`. The source hash and selected
+return audience enter the native profile. Changing content, audience, or
+removing the options from an existing bound Session requires the existing
+explicit fresh-context and new-approval path. Do not renew an expired request,
+reuse an old confirmation, or rewrite a failed Turn to apply the feature.
+Removing the options disables it for future fresh Sessions; preserve any file
+needed to reconcile an already prepared/confirmed operation.
+
+This is an operator CLI preparation option. Existing proposal/card readback
+uses the same canonical state; no new Dashboard file selector or grant editor
+is delivered. Genuine confirmation, automatic original-Session continuation,
+original-audience result return and domain utility remain separate acceptance.
+
+### Continue the original operation owner
+
+Ordinary delegation requires different requester and worker Agents and a task
+completion basis. An authenticated confirmation may instead need to continue
+the same Agent's original operation Session while its broader Todo stays open.
+Do not create another Agent or declare that Todo complete to obtain a wake.
+For this case, the same operator-owned execution configuration can opt in one
+binding with `"continuation_kind": "original_operation"`. Set both `agent_id`
+and its sole intended `requesters` entry to the original operation Agent,
+`todo_id` to the original executor Todo, and preserve that Session's exact
+workspace, host arguments and bounded timeout. `output_refs` may be empty:
+this route returns canonical operation evidence, not accepted peer artifacts.
+Keep the existing collector `managed_turn_wake` pointed at this exact binding.
+This does not make the ordinary delegation API accept self-delegation.
+
+The callback checks the Goal lifetime, explicit owner grant, confirmation,
+unexpired immutable operation, original session/profile, and absence of prior
+start/consumption/outcome. It commits one `operation_turn_launch_v0` intent in
+the existing operation store before requesting the normal `turn run-once`
+entrypoint. The intent's `turn_instance_id` locates the existing Turn journal.
+`turn_requested` is a process request, not verified native start or domain
+execution. `existing_turn` never spawns again. `launch_uncertain` retains the
+original intent for explicit reconciliation; callback replay does not retry it.
+Native host start, first consumption, actual outcome and original-source
+delivery still require their own receipts. A typed wait never completes the
+broader Todo or creates a peer acceptance receipt.
+
+This exact authenticated human input uses the existing manual interval bypass;
+it does not shorten the automatic heartbeat interval. Removing the binding or
+collector wake stops new admission. An already reserved/requested Turn must be
+inspected or stopped through the existing Turn/host recovery path; grant removal
+does not cancel it or prove that no effect occurred. Keep the original SDK,
+runtime, home, module, patch and endpoint pins for recovery. Never use an expired
+or terminal operation to qualify a new launch. Configuration and local tests
+do not qualify a live collector, original-card delivery or financial effects.
+Dashboard grant editing remains a separate frontend gap; no new setting or
+default activation is introduced here.
+
+中文：同一 Agent 的原操作确认续跑，使用原 execution configuration 中显式的
+`continuation_kind: original_operation`，requester、Agent、Todo 必须精确指向原
+操作 owner。保留原工作树、session/profile、runtime/home/patch 和有界 timeout；
+不另造角色，不靠完成整个 Todo 或空校验器取得启动资格。普通 delegation 的跨
+Agent 和任务验收规则不放宽。原 collector 的 wake 配置仍须明确绑定此项，默认不启用。
+
+确认回调只在原 canonical operation 写入一次启动 intent，再沿正常 Turn 入口
+继续；并发/重复回调不再 spawn，启动响应丢失保留 intent、只允许原记录对账。
+`turn_requested`、`existing_turn` 和 `launch_uncertain` 都不是原生启动、消费、
+成交或原卡送达证明。真实本人确认沿已有 manual interval bypass 处理，自动心跳
+周期不变；撤销配置只阻止新准入，已申请的 Turn 须沿原恢复/停止路径核对。typed
+wait 不完成原 Todo、不产生 peer acceptance。前端配置、真实 collector/原卡和金融
+效果分别验收，不从本机测试或启动 intent 推断已完成。
+
 中文：此适配默认关闭。认证 Lark 确认只能请求既有 delegation 续跑，不能直接
 执行金融操作；启动 grant 与用户对不可变条款的批准独立。上例是原 collector v1
 配置片段，不是完整配置。`execution_config` 必须项目内相对路径、无穿越或符号
@@ -1252,3 +1514,16 @@ plan/inspect 的 `operation_callback_managed_wake_configured` 仅证明配置，
 移除启动配置或原 requester grant 在下一 callback 生效，已开始工作须走原停止/
 对账流程；丢失 ACK 不自动重启。Dashboard 沿用共享 frame 展示状态，但尚不能编辑
 此 grant；前端配置与真实原来源结果送达仍为部分交付，不能据合成测试称交易闭环。
+
+
+### Owner-pinned checker evidence
+
+Delegation evidence can include the acceptance owner's optional
+[owner-pinned oracle record](goal-acceptance-observations.md#owner-pinned-oracle-and-exact-versions).
+It names the source, check time and tested input/output versions only when the
+current owner contract and files still match and every returned output is covered
+at its exact version. Unconfigured, missing, changed or failed evidence stays
+unavailable; a current worker check or requester adoption cannot manufacture it.
+The Team evidence detail and correction trace show the same CLI/HTTP observation.
+This record attests a configured checker on declared snapshots; it does not
+identify a remote human/Agent verifier or prove that an objection was resolved.

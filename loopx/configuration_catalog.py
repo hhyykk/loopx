@@ -6,6 +6,7 @@ from typing import Any
 
 from .capabilities.configuration_ui import build_capability_configuration_catalog
 from .capabilities.content_ops.reference import reference_configuration_descriptor
+from .capabilities.decision_context.catalog_entry import decision_context_configuration_descriptor
 from .control_plane.agent_context import agent_context_descriptor
 from .explore_graph import explore_configuration
 from .capabilities.todo_replan_cadence.machine_defaults import default_replan_cadence_configuration
@@ -162,13 +163,14 @@ def build_goal_configuration_catalog(
             },
             {
                 "feature_id": "todo_replan_cadence",
-                "display_name": "Goal review cadence",
+                "display_name": "Goal review and stride",
                 "availability": "supported_explicit_override",
                 "default": default_replan_cadence_configuration(),
                 "consider_when": "Direction needs regular review even while the same Todo remains open.",
                 "effect": (
-                    "Choose 1–5 completed Todos or settled work Turns per Agent. "
-                    "Legacy settings retain their completed-Todo units until explicitly changed."
+                    "Choose 1–6 settled work Turns or 1–5 completed Todos per Agent. "
+                    "Legacy settings retain their completed-Todo units until explicitly changed. "
+                    "The optional versioned stride strategy proposes work-slice and route adjustments; off retains ordinary review."
                 ),
                 "does_not": [
                     "create host continuation turns or interrupt running work",
@@ -177,16 +179,18 @@ def build_goal_configuration_catalog(
                 ],
                 "commands": {
                     "preview_enable": _configure_command(
-                        goal_id, "--execution-replan-after-turns", "5"
+                        goal_id, "--execution-replan-after-turns",
+                        str(default_replan_cadence_configuration()["count"]),
                     ),
                     "apply_enable": _configure_command(
-                        goal_id, "--execution-replan-after-turns", "5", execute=True
+                        goal_id, "--execution-replan-after-turns",
+                        str(default_replan_cadence_configuration()["count"]), execute=True
                     ),
                     "preview_disable": _configure_command(
-                        goal_id, "--clear-execution-replan-after-todos", "--clear-execution-replan-after-turns"
+                        goal_id, "--clear-execution-replan-after-todos", "--clear-execution-replan-after-turns", "--clear-execution-stride-strategy"
                     ),
                     "apply_disable": _configure_command(
-                        goal_id, "--clear-execution-replan-after-todos", "--clear-execution-replan-after-turns", execute=True
+                        goal_id, "--clear-execution-replan-after-todos", "--clear-execution-replan-after-turns", "--clear-execution-stride-strategy", execute=True
                     ),
                     "verify": [inspect_command],
                 },
@@ -239,8 +243,8 @@ def build_goal_configuration_catalog(
                     "cutover to canonical local authority."
                 ),
                 "effect": (
-                    "Captures transaction-bound Todo and task-lease mutations in "
-                    "the file-v0 shadow used by parity qualification."
+                    "Retains inspection and bootstrap controls for pre-cutoff "
+                    "file-v0 shadow lineage; normal writes no longer feed it."
                 ),
                 "does_not": [
                     "promote the Goal or fence legacy writers",
@@ -481,13 +485,15 @@ def build_goal_configuration_catalog(
                 "current": {
                     "mode": explore["mode"],
                     "profile": harness.get("profile"),
+                    "composition_mode": harness.get("composition_mode", "disabled"),
+                    "composition_scope_id": harness.get("composition_scope_id"),
                 },
                 "profiles": list(explore_harness_profiles),
                 "consider_when": (
                     "The goal benefits from comparing alternative branches with explicit "
                     "evaluation criteria and guardrails."
                 ),
-                "effect": "Records durable exploration evidence, with optional read-only branch planning. Planning includes the evidence graph.",
+                "effect": "Records durable Explore evidence with optional read-only branch planning. Explicit composition replans require an exact experiment successor or typed result; task completion remains separate.",
                 "does_not": [
                     "grant permission to launch workers, claim todos, acquire leases or spend quota",
                 ],
@@ -626,6 +632,8 @@ def build_goal_configuration_catalog(
                 "default": {"enabled": False},
                 "current": {
                     "binding_status": reward_memory.get("binding_status"),
+                    "registered_agents": list(reward_memory.get("registered_agents") or []),
+                    "agent_bindings": list(reward_memory.get("agent_bindings") or []),
                     "effective_available": reward_memory.get("effective_available")
                     is True,
                     "desired_automation": dict(
@@ -683,22 +691,22 @@ def build_goal_configuration_catalog(
                         goal_id,
                         "--reward-memory-config",
                         "<ignored-reward-memory-config>",
-                        "--reward-memory-agent",
+                        "--reward-memory-agent-id",
                         "<agent-id>",
                     ),
                     "apply_enable": _configure_command(
                         goal_id,
                         "--reward-memory-config",
                         "<ignored-reward-memory-config>",
-                        "--reward-memory-agent",
+                        "--reward-memory-agent-id",
                         "<agent-id>",
                         execute=True,
                     ),
                     "preview_disable": _configure_command(
-                        goal_id, "--clear-reward-memory-config"
+                        goal_id, "--reward-memory-agent-id", "<agent-id>", "--clear-reward-memory-config"
                     ),
                     "apply_disable": _configure_command(
-                        goal_id, "--clear-reward-memory-config", execute=True
+                        goal_id, "--reward-memory-agent-id", "<agent-id>", "--clear-reward-memory-config", execute=True
                     ),
                     "verify": [
                         inspect_command,
@@ -882,6 +890,7 @@ def build_goal_configuration_catalog(
         }
     )
     catalog["features"].append(reference_configuration_descriptor())
+    catalog["features"].append(decision_context_configuration_descriptor())
     overrides = machine_inheritable_goal_overrides or {}
     for feature in catalog["features"]:
         feature_id = str(feature.get("feature_id") or "")

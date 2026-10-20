@@ -4,11 +4,13 @@ import argparse
 from collections.abc import Callable
 
 from ..control_plane.todos.contract import TODO_CONTINUATION_POLICY_VALUES
-from ..todos import ARCHIVE_COMPLETED_DEFAULT_MAX_ACTIVE_DONE
+from ..control_plane.todos.completed_archive import ARCHIVE_COMPLETED_DEFAULT_MAX_ACTIVE_DONE
 from .todo_argument_validation import (
+    TODO_ACTION_FIELDS,
     register_todo_linkage_arguments,
     register_todo_successor_creation_arguments,
 )
+from .action_help import install_action_help
 
 
 def register_todo_command(
@@ -52,7 +54,7 @@ def register_todo_command(
     todo_parser.add_argument("--goal-id", required=True, help="Goal id whose active state should receive the todo.")
     todo_parser.add_argument("--role", choices=["user", "agent"], help="Todo owner. Required for add; optional todo_id search scope for lifecycle commands. Defaults to agent for archive-completed.")
     todo_parser.add_argument("--text", help="Todo text. Required for add; keep it short and public-safe enough for local status.")
-    todo_parser.add_argument("--priority", choices=["P0", "P1", "P2", "P3", "P4"], help="For add/update, declare Todo priority independently of text; omission retains the current value.")
+    todo_parser.add_argument("--priority", choices=["P0", "P1", "P2", "P3", "P4"], help="Declare Todo priority independently of text; add defaults blocking user_gate/blocker or status=blocked work to P0 and other work to P1. Update omission retains the current value.")
     todo_parser.add_argument("--clear-priority", action="store_true", help="For update, explicitly remove priority; cannot be combined with --priority.")
     todo_parser.add_argument("--todo-id", help="Structured todo id from status/quota, such as todo_ab12cd34ef56.")
     todo_parser.add_argument(
@@ -63,7 +65,8 @@ def register_todo_command(
         "--update-operation-id",
         help=("For promoted text/note, planning, validator revision or User completion update, reuse this operation id after a lost response; "
               "changed intent is rejected. Planning supports status, evidence, reason, resume conditions and successor links; "
-              "User status=done uses terminal validation and lease release; other leased status changes remain unsupported."),
+              "Owner pause/deferral and explicit resume commit applicable lease retirement atomically; "
+              "User status=done uses terminal validation and lease release."),
     )
     todo_parser.add_argument(
         "--update-expected-provider-revision",
@@ -91,7 +94,8 @@ def register_todo_command(
         help=(
             "For todo complete --no-follow-up lifecycle reentry, reuse the "
             "exact completion identity projected by LoopX. This is not a quota "
-            "turn id and cannot be combined with --turn-instance-id."
+            "turn id and cannot be combined with --turn-instance-id, --note, "
+            "or --evidence."
         ),
     )
     todo_parser.add_argument(
@@ -103,7 +107,7 @@ def register_todo_command(
             "becomes the semantic receipt; no follow-up ACK command is required."
         ),
     )
-    todo_parser.add_argument("--status", choices=["open", "done", "blocked", "deferred"], help="For todo add/update, set the lifecycle status.")
+    todo_parser.add_argument("--status", choices=["open", "done", "blocked", "deferred"], help="For add/update, set lifecycle status. Owner pause/resume with --reason and optional --note/--evidence atomically retires the applicable lease; no manual release is needed.")
     todo_parser.add_argument("--note", help="Public-safe note to attach to a lifecycle transition.")
     todo_parser.add_argument("--evidence", help="Public-safe evidence pointer or short result for complete/update.")
     todo_parser.add_argument("--result-file", help="For todo complete with bound Goal acceptance criteria, bind a bounded local .json, .md or .txt result. A Todo validator alone is insufficient; use --evidence for a local artifact pointer.")
@@ -292,8 +296,9 @@ def register_todo_command(
         "--task-lease-idempotency-key",
         help=(
             "For todo claim on promoted hard-lease authority, atomically acquire "
-            "the canonical lease and claim; for promoted text/note or planning update, complete and supersede, prove the "
-            "execution instance that owns the active lease."
+            "the canonical lease and claim. Optional for administrative edits and bounded owner pause/resume; "
+            "when supplied, this proof and the current version are strictly checked. "
+            "Complete, supersede and other execution-fenced updates require the active execution proof."
         ),
     )
     todo_parser.add_argument(
@@ -301,8 +306,9 @@ def register_todo_command(
         type=int,
         help=(
             "For promoted todo claim, optionally compare-and-set the canonical "
-            "lease version; for promoted text/note or planning update, complete and supersede, supply the active lease "
-            "version when it is effective."
+            "lease version. For updates with an explicit lease key, supply its current version; "
+            "partial or stale proof is rejected. Complete, supersede and other execution-fenced "
+            "updates require the active lease version when it is effective."
         ),
     )
     todo_parser.add_argument(
@@ -416,8 +422,9 @@ def register_todo_command(
         "--no-follow-up",
         action="store_true",
         help=(
-            "For todo update/complete, record a structured no-follow-up rationale "
-            "when a completed todo intentionally has no successor."
+            "For ordinary todo update/complete, record a structured no-follow-up "
+            "rationale when a completed todo intentionally has no successor. "
+            "Lifecycle reentry preserves the original completion prose."
         ),
     )
     register_todo_successor_creation_arguments(todo_parser)
@@ -480,3 +487,6 @@ def register_todo_command(
             "into the Todo section markers."
         ),
     )
+    install_action_help(todo_parser, command_dest="todo_command",
+                        action_fields=TODO_ACTION_FIELDS,
+                        common_fields=frozenset({"goal_id", "subcommand_format"}))

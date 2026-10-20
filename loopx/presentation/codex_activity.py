@@ -30,6 +30,7 @@ COMMAND_VERBS = ("read", "search", "list", "run")
 TITLE_LIMIT = 160
 DETAIL_LIMIT = 4000
 REASONING_UPDATE_INTERVAL_SEC = 1.5
+ACTIVITY_UPDATE_INTERVAL_SEC = 5.0
 
 _ITEM_KINDS = {
     "reasoning": "reasoning",
@@ -93,6 +94,16 @@ def _limit(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def public_activity_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Preserve legacy event identity without replaying unqualified reasoning."""
+    payload = event.get("payload")
+    step = payload.get("step") if isinstance(payload, dict) else None
+    if not isinstance(step, dict) or step.get("kind") != "reasoning" or step.get("reasoning_summary") is True:
+        return event
+    safe = {key: step[key] for key in ("id", "kind", "state", "duration_ms") if key in step}
+    return {**event, "payload": {**payload, "step": {**safe, "title": ""}}}
+
+
 class CodexActivitySteps:
     """Fold one Turn's host items into compact, redacted owner steps."""
 
@@ -108,8 +119,10 @@ class CodexActivitySteps:
         )
         self._clock = clock
         self._started: dict[str, float] = {}
-        self._reasoning: dict[str, dict[str, list[str]]] = {}
+        self._reasoning: dict[str, list[str]] = {}
         self._reasoning_emitted: dict[str, float] = {}
+        self._active: dict[str, dict[str, Any]] = {}
+        self._activity_emitted: dict[str, float] = {}
 
     def _clean(self, value: Any) -> str:
         def clean_path(match: re.Match[str]) -> str:
@@ -148,7 +161,12 @@ class CodexActivitySteps:
         if item.get("type") == "reasoning":
             # The first update waits one interval so it carries a phrase, not a token.
             self._reasoning_emitted.setdefault(step_id, now)
-        return self._step(item, step_id, "running")
+        step = self._step(item, step_id, "running")
+        if step["kind"] in {"command", "tool"}:
+            # Keep only the redacted presentation, never the host payload.
+            self._active[step_id] = step
+            self._activity_emitted.setdefault(step_id, now)
+        return step
 
     def completed(self, item: Any) -> dict[str, Any] | None:
         if not isinstance(item, dict) or item.get("type") not in _ITEM_KINDS:
@@ -168,18 +186,33 @@ class CodexActivitySteps:
             step["duration_ms"] = max(0, int((self._clock() - started) * 1000))
         self._reasoning.pop(step_id, None)
         self._reasoning_emitted.pop(step_id, None)
+        self._active.pop(step_id, None)
+        self._activity_emitted.pop(step_id, None)
         return step
+
+    def activity_delta(self, item_id: Any, delta: Any, *, kind: str) -> dict[str, Any] | None:
+        """Observe real output/progress without retaining or displaying its text."""
+        if not isinstance(delta, str) or not delta:
+            return None
+        step_id = _step_id(item_id)
+        step = self._active.get(step_id)
+        if step is None or step["kind"] != kind:
+            return None  # Unknown, wrong-kind and already-terminal items stay absent.
+        now = self._clock()
+        if now - self._activity_emitted[step_id] < ACTIVITY_UPDATE_INTERVAL_SEC:
+            return None
+        self._activity_emitted[step_id] = now
+        return {**step, "duration_ms": max(0, int((now - self._started[step_id]) * 1000))}
 
     def reasoning_delta(
         self, item_id: Any, delta: Any, *, summary: bool, index: Any = 0
     ) -> dict[str, Any] | None:
-        """Accumulate streamed thinking text; return a throttled update."""
+        """Project explicit public summaries; never retain raw reasoning text."""
 
-        if not isinstance(delta, str) or not delta:
+        if not summary or not isinstance(delta, str) or not delta:
             return None
         step_id = _step_id(item_id)
-        parts = self._reasoning.setdefault(step_id, {"summary": [], "content": []})
-        bucket = parts["summary" if summary else "content"]
+        bucket = self._reasoning.setdefault(step_id, [])
         position = index if isinstance(index, int) and 0 <= index < 64 else len(bucket) - 1
         while len(bucket) <= max(position, 0):
             bucket.append("")
@@ -189,16 +222,15 @@ class CodexActivitySteps:
             return None
         self._reasoning_emitted[step_id] = now
         self._started.setdefault(step_id, now)
-        return self._reasoning_step(step_id, "running", parts["summary"], parts["content"])
+        return self._reasoning_step(step_id, "running", bucket)
 
     def _reasoning_step(
-        self, step_id: str, state: str, summary: list[str], content: list[str]
+        self, step_id: str, state: str, summary: list[str]
     ) -> dict[str, Any]:
-        # A model summary is the host's intended explanation; raw thinking text
-        # is shown only when that is all the host exposes.
-        text = "\n\n".join(part.strip() for part in (summary if any(summary) else content) if part.strip())
+        text = "\n\n".join(part.strip() for part in summary if part.strip())
         step: dict[str, Any] = {"id": step_id, "kind": "reasoning", "state": state, "title": ""}
         if text:
+            step["reasoning_summary"] = True
             first = next(line for line in text.splitlines() if line.strip())
             step["title"] = self._title(first.strip().strip("*#").strip())
             step["detail"] = self._detail(text)
@@ -208,11 +240,7 @@ class CodexActivitySteps:
         kind = _ITEM_KINDS[str(item.get("type"))]
         if kind == "reasoning":
             summary = [str(part) for part in item.get("summary") or [] if isinstance(part, str)]
-            content = [str(part) for part in item.get("content") or [] if isinstance(part, str)]
-            streamed = self._reasoning.get(step_id, {"summary": [], "content": []})
-            return self._reasoning_step(
-                step_id, state, summary or streamed["summary"], content or streamed["content"]
-            )
+            return self._reasoning_step(step_id, state, summary or self._reasoning.get(step_id, []))
         step: dict[str, Any] = {"id": step_id, "kind": kind, "state": state, "title": ""}
         if kind == "command":
             command = _unwrap_shell(str(item.get("command") or ""))

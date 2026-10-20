@@ -35,9 +35,7 @@ from .control_plane.effect_runtime import (
     effect_runtime_request_scope, effect_runtime_result, EffectRuntimeRemoteError,
 )
 from .control_plane.coordination.local_authority import local_authority_is_promoted
-from .control_plane.todos.handoff_mode import show_goal_handoff_mode
 from .control_plane.turn_driver.journal_store import (
-    find_loopx_turn_key_by_settlement_identity,
     load_turn_journal,
     turn_journal_path,
 )
@@ -277,6 +275,8 @@ def register_collaboration_tools(server: FastMCP, root: Path, registry: Path, go
         request_id: str,
         decision: Literal["adopt", "defer", "reject", "no_change"],
         reason: str,
+        request_revision: int | None = None,
+        request_digest: str | None = None,
     ) -> dict:
         """Record your independent decision; this does not change task ownership or priority."""
         check_scope()
@@ -289,6 +289,8 @@ def register_collaboration_tools(server: FastMCP, root: Path, registry: Path, go
             reason,
             registry=registry,
             caller_goal_ref=caller_goal_ref,
+            request_revision=request_revision,
+            request_revision_digest=request_digest,
         )
 
     @server.tool()
@@ -344,7 +346,7 @@ def register_collaboration_tools(server: FastMCP, root: Path, registry: Path, go
         + conversation_answer_instruction()
     ))
     def return_result(request_id: str, text: str, update_id: str | None = None,
-                      attachment_refs: list[str] | None = None) -> dict:
+                      attachment_refs: list[str] | None = None, request_revision: int | None = None) -> dict:
         """Return a conclusion to the original requester. For a later changed fact,
         append an update with a stable update_id; retry with the same id and text.
         Neither a blocker nor a returned result certifies completion of the work.
@@ -363,10 +365,32 @@ def register_collaboration_tools(server: FastMCP, root: Path, registry: Path, go
             text,
             update_id=update_id,
             attachment_refs=attachment_refs,
+            request_revision=request_revision,
             workspace=workspace,
             registry=registry,
             caller_goal_ref=caller_goal_ref,
         )
+
+    if caller_goal_ref is not None:
+        @server.tool()
+        def control_peer_request(request_id: str, receiver_agent_id: str,
+                                 operation: Literal["inspect", "revise", "cancel", "recover"],
+                                 parameters: dict | None = None, execute: bool = False) -> dict:
+            """Control your own exact-profile peer request using its current revision/digest.
+
+            Revise/cancel need a stable operation_id in parameters. Preview by
+            default. Recovery reads the original effect; cancellation remains
+            pending until its original Goal terminal receipt is linked. It does
+            not revoke committed Goal work or grant new execution permission.
+            """
+            from .control_plane.collaboration.request_amendment import control_request
+            from .capabilities.todo_replan_cadence.machine_defaults import resolve_todo_replan_cadence_goal
+
+            check_scope()
+            return control_request(registry_path=registry, runtime_root=root, goal_ref=caller_goal_ref,
+                replan_configuration_reader=resolve_todo_replan_cadence_goal,
+                receiver_agent_id=receiver_agent_id, request_id=request_id, actor_agent_id=agent_id,
+                operation=operation, parameters=parameters, execute=execute)
 
     @server.tool()
     def consume_peer_result(request_id: str, result_key: str = "conclusion") -> dict:
@@ -514,7 +538,10 @@ class Delegations:
     def operations(self, *, limit: int = 20, cursor: str | None = None) -> dict:
         from .control_plane.collaboration.delegation_inventory import read_delegation_inventory
 
-        return read_delegation_inventory(self, limit=limit, cursor=cursor)
+        # One page uses one executable revision; records are still read live,
+        # and the next page resolves its own current revision.
+        with effect_runtime_request_scope():
+            return read_delegation_inventory(self, limit=limit, cursor=cursor)
 
     def inspect(self, binding_id: str) -> dict:
         """Observe the real Turn preflight; never create a request or run a host."""
@@ -600,14 +627,11 @@ class Delegations:
                      "--turn-instance-id", operation, *self._execution_arguments(binding, operation)]
         # Host arguments are operator-owned, but inspection must stay read-only
         # even when they contain an abbreviated execution flag or a selector.
-        from .cli_runtime import add_subcommand_format, build_cli_parser
-        from .cli_commands.turn_registration import register_turn_commands
+        from .cli_runtime import _build_selected_parser, _SelectedParseRejected
 
-        parser, subparsers = build_cli_parser()
-        register_turn_commands(subparsers, add_subcommand_format)
         try:
-            selected = parser.parse_args(arguments)
-        except SystemExit as exc:
+            selected = _build_selected_parser("turn").parse_args(arguments)
+        except (SystemExit, _SelectedParseRejected) as exc:
             raise ValueError("invalid delegation Turn arguments") from exc
         workspace = workspace_identity[2]
         selected_project = Path(selected.project)
@@ -732,7 +756,7 @@ class Delegations:
                     raise ValueError(DELEGATION_STOPPED_MESSAGE)
                 if row["status"] == "rejected":
                     try:
-                        self._recover_validated_settlement(path, row, binding)
+                        delegation_validation.recover_validated_settlement(self, path, row, binding)
                     except DelegationFenced:
                         raise ValueError(DELEGATION_STOPPED_MESSAGE) from None
                 should_spawn = row["status"] not in DELEGATION_TERMINAL_STATUSES
@@ -758,6 +782,43 @@ class Delegations:
             time.sleep(3)
         return self.read(operation_id)
 
+    def revalidate(self, operation_id: str) -> dict:
+        """Explicitly rerun the original postcondition; never repeat Host work."""
+        path = self.path(require_operation_id(operation_id))
+        with exclusive_file_lock(path, policy=LockAcquisitionPolicy.SINGLE_FLIGHT):
+            if self._read_stop(path) is not None:
+                raise ValueError(DELEGATION_STOPPED_MESSAGE)
+            row = _read(path)
+            binding = self._bound(row, require_active=True)
+            if row["status"] != "rejected":
+                raise ValueError("revalidation requires the original independent task failure")
+            failure = delegation_validation.task_failure(self, row, binding)
+            if failure is None:
+                # A previous recheck may have committed before its response or
+                # projection write arrived. Reconcile that same execution first.
+                recovered = delegation_validation.recover_validated_settlement(self, path, row, binding)
+                if not recovered:
+                    raise ValueError("revalidation requires the original independent task failure")
+            else:
+                delegation_results.require_dependencies(self, binding, delegation_results.operation_brief(self, row))
+                row.setdefault("validation_failure", failure)
+                self._fenced_write(path, row)  # Durable intent precedes the effect.
+                result = self._cli(binding, "turn", "run-once", "--goal-id", self.goal_id,
+                    "--agent-id", binding["agent_id"], "--resume-turn-key", failure["turn_key"],
+                    *self._execution_arguments(binding, operation_id), "--retry-failed-turn", "--execute",
+                    timeout=binding["timeout_seconds"] + 60,
+                    delegated_lease=self._delegated_lease_context(row, binding),
+                    host_record=self._host_process_record(path))
+                if result.get("status") == "committed":
+                    delegation_validation.record_revalidation_result(self, path, row, binding, result)
+                    recovered = True
+                else:
+                    self._record_turn_result(path, row, result, publish=False)
+                    recovered = delegation_validation.recover_validated_settlement(self, path, row, binding)
+        if recovered:
+            self._spawn(operation_id)
+        return self.read(operation_id)
+
     def _bound(self, row: dict, *, require_active: bool = False) -> dict:
         binding = self.binding(row["identity"]["binding"]["id"], require_active=require_active)
         if row["identity"]["binding"] != binding:
@@ -770,78 +831,6 @@ class Delegations:
             row.get("turn_instance_id")
             or "delegation-" + row["identity"]["request_id"][:32]
         )
-
-    def _matching_turn_key(self, row: dict, binding: dict) -> str | None:
-        """Find only the journal bound to this operation's settlement identity."""
-
-        return find_loopx_turn_key_by_settlement_identity(
-            self.root,
-            goal_id=self.goal_id,
-            agent_id=binding["agent_id"],
-            todo_id=binding["todo_id"],
-            turn_instance_id=self._turn_instance_id(row),
-        )
-
-    def _validated_turn_journal(self, row: dict, binding: dict) -> dict | None:
-        turn_key = self._matching_turn_key(row, binding)
-        if turn_key is None:
-            return None
-        journal = load_turn_journal(
-            turn_journal_path(self.root, goal_id=self.goal_id, turn_key=turn_key)
-        )
-        if journal is None:
-            return None
-        phases = journal.get("completed_phases")
-        validation = journal.get("task_validation")
-        host_result = journal.get("host_result")
-        if (
-            journal.get("status") != "in_progress"
-            or journal.get("result_kind") != "validated_progress"
-            or phases != ["host_execute", "typed_result", "validation"]
-            or not isinstance(validation, dict)
-            or validation.get("ok") is not True
-            or not isinstance(host_result, dict)
-            or host_result.get("turn_key") != turn_key
-            or host_result.get("result_kind") != "validated_progress"
-        ):
-            return None
-        row["turn_key"] = turn_key
-        return journal
-
-    def _recover_validated_settlement(
-        self, path: Path, row: dict, binding: dict
-    ) -> bool:
-        """Reopen only an exact, independently validated settlement boundary."""
-
-        journal = self._validated_turn_journal(row, binding)
-        if journal is None:
-            return False
-        decision = effect_runtime_result(
-            "collaboration.delegation.recover_validated_settlement",
-            {
-                "from": row["status"],
-                "identity_matched": True,
-                "journal_status": journal.get("status"),
-                "result_kind": journal.get("result_kind"),
-                "completed_phases": journal.get("completed_phases"),
-                "task_validation_passed": (
-                    isinstance(journal.get("task_validation"), dict)
-                    and journal["task_validation"].get("ok") is True
-                ),
-            },
-        )
-        row["status"] = decision["status"]
-        row["turn_result"] = {
-            "status": journal.get("status"),
-            "result_kind": journal.get("result_kind"),
-            "resume_turn_key": row["turn_key"],
-            "reason": "validated Turn settlement requires same-operation recovery",
-            "host_failure": None,
-            "error": None,
-        }
-        row.pop("error", None)
-        self._fenced_write(path, row)
-        return True
 
     def adopt_result(self, operation_id: str, consumer_operation_id: str) -> dict:
         return delegation_results.adopt_result(self, operation_id, consumer_operation_id)
@@ -884,6 +873,12 @@ class Delegations:
             result.update(accepted)
         if row.get("error"):
             result["error"] = row["error"]
+        if row["status"] == "rejected":
+            if not active and stop is None and delegation_validation.committed_revalidation_key(self, row, binding) is not None:
+                result["recovery_required"] = True
+            failure = delegation_validation.task_failure(self, row, binding)
+            if failure is not None:
+                result["task_failure"] = failure
         return result
 
     def _observe(self, path: Path, row: dict, status: str, *, already_locked: bool = False, **facts) -> None:
@@ -1000,7 +995,7 @@ class Delegations:
             return False, state
 
     def _turn_journal_status(self, row: dict, binding: dict) -> str | None:
-        turn_key = row.get("turn_key") or self._matching_turn_key(row, binding)
+        turn_key = row.get("turn_key") or delegation_validation.matching_turn_key(self, row, binding)
         if not turn_key:
             return None
         journal = load_turn_journal(turn_journal_path(self.root, goal_id=self.goal_id, turn_key=turn_key))
@@ -1194,7 +1189,7 @@ class Delegations:
                 "pid": os.getpid(), "host": lock_holder_host_label(), "at": time.time(),
                 "source": source, "observed_status": observed,
                 "turn_key": (current.get("turn_key") or row.get("turn_key")
-                             or self._matching_turn_key(current, binding)),
+                             or delegation_validation.matching_turn_key(self, current, binding)),
             })
             _write(self._stop_path(path), stop)
         try:
@@ -1565,20 +1560,16 @@ class Delegations:
     ) -> dict:
         """Acquire the promoted hard lease before worker or completion effects."""
 
-        if not local_authority_is_promoted(
-            runtime_root=self.root,
-            goal_id=self.goal_id,
-        ):
-            if row.get("task_lease", {}).get("required") is True:
-                raise ValueError("delegation canonical authority disappeared; reconcile the original execution")
-            row["task_lease"] = {"required": False, "handoff_mode": "legacy"}
-            self._fenced_write(path, row)
-            return row["task_lease"]
-        handoff_mode = show_goal_handoff_mode(
-            registry_path=self.registry,
-            runtime_root_arg=str(self.root),
-            goal_id=self.goal_id,
-        )["handoff_mode"]
+        from .control_plane.work_items.task_lease import inspect_task_lease
+
+        observed = inspect_task_lease(registry_path=self.registry, runtime_root=self.root,
+                                      goal_id=self.goal_id, todo_id=binding["todo_id"])
+        support = observed.get("execution_policy")
+        if not isinstance(support, dict) or type(support.get("supported")) is not bool:
+            raise RuntimeError("lease inspection omitted typed execution-policy support")
+        if not support["supported"]:
+            raise ValueError(str(support.get("reason") or "current execution policy is unavailable"))
+        handoff_mode = observed["handoff_mode"]
         if handoff_mode != "hard_lease":
             if row.get("task_lease", {}).get("required") is True:
                 raise ValueError("delegation authority mode changed; reconcile the original execution")
@@ -1737,13 +1728,14 @@ class Delegations:
                 self._write_delegation_bootstrap(row, binding)
                 self._acquire_delegation_lease(path, row, binding)
                 self._observe(path, row, "running")
-            if row.get("task_lease", {}).get("required") is True and "lease" not in row["task_lease"]:
-                # Upgrade a still-current operation record by replaying its
-                # original claim, not by inventing a replacement execution.
+            elif row["status"] == "running":
+                # Resumption rechecks typed policy support even for old records
+                # that said no lease was required. Hard mode replays its original
+                # claim proof; it cannot invent a replacement execution.
                 self._acquire_delegation_lease(path, row, binding)
             if row["status"] == "running":
                 self._raise_if_stop_requested(path)
-                turn_key = self._matching_turn_key(row, binding)
+                turn_key = delegation_validation.matching_turn_key(self, row, binding)
                 selector = (
                     ["--resume-turn-key", turn_key]
                     if turn_key
@@ -1768,7 +1760,7 @@ class Delegations:
             result = row["turn_result"]
             needs_settlement = result.get("status") != "committed" or result.get("result_kind") != "validated_progress"
             if needs_settlement:
-                journal = self._validated_turn_journal(row, binding)
+                journal = delegation_validation.validated_turn_journal(self, row, binding)
                 if journal is None:
                     row["error"] = str(
                         result.get("error")
@@ -1872,6 +1864,8 @@ def register_delegation_tools(server, delegations: Delegations) -> None:
 
         Accepted items are rechecked; unavailable requires reconciliation, not duplicate
         dispatch. Read the original operation for full artifacts. Listing starts no work.
+        Read projection_envelope before claiming current or complete state: its scope
+        is this requester page, and alerts and omitted operations must be disclosed.
         """
         return delegations.operations(limit=limit, cursor=cursor)
 
@@ -1914,6 +1908,11 @@ def register_delegation_tools(server, delegations: Delegations) -> None:
     def resume_delegation(operation_id: str) -> dict:
         """Reconnect an interrupted original execution; never launch a replacement Turn."""
         return delegations.resume(operation_id)
+
+    @server.tool()
+    def revalidate_delegation(operation_id: str) -> dict:
+        """After repairing the original task, recheck its cached result without repeating Host work."""
+        return delegations.revalidate(operation_id)
 
     @server.tool()
     async def stop_delegation(operation_id: str) -> dict:

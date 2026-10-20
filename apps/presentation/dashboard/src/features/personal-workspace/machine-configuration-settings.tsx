@@ -17,7 +17,7 @@ import {
   type MachineConfigurationRollbackPlan,
   type MachineConfigurationTransaction,
 } from "../../data/chat";
-import { goalStorageEditorValue, projectEditableCapabilityConfiguration, replanCadenceEditorValue } from "../../data/capability-configuration";
+import { changeStewardExecutorDraft, goalStorageEditorValue, projectEditableCapabilityConfiguration, replanCadenceEditorValue } from "../../data/capability-configuration";
 import { CapabilityConfigurationFields } from "./capability-configuration-fields";
 import { withReportScheduleTimezone } from "./periodic-report-schedule-field";
 import { localizeCapability, localizedCapabilityFieldCopy } from "./capability-localization";
@@ -110,7 +110,7 @@ function shortRevision(value: string | undefined) {
   return value.replace(/^sha256:/, "").slice(0, 12);
 }
 
-export function MachineConfigurationSettings({ section, onChanged }: { section: "steward" | "other"; onChanged?: () => void }) {
+export function MachineConfigurationSettings({ section, onChanged }: { section: "steward" | "conversation" | "other"; onChanged?: () => void }) {
   const { locale, t } = useWorkspaceI18n();
   const [inspection, setInspection] = useState<MachineConfigurationInspection | null>(null);
   const [selectedCapabilityId, setSelectedCapabilityId] = useState("");
@@ -128,9 +128,9 @@ export function MachineConfigurationSettings({ section, onChanged }: { section: 
   const capabilities = useMemo(() => orderCapabilitiesForPresentation(
     (inspection?.capability_catalog.capabilities ?? []).filter((capability) =>
       capability.available_scopes.includes("machine")
-      && (section === "steward"
+      && (section === "conversation" ? capability.capability_id === "codex_chat" : section === "steward"
         ? capability.capability_id === "steward_executor" || capability.capability_id === "manager_runtime"
-        : capability.capability_id !== "steward_executor" && capability.capability_id !== "manager_runtime")),
+        : capability.capability_id !== "steward_executor" && capability.capability_id !== "manager_runtime" && capability.capability_id !== "codex_chat")),
     locale,
   ), [inspection, locale, section]);
   const invalidNamespace = inspection?.invalid_namespaces[0];
@@ -210,7 +210,9 @@ export function MachineConfigurationSettings({ section, onChanged }: { section: 
 
   function changeDraft(key: string, value: unknown) {
     setDraft((current) => selected?.capability_id === "periodic_report"
-      ? withReportScheduleTimezone(current, key, value) : { ...current, [key]: value });
+      ? withReportScheduleTimezone(current, key, value)
+      : selected?.capability_id === "steward_executor"
+        ? changeStewardExecutorDraft(current, key, value) : { ...current, [key]: value });
     setPreview(null);
     setPreviewOperation("upsert");
     setError(null);
@@ -352,8 +354,8 @@ export function MachineConfigurationSettings({ section, onChanged }: { section: 
       <div>
         {diagnosis}
         {section === "steward" ? <details className="personal-capability-scope-note">
-          <summary><ShieldCheck aria-hidden size={17} />{t("machine.liveDefault")}</summary>
-          <p>{t("machine.liveDefaultDescription")}</p>
+          <summary><ShieldCheck aria-hidden size={17} />{t("machine.stewardDefaults")}</summary>
+          <p>{t("machine.stewardDefaultsDescription")}</p>
         </details> : null}
         {section === "other" ? <UsageStatisticsSettings /> : null}
       </div>
@@ -382,8 +384,8 @@ export function MachineConfigurationSettings({ section, onChanged }: { section: 
             <section className="personal-capability-behavior-note">
               <ShieldCheck aria-hidden size={18} />
               <div><strong>{locale === "zh-CN" ? "仅影响此后创建的 Goal" : "Future Goals only"}</strong><p>{locale === "zh-CN"
-                ? "启用 canonical 创建后，新 Goal 直接建立权威存储，并采用所选执行策略；失败时须重试原创建操作。关闭时仅固定晋升后的目标存储。已有 Goal 的升级仍需备份、停止写入和结算租约；这里不授予工具权限。"
-                : "With canonical creation enabled, new Goals establish authority with the selected execution policy; retry the original operation after failure. Disabled only freezes the post-promotion target. Existing Goals still require backup, stopped writers and settled leases for upgrade; this setting grants no tool permissions."}</p></div>
+                ? "2.0 新建 Goal 必须启用 canonical 创建，并采用所选执行策略。旧的关闭设置不会自动改变；启用后再重试创建。已有 Goal 需备份、停止写入并导入；这里不迁移已有数据，也不授予工具权限。"
+                : "2.0 requires canonical creation with the selected execution policy. An older disabled setting is not changed automatically; enable it before retrying creation. Back up, stop writers and import existing Goals separately. This setting neither migrates existing data nor grants tool permissions."}</p></div>
             </section>
           ) : null}
 
@@ -440,7 +442,7 @@ export function MachineConfigurationSettings({ section, onChanged }: { section: 
 
           {editorMode === "guided" ? (
             <section className="personal-capability-field-summary">
-              <CapabilityConfigurationFields copy={localizedCapabilityFieldCopy(locale)} disabled={Boolean(busy)} editor={selected.configuration_editor}
+              <CapabilityConfigurationFields copy={localizedCapabilityFieldCopy(locale, selected.capability_id)} disabled={Boolean(busy)} editor={selected.configuration_editor}
                 omitKeys={selected.capability_id === "steward_executor" && draft.selection_policy !== "flexible" ? ["eligible_endpoints"] : []}
                 onChange={changeDraft} value={draft}
                 enabledAction={<button className="personal-capability-edit-json" onClick={() => changeMode("json")} type="button"><Code2 aria-hidden size={14} />{t("machine.editJson")}</button>} />

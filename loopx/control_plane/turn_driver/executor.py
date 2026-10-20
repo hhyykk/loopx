@@ -12,6 +12,7 @@ from ...authority import validate_public_safe_text
 from ...file_lock import LockAcquireTimeoutError, exclusive_file_lock
 from ...runtime import validate_goal_id_path_segment
 from ..effect_runtime import EffectRuntimeConflict
+from ..quota.spend_commit import QuotaRunIndexConflict
 from ..effect_program import (
     SettlementStepKind,
     interpret_turn_result_packet,
@@ -65,6 +66,7 @@ from .settlement import (
     TurnSettlementJournalAdapter,
     execute_turn_driver_settlement,
     invoke_result_effect,
+    invoke_turn_effect,
     terminal_closeout_requirement,
     turn_settlement_failure_outcome,
     turn_settlement_outcome,
@@ -239,11 +241,22 @@ def _normalize_host_path_delta(
     *,
     unchanged_reason: str,
     errors: list[str],
+    from_journal: bool = False,
 ) -> tuple[str, dict[str, Any] | None]:
-    path_delta_mode = str(result.get("path_delta_mode") or "").strip()
+    raw_path_delta_mode = result.get("path_delta_mode")
+    path_delta_mode = ""
+    if raw_path_delta_mode is None and "path_delta_mode" in result:
+        errors.append("path_delta_mode must be a string")
+    elif raw_path_delta_mode is not None and not isinstance(raw_path_delta_mode, str):
+        path_delta_mode = ""
+        errors.append("path_delta_mode must be a string")
+    else:
+        path_delta_mode = str(raw_path_delta_mode or "").strip()
     raw_agent_vision = result.get("agent_vision_json")
     if raw_agent_vision is None:
         agent_vision_json = ""
+        if "agent_vision_json" in result:
+            errors.append("agent_vision_json must be a JSON string")
     elif isinstance(raw_agent_vision, str):
         agent_vision_json = raw_agent_vision.strip()
     else:
@@ -258,7 +271,25 @@ def _normalize_host_path_delta(
         errors.append("path_delta_mode must be unchanged or material_replan")
 
     agent_vision: dict[str, Any] | None = None
-    if agent_vision_json:
+    if from_journal and "agent_vision" in result:
+        # The journal stores the typed owner's decoded packet. Revalidate it
+        # through that same owner, without treating derived budget diagnostics
+        # as a new Host wire string or widening the untrusted Host protocol.
+        try:
+            if "agent_vision_json" in result:
+                raise ValueError("cached vision cannot carry both packet forms")
+            packet = result["agent_vision"]
+            if not isinstance(packet, dict):
+                raise TypeError("cached agent_vision must be a JSON object")
+            envelope = plan.get("turn_envelope") or {}
+            agent_vision = normalize_goal_vision_packet(
+                packet,
+                goal_id=str(envelope.get("goal_id") or ""),
+                agent_id=str(envelope.get("agent_id") or "") or None,
+            )
+        except (TypeError, ValueError) as exc:
+            errors.append(f"invalid cached agent_vision: {exc}")
+    elif agent_vision_json:
         if len(agent_vision_json) > HOST_AGENT_VISION_JSON_MAX_CHARS:
             errors.append(
                 "agent_vision_json exceeds "
@@ -279,7 +310,7 @@ def _normalize_host_path_delta(
                     goal_id=str(envelope.get("goal_id") or ""),
                     agent_id=str(envelope.get("agent_id") or "") or None,
                 )
-            except (json.JSONDecodeError, ValueError) as exc:
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 errors.append(f"invalid agent_vision_json: {exc}")
 
     if path_delta_mode == "material_replan":
@@ -309,10 +340,13 @@ def validate_loopx_turn_host_result(
     value: Mapping[str, Any],
     *,
     completion_lifecycle_configured: bool = False,
+    from_journal: bool = False,
 ) -> dict[str, Any]:
     result = dict(value)
     errors: list[str] = []
     allowed_fields = HOST_RESULT_FIELDS | subagent.subagent_host_result_fields(plan)
+    if from_journal:
+        allowed_fields = allowed_fields | {"agent_vision"}
     unknown = sorted(set(result) - allowed_fields)
     if unknown:
         errors.append("unsupported host result fields: " + ", ".join(unknown))
@@ -403,6 +437,7 @@ def validate_loopx_turn_host_result(
             result,
             unchanged_reason=unchanged_reason,
             errors=errors,
+            from_journal=from_journal,
         )
         if (
             path_delta_mode == "material_replan"
@@ -418,9 +453,10 @@ def validate_loopx_turn_host_result(
     elif (
         str(result.get("path_delta_mode") or "").strip()
         or str(result.get("agent_vision_json") or "").strip()
+        or (from_journal and "agent_vision" in result)
     ):
         errors.append(
-            "wait and user_action_required results cannot declare a path delta"
+            "non-material host results cannot declare path_delta_mode or agent_vision_json"
         )
     if subagent.subagent_execution_topology(plan) is not None:
         subagent.observe_subagent_host_result(plan, result, normalized, errors)
@@ -839,6 +875,7 @@ def _host_result_stage(
     usage_goal_id: str = "",
 ) -> tuple[dict[str, Any] | None, list[str], dict[str, Any] | None]:
     completed_phases = list(journal.get("completed_phases") or [])
+    from_journal = "typed_result" in completed_phases
     result = (
         journal.get("host_result")
         if isinstance(journal.get("host_result"), dict)
@@ -917,6 +954,7 @@ def _host_result_stage(
         plan,
         result or {},
         completion_lifecycle_configured=completion_lifecycle_configured,
+        from_journal=from_journal,
     )
     if not validation.get("ok"):
         failure = _host_failure(
@@ -1152,6 +1190,20 @@ def _typed_settlement_stage(
             return invoke_result_effect(completion_writeback, result, effect_ref)
         return invoke_result_effect(writeback, result, effect_ref)
 
+    def spend_effect(effect_ref: str) -> Mapping[str, Any]:
+        try:
+            return invoke_turn_effect(spend, effect_ref)
+        except QuotaRunIndexConflict as exc:
+            # A failed run-index precondition proves this spend did not commit.
+            # Project it as a settlement rejection; ambiguous provider errors
+            # must remain prepared for readback and recovery.
+            return {
+                "ok": False,
+                "appended": False,
+                "reason": str(exc),
+                "reason_code": exc.reason_code,
+            }
+
     journal_adapter = TurnSettlementJournalAdapter(
         journal=journal,
         effects=effects,
@@ -1190,7 +1242,7 @@ def _typed_settlement_stage(
             else None
         ),
         writeback=writeback_effect,
-        spend=spend,
+        spend=spend_effect,
         checkpoint=journal_adapter.checkpoint,
         committed_effect_id=_journal_committed_effect_id(journal),
         terminal_closeout_required=terminal_closeout_required,
@@ -1325,6 +1377,8 @@ def run_loopx_turn_once(
     timeout_seconds: float | None,
     execute: bool,
     retry_failed: bool = False,
+    decision_capture_payload: Mapping[str, Any] | None = None,
+    require_decision_capture: bool = False,
     task_validator: TaskValidator | None = None,
     writeback: Writeback | None = None,
     completion_writeback: CompletionWriteback | None = None,
@@ -1485,6 +1539,17 @@ def run_loopx_turn_once(
         )
         if needs_host and goal_admission is not None:
             goal_admission.require_current()
+        if require_decision_capture and needs_host:
+            from .decision_capture import prepare_turn_decision_capture
+
+            original_plan = journal["plan"] if journal is not None else plan
+            plan = prepare_turn_decision_capture(
+                original_plan, journal_path=journal_path,
+                decision=decision_capture_payload, existing_journal=journal is not None,
+            )
+            # Preserve any session recovery adjustment; only the original
+            # observation replaces the fresh request's context.
+            request = {**request, "turn_envelope": plan["turn_envelope"]}
         admission = None
         if needs_host and admit_start is not None:
             admission = admit_start(

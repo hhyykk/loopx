@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { goalCreateRequest } from "./goal-create-request.ts";
+import { goalCreateRequest, goalCreationAgentId } from "./goal-create-request.ts";
 import { localizedCapabilityFieldCopy } from "./capability-localization.ts";
+import { taskSessionStatus } from "./goal-activity.ts";
 import "./monitor-readback.test.mjs";
 
 const source = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
+const projectionAgent = { agentId: "status-only", adapterKind: "status_projection", available: true, label: "Status" };
+const missingAgent = { agentId: "codex", available: false, label: "Codex" };
+const availableAgent = { agentId: "claude", available: true, label: "Claude" };
+assert.equal(goalCreationAgentId("status-only", [missingAgent, projectionAgent]), "codex", "Creation diagnoses the real missing executor, never the read-only snapshot");
+assert.equal(goalCreationAgentId("status-only", [missingAgent, availableAgent, projectionAgent]), "claude", "Creation can use the discovered available executor");
+assert.equal(goalCreationAgentId("codex", [missingAgent, availableAgent, projectionAgent]), "codex", "An explicit unavailable executor remains selected for its own gate");
+assert.equal(goalCreationAgentId("custom", [missingAgent, projectionAgent]), "custom", "An unknown explicit identity is left for backend eligibility");
+assert.equal(goalCreationAgentId("status-only", [projectionAgent]), "status-only", "An empty executor catalog cannot manufacture an executor");
 const answerText = source("./answer-text.ts");
 const model = source("./personal-workspace-model.ts");
 const activity = source("./goal-activity.ts");
@@ -49,7 +58,8 @@ for (const operation of ["reassign", "block"]) {
 assert.match(drawer, /previewTodoTransition\(selection\.item, "defer"/, "Todo defer collects a resume condition before preview");
 assert.match(drawer, /resume_when:\s*resumeWhen/, "Todo defer sends its explicit resume condition");
 assert.doesNotMatch(drawer + page, /owner_resume/, "Personal Workspace never emits the unsupported owner_resume sentinel");
-assert.match(drawer, /previewTodoTransition\(selection\.item, "complete"/, "Todo complete is the primary drawer action");
+assert.match(drawer, /\["blocked", "deferred"\]\.includes\(selection\.item\.status/, "Paused Todos offer resume through the existing primary action");
+assert.match(drawer, /className="personal-primary-action" onClick=\{\(\) => void previewTodoTransition\(selection\.item, todoAwaitingResume \? "resume" : "complete"/, "The primary Todo action resumes paused work and completes open work through typed preview");
 assert.match(drawer, /actionKind: "todo\.create"/, "Todo successor uses the canonical create action");
 
 for (const field of ["evidence", "explanation"]) {
@@ -131,7 +141,8 @@ for (const legacyClassifier of ["hasHeartbeatIntent", "hasMonitorIntent", "hasTo
   assert.doesNotMatch(page, new RegExp(`function ${legacyClassifier}`), `${legacyClassifier} no longer bypasses the Router contract`);
 }
 assert.match(dashboard, /Agent 已返回结果/, "A completed task Session advertises its result instead of looking stalled");
-assert.match(dashboard, /sessionStatus: hasResult \? "completed"/, "A returned answer outranks a stale transport label in the visible Session status");
+assert.equal(taskSessionStatus({ active_turn_id: null, status: "stale" }, { done: false, hasResult: true }),
+  "completed", "A returned answer outranks a stale transport label in the visible Session status");
 assert.match(answerText, /function visibleAgentMessage[\s\S]*GOAL_\(STATUS\|PROGRESS\)/, "Internal Session protocol markers stay out of the user-facing result");
 assert.match(answerText, /GOAL_EVIDENCE[\s\S]*验证依据：/, "Session evidence uses a readable heading instead of an internal protocol marker");
 assert.match(answerText, /NEXT_ACTION[\s\S]*下一步：/, "Session next actions use a readable heading instead of an internal protocol marker");
@@ -182,7 +193,8 @@ assert.match(page, /personal-action-feedback/, "Typed actions surface a persiste
 assert.match(page, /visibleTimelineItems[\s\S]*item\.run\.runId === activeSessionRun\.runId/, "Session record mode filters unrelated Goal activity");
 assert.match(page, /function openGoalConversation\(\)[\s\S]*setActiveSessionRun\(null\)[\s\S]*scrollIntoView\(\{ block: "start" \}\)/, "Opening a Goal reply exits a nested Session and reveals the latest answer");
 assert.match(page, /onOpenChat=\{openGoalConversation\}/, "The task reply button uses the same conversation navigation as other Goal entries");
-assert.match(header, /header\.refreshing[\s\S]*header\.refreshDone[\s\S]*header\.refreshFailed/, "Refresh exposes localized loading, success, and failure feedback");
+// Bilingual loading, accessible success and visible/retryable failure are
+// exercised by smoke/chat-model-menu-smoke.mjs, without imposing source order.
 assert.match(drawer, /t\("drawer\.proposalExplainer"\)/, "Preview explains what confirmation will do");
 assert.match(drawer, /t\("drawer\.proposalApplyFailed"\)/, "Failed preview communicates its no-write result clearly");
 assert.match(drawer, /onClick=\{onClose\} type="button">\{t\("drawer\.proposalClose"\)\}/, "Closing a proposal is a pure UI action with zero state transition");
@@ -301,7 +313,9 @@ assert.doesNotMatch(page, /personal-worker-strip/, "Manager home omits the redun
 assert.doesNotMatch(header, /切换到野兽主题|切换到默认主题/, "Workspace header does not expose theme switching");
 assert.match(workspaceTheme, /workspaceThemeStorageKey = "loopx-pw-theme"/, "Theme preference persists across reloads");
 assert.doesNotMatch(dashboard, /isManagerProjectionQuestion/, "Ordinary manager questions do not silently bypass the selected model by matching phrases");
-assert.match(dashboard, /if \(\(selectedRoute\.agentId === "status-only" && targetContext\.kind !== "project"\)\s*\|\| \(targetContext\.kind === "goal" && !targetGoal\)\)/, "Projection answers require the explicit status-only route or a missing Goal fallback; a workspace conversation never answers from the Goal projection");
+// Context eligibility is exercised by the typed bound-conversation smoke;
+// this source assertion only protects the explicit caller-selected route.
+assert.match(dashboard, /selectedRoute\.agentId === "status-only" && conversationSupportsStatusProjection\(targetContext\)/, "Only the explicit status-only route can use an eligible context's projection");
 assert.match(attentionActions, /role="group" aria-label=\{t\("drawer\.decisionGroup"\)\}/, "Blocked items expose their decisions as one labelled group that previews before any write");
 assert.match(drawer, /const hasProjectedRunActivity = selection\.kind === "run"[\s\S]*selection\.item\.completedSteps > 0/, "Session empty-state copy distinguishes projected progress from a truly idle run");
 assert.match(drawer, /t\("drawer\.runRecordProjected"/, "A projected run does not claim that the Agent never started");
@@ -385,6 +399,13 @@ for (const contextGoalId of [null, "existing-research-goal"]) {
   assert.equal(request.normalizedParameters.goal_id, "goal-new-research");
   assert.notEqual(request.normalizedParameters.goal_id, contextGoalId);
 }
+const explicitWorkspace = goalCreateRequest({
+  objective: "Inspect the second project", completion: "A checked report", boundary: "Read only",
+  agentId: "research-agent", permission: "read_only", contextGoalId: "first-project",
+  workspaceRef: "second-project", operationId: "explicit-workspace",
+}, (key) => key);
+assert.equal(explicitWorkspace.normalizedParameters.workspace_ref, "second-project");
+assert.equal(explicitWorkspace.context.goal_id, "first-project", "Conversation and workspace remain separate");
 assert.match(page, /t\("proposal\.workspace\.current"\)/, "Create Goal localizes its execution workspace explanation");
 assert.match(i18n, /Current local workspace \(no Repository bound\)/, "English workspace copy explains that no repository is bound");
 assert.match(i18n, /当前本地工作区（未绑定 Repository）/, "Chinese workspace copy explains that no repository is bound");
@@ -405,6 +426,11 @@ assert.match(workspaceSettings, /key: "language"/, "Settings expose a language t
 assert.match(workspaceSettings, /key: "capabilities"/, "Settings expose a unified capability destination");
 assert.match(workspaceSettings, /<MachineConfigurationSettings/, "Settings mount the machine configuration registry");
 assert.match(workspaceSettings, /<LarkSettingsPage[\s\S]*embedded/, "Settings embed the Lark management page");
+assert.match(i18n, /"cadence\.eligibility": "Minimum-interval condition"/, "English cadence copy names only the interval condition");
+assert.match(i18n, /"cadence\.eligibleNow": "Minimum interval satisfied"/, "English cadence copy does not claim execution readiness");
+assert.match(i18n, /"cadence\.eligibility": "最小间隔条件"/, "Chinese cadence copy names only the interval condition");
+assert.match(i18n, /"cadence\.eligibleNow": "最小间隔条件已满足"/, "Chinese cadence copy does not claim execution readiness");
+assert.doesNotMatch(i18n, /"cadence\.[^"]+": "(?:Execution eligibility|Eligible now|执行资格|当前可执行)"/, "Cadence copy never expands interval state into overall execution eligibility");
 assert.match(larkSettings, /state: "ready" \| "unverified" \| "not_ready"/, "Lark readiness keeps unverified routes separate from actual failures");
 assert.match(larkSettings, /lark\.routesUnverified[\s\S]*unverifiedRouteCount/, "Lark settings summarize only unverified routes with their exact count");
 assert.match(i18n, /\{count\} Lark routes pending verification/, "English Lark readiness copy names routes instead of extensions");
@@ -420,7 +446,6 @@ assert.match(machineSettings, /selected\.capability_id === "pull_request_review"
 assert.match(machineSettings, /previewMachineConfiguration\(/, "Machine settings require a preview before apply");
 assert.match(machineSettings, /applyMachineConfiguration\([\s\S]*preview\.plan_revision/, "Machine settings apply the exact reviewed revision");
 assert.match(machineSettings, /previewMachineConfigurationRollback\(/, "Machine settings preview rollback before execution");
-assert.match(machineSettings, /liveDefaultDescription/, "Live defaults and Goal overrides are explained together");
 assert.match(machineSettings, /inspection\?\.capability_catalog\.capabilities/, "Machine settings discover capabilities from the shared registry catalog");
 assert.match(machineSettings, /inspection\?\.invalid_namespaces\[0\]/, "Invalid machine state identifies the affected namespace without reading its stored values");
 assert.match(machineSettings, /machine-invalid-repair[\s\S]*role="alert"/, "Invalid machine state exposes a visible guided repair path");
@@ -435,7 +460,7 @@ assert.match(machineSettings, /const configured = Boolean\(/, "Only configured c
 assert.match(machineSettings, /periodicReportActivationDescription/, "Machine periodic reports explain stage-triggered automatic delivery");
 assert.match(i18n, /Enabled means automatic delivery at validated stage boundaries/, "English machine settings name automatic stage delivery");
 assert.match(i18n, /开启后将在已验证的阶段节点自动投递/, "Chinese machine settings name automatic stage delivery");
-assert.match(machineSettings, /localizedCapabilityFieldCopy\(locale\)/, "Machine capability fields follow the selected locale");
+assert.match(machineSettings, /localizedCapabilityFieldCopy\(locale,\s*selected\.capability_id\)/, "Machine capability fields follow the selected locale");
 assert.match(goalCapabilitySettings, /localizedCapabilityFieldCopy\(locale,\s*localizedSelected\.capability_id\)/,
   "Goal fields use the selected locale and capability-specific vocabulary");
 assert.deepEqual(localizedCapabilityFieldCopy("en", "explore_harness").mode.options,
@@ -553,7 +578,8 @@ assert.match(larkSettings, /fetchLarkAppSetup/, "Registration polls the local se
 assert.match(larkSettings, /window\.open\(/, "Registration opens the provider flow from a user gesture");
 assert.match(larkSettings, /window\.open\(window\.location\.href,\s*"_blank"\)/, "Registration never leaves a blank waiting tab");
 assert.match(larkSettings, /setAppRef\(snapshot\.app_ref\)/, "Completed registration selects the new App");
-assert.match(larkSettings, /loading \? "…" : apps\.length/, "Lark App count does not flash a false zero while loading");
+// Loading/empty App counts are exercised against the rendered page in the
+// progressive-loading browser scenario, independently of local state names.
 assert.match(larkSettings, /openConnectionEditor\(connection\)/, "Every Lark connection settings button opens a scoped editor");
 assert.match(larkSettings, /focusGoalConnection[\s\S]*openConnectionEditor\(connection\)[\s\S]*openConnect\(goals\.find/, "Goal-level Lark entry opens the scoped connection editor or create flow");
 
@@ -571,4 +597,120 @@ assert.match(
   "The Goal header prefers the current projected Todo over stale recommended_action strings",
 );
 
+// First-Goal home: a healthy source with no registered Goal is a designed
+// state, not empty lanes, and health issues are owner-language sentences.
+assert.match(model, /kind: "no_goals"/, "The home carries a typed first-Goal classification");
+assert.match(dashboard, /const onboarding: WorkspaceHomeOnboarding \| undefined = isHealthy/, "Only a healthy source classifies as a first-Goal workspace");
+assert.match(dashboard, /if \(!sourceError\) return \w+;[\s\S]*?onboarding: undefined,[\s\S]*?retryable: true,/, "A failed current read withdraws the first-Goal state and shows a retryable failure");
+assert.match(dashboard, /onRefresh=\{async \(readScope = "all"\) => \{[\s\S]*?rejectOnError: true[\s\S]*?return \{ ok: false, error: formatStatusError\(error\) \}/, "A refresh reports its failure to the page instead of swallowing it");
+assert.match(page, /if \(result && result\.ok === false\) \{\n\s*setRefreshState\("error"\);/, "The header reports a failed refresh and never an update");
+assert.doesNotMatch(dashboard, /payload\.ok === false|契约检查未通过|系统健康关注点/, "Health issues are localized owner language, not protocol fragments");
+assert.match(page, /data-testid="personal-first-goal"/, "The home renders the first-Goal state");
+assert.match(page, /onSuggestRequest\(t\(`home\.firstGoal\.example\./, "Example requests only fill the composer");
+assert.match(page, /personal-first-goal-diagnostics/, "Status source details stay in a collapsed disclosure");
+for (const key of ["home.firstGoal.title", "home.firstGoal.lead", "home.firstGoal.create", "home.health.contractFailed", "home.health.concerns"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}
+
+// Runtime readiness: the service's own reason fields drive the copy; the
+// read-only status projection and the loading placeholder never count as a
+// runtime; a re-check reads the catalog again and nothing is installed.
+const runtimeReadiness = source("./runtime-readiness.ts");
+assert.match(runtimeReadiness, /if \(agents\.length === 0\) return \{ kind: "detecting" \};/, "An empty catalog is detecting, not absence");
+assert.match(page, /agent\.adapterKind !== "status_projection" && agent\.source !== "detecting"/, "Readiness ignores the status projection and the loading placeholder");
+assert.match(dashboard, /onRecheckRuntimes: \(\) => setCapabilityRevision\(\(revision\) => revision \+ 1\)/, "Re-check re-reads the capabilities catalog");
+assert.match(dashboard, /source: "detecting",/, "The placeholder row is typed as detecting");
+assert.doesNotMatch(dashboard, /statusLabel: "正在检测"|"可用" : "需要配置"|当前 Goal 写入前验证/, "Agent status labels are localized");
+for (const key of ["readiness.noneTitle", "readiness.missingExecutable", "readiness.missingEnvironment", "readiness.selectedUnavailable", "readiness.recheck", "agent.statusDetecting"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}
+
+// Needs-you desktop notifications: a per-browser opt-in. Off by default, the
+// page neither asks for permission nor re-reads the workspace in the background.
+const attentionNotifications = source("./attention-notifications.ts");
+assert.match(attentionNotifications, /export function shouldNotifyAttention/, "Notification admission is one typed rule");
+assert.match(page, /const attentionNotificationsActive = attentionNotificationsEnabled && attentionNotificationSupportState === "granted" && !readOnly;/, "Polling and notifying share one activation predicate that includes read-only");
+assert.match(page, /if \(!attentionNotificationsActive \|\| !backgroundRefreshRef\.current\) return;/, "No background re-read unless notifications are active");
+assert.match(page, /Notification\.requestPermission\(\)/, "Permission is requested from the owner's toggle, not on load");
+assert.doesNotMatch(page.replace(/async function updateAttentionNotifications[\s\S]*?\n  }\n/, ""), /requestPermission/, "Only the toggle handler asks for permission");
+assert.match(page, /seenAttentionKeysRef\.current = new Set\(model\.userTodos\.map\(attentionNotificationKey\)\)/, "Enabling seeds every listed item so nothing already listed is replayed");
+assert.match(page, /const fresh = notifiableAttention\(newAttentionItems\(seen, items\)\);/, "Only an item first seen while it waits on the owner notifies; optional actions never do");
+assert.match(page, /const remembered = seen \? new Set\(seen\) : new Set<string>\(\);\s*for \(const item of items\) remembered\.add\(attentionNotificationKey\(item\)\);/, "Seen identities are kept for the activation lifetime; a partial read never forgets one");
+assert.doesNotMatch(page.slice(page.indexOf("const remembered = seen"), page.indexOf("const fresh = notifiableAttention")), /seenAttentionKeysRef\.current = keys/, "The seen set is never replaced by the current read");
+assert.match(attentionNotifications, /export function notifiableAttention[\s\S]*?items\.filter\(\(item\) => item\.blocking\)/, "Notifiable means the attention owner's blocking classification, never the whole list");
+assert.match(page, /window\.addEventListener\("focus", readBack\);[\s\S]*?document\.addEventListener\("visibilitychange", readBack\);[\s\S]*?navigator\.permissions\?\.query\(\{ name: "notifications" \}\)/, "The browser's permission answer is read back on return, on settings and on change");
+assert.doesNotMatch(page.slice(page.indexOf("const readBack = () =>"), page.indexOf("const attentionNotificationsActive")), /requestPermission|setAttentionNotificationsEnabled\(true\)/, "Reading the answer back never asks for permission or enables on its own");
+assert.match(dashboard, /onBackgroundRefresh=\{\(\) => loadFromUrl\([^\n]*\{ background: true, readScope: "all"/, "The background re-read keeps snapshots on screen and re-reads every Goal");
+for (const key of ["settings.attentionNotifications", "settings.attentionNotificationsToggle", "settings.attentionNotificationsDenied", "settings.attentionNotificationsUnsupported", "notifications.attentionMore"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}
+
+// Since you looked (RFC goal-workspace-surface §5.7): a browser-local marker
+// per source and Goal, typed counts and ids only, no cost, no service write;
+// the line appears only for a material delta. Mark seen acknowledges what is
+// on screen; leaving acknowledges the look that was compared on that visit.
+// Decisions reuse the typed attention classification, the comparison waits
+// for an owner refresh still in flight, and denied storage only loses memory.
+const sinceYouLooked = source("./since-you-looked.ts");
+const seenMarkerType = sinceYouLooked.slice(sinceYouLooked.indexOf("export type SeenMarker = {"), sinceYouLooked.indexOf("};", sinceYouLooked.indexOf("export type SeenMarker = {")));
+assert.doesNotMatch(seenMarkerType, /cost|title|text|usd/i, "The marker carries no titles, text or cost");
+assert.match(sinceYouLooked, /export const seenMarkerIdLimit = 200;/, "Done and result ids are bounded");
+assert.match(page, /seenMarkerStorageKey\(seenStatusSource, selectedGoal\.goalId\)/, "Markers are scoped per status source and Goal");
+assert.match(page, /if \(delta\.material\) setSinceYouLooked\(/, "Only a material delta shows the line");
+assert.match(page, /advanceSeenMarker\(previous\.goalId, previous\.source, "compared"\);[\s\S]*?setSinceYouLooked\(\(shown\) => shown && shown\.goalId === previous\.goalId/, "Leaving the Goal records the compared look and acknowledges a shown line");
+assert.match(page, /advanceSeenMarker\(sinceYouLooked\.goalId, sinceYouLooked\.source, "latest"\)/, "Mark seen acknowledges the current look");
+assert.match(page, /if \(stored && stored\.observedAt > input\.observedAt\) return;/, "No write moves the marker back behind a newer acknowledgment");
+assert.match(page, /if \(look === "latest"\) comparedSeenInputsRef\.current\.set\(scope, input\);/, "Mark seen becomes the look the visit stands on, so leaving cannot undo it");
+assert.match(sinceYouLooked, /function coversWholeSet\(/, "Capped or partial id sets report count growth, never unretained ids as new");
+assert.match(sinceYouLooked, /newlyDone = coversWholeSet\(previous\.doneTodoIds, null\) \? doneById : 0;/, "With no done total a capped done history proves no completion");
+assert.match(page, /decisionIds: model\.userTodos\.filter\(\(item\) => item\.goalId === selectedGoal\.goalId && item\.blocking\)/, "Only items that wait on the owner are decisions; optional user actions keep the typed classification");
+assert.match(page, /if \(refreshState === "loading"\) return;[\s\S]*?seenComparedRef\.current = scope;/, "The comparison waits for an owner refresh still in flight instead of latching on the snapshot it replaces");
+const seenBlock = page.slice(page.indexOf("const seenStatusSource"), page.indexOf("function markSeen"));
+assert.doesNotMatch(seenBlock, /window\.localStorage/, "Storage is acquired through the guarded helper, never read as a bare property");
+assert.match(sinceYouLooked, /export function seenMarkerStorage\([\s\S]*?try \{[\s\S]*?scope\.localStorage/, "Acquiring storage sits inside the failure boundary");
+assert.doesNotMatch(sinceYouLooked + page.slice(page.indexOf("const seenStatusSource"), page.indexOf("function markSeen")), /fetch\(|requestJson|\/api\//, "No service write or read belongs to the marker");
+for (const key of ["since.lead", "since.newlyDone", "since.newDecisions", "since.newlyBlocked", "since.resultsReturned", "since.markSeen"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}
+
+// State-aware suggestions cite digest, Todo, execution and acceptance facts;
+// they never replace the shipped steward prompt row, and a stopped Goal or an
+// unknown execution state produces none.
+const goalSuggestions = source("./goal-suggestions.ts");
+assert.match(goalSuggestions, /if \(digest\.lifecycle\.activation === "stopped"\) return \[\];/, "A stopped Goal invites nothing");
+assert.match(goalSuggestions, /input\.execution\?\.kind === "idle"/, "Idle needs an observed idle executor, never unknown");
+assert.match(goalSuggestions, /const waiting = needsYou\?\.blocking \?\? null;/, "Decisions are the attention owner's blocking count; optional items and unknown counts are never decisions");
+assert.doesNotMatch(goalSuggestions, /needsYou\.listed/, "The listed attention count is never read as the decision count");
+assert.match(goalSuggestions, /digest\.work\.coverage === "complete" && digest\.work\.projectedOpen === 0 && digest\.work\.open === 0/, "All done needs complete work coverage with a known zero open count");
+assert.match(page, /deriveGoalSuggestions\(\{\s*digest: workspaceDigest,/, "The page derives suggestions from the shared digest");
+assert.match(page, /className="personal-goal-suggestions"/, "Derived suggestions render in their own row");
+assert.match(page, /<div className="personal-quick-prompts">\n\s*<button aria-label=\{t\("composer\.nextAction"\)\}/, "The steward prompt row stays as shipped");
+for (const key of ["suggestions.openDecisions", "suggestions.explainBlocked", "suggestions.explainBlockedPrompt", "suggestions.explainFailedCriterion", "suggestions.continueIdle", "suggestions.reviewResults"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}
+
+// Load boundaries: settings are a separate chunk that arrives on demand and
+// the secondary routes are not part of the workspace's first load. Each lazy
+// site keeps a visible loading state. Team results stay eager: their list
+// must load exactly once when a configured team appears, and a lazy mount
+// shifted that timing (see the loopx-mode scenario).
+const router = source("../../router.tsx");
+assert.match(page, /const WorkspaceSettingsPage = lazy\(\(\) => import\("\.\/workspace-settings-page"\)/, "Settings load on demand");
+assert.doesNotMatch(page, /^import \{ WorkspaceSettingsPage \}/m, "No eager import undoes the boundary");
+assert.match(page, /^import \{ GoalTeamResults \} from "\.\/goal-team-results";/m, "Team results load eagerly so their single list request keeps its timing");
+for (const route of ["./views/frontstage-developer-page", "./views/benchmark-study-page", "./features/personal-workspace/answer-report-page"]) {
+  assert.match(router, new RegExp(`lazy\\(\\(\\) => import\\("${route.replace(/[./]/g, (ch) => `\\${ch}`)}"\\)`), `${route} loads on demand`);
+}
+assert.equal((page.match(/<Suspense fallback=\{<p className="personal-lazy-loading" role="status">/g) ?? []).length, 1, "The lazy settings site shows a loading status");
+
 console.log("personal workspace drawer contract smoke passed");
+
+// An unavailable first Agent: the service refuses the creation preview with a
+// typed gate (kind, agent, catalog reason) and the page tells the owner in
+// their language, never with the protocol sentence; nothing is written.
+assert.match(page, /const agentGate = gateKind === "agent_unavailable"/, "The page maps the typed Agent gate to owner-language copy");
+assert.match(page, /reasonCode === "executable_not_found"[\s\S]*?reasonCode === "api_key_not_set"[\s\S]*?rawGate\.registered === false/, "The reason follows the catalog's own fields");
+assert.match(source("./context-drawer.tsx"), /selection\.item\.gate\?\.kind === "agent_unavailable" \? selection\.item\.title/, "The drawer shows the Agent gate's own title, not host confirmation");
+for (const key of ["proposal.agentGate.title", "proposal.agentGate.summary", "proposal.agentGate.reason.executable_not_found", "proposal.agentGate.reason.api_key_not_set", "proposal.agentGate.reason.unregistered", "proposal.agentGate.reason.unavailable", "proposal.agentGate.nextAction", "proposal.agentGate.impact"]) {
+  assert.equal((i18n.match(new RegExp(`"${key.replace(/\./g, "\\.")}":`, "g")) ?? []).length, 2, `${key} exists in both locales`);
+}

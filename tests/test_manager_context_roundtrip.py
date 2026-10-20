@@ -11,6 +11,7 @@ from loopx.capabilities.manager_context import (
     _root,
     _write,
     acknowledge,
+    authority,
     deliver,
     pending,
     register_ingress,
@@ -27,6 +28,7 @@ from loopx.capabilities.manager_context.roundtrip import (
     reply_status,
 )
 from loopx.chat_store import ChatSessionStore
+from loopx.control_plane.collaboration import conversation_scope
 
 
 @pytest.fixture
@@ -47,15 +49,16 @@ def flow(tmp_path):
     )
     store = ChatSessionStore(tmp_path)
 
-    def create(external=False, project=False, brief=None):
-        session = store.create_session(
+    def create(external=False, project=False, brief=None, source_store=None):
+        actual_store = source_store or store
+        session = actual_store.create_session(
             goal_id="research" if project else "loopx-manager",
             agent_id="codex",
             adapter_kind="codex_app_server",
             upstream_thread_id="test",
             channel_id="goal.research" if project else "manager.external.test" if external else "manager",
         )
-        turn, _ = store.create_turn(
+        turn, _ = actual_store.create_turn(
             session["session_id"],
             client_turn_id="question",
             message="Investigate this new constraint",
@@ -86,9 +89,10 @@ def flow(tmp_path):
             )
         receipt = deliver(
             tmp_path, registry, session=session, turn=turn,
-            request={**target, **({"brief": brief} if brief else {})}
+            request={**target, **({"brief": brief} if brief else {})},
+            source_store=source_store,
         )
-        store.update_turn(
+        actual_store.update_turn(
             session["session_id"],
             turn["turn_id"],
             status="completing",
@@ -97,7 +101,7 @@ def flow(tmp_path):
                 "context_handoff_receipt": receipt,
             },
         )
-        store.finalize_managed_turn_completion(session["session_id"], turn["turn_id"])
+        actual_store.finalize_managed_turn_completion(session["session_id"], turn["turn_id"])
         return session, turn, receipt
 
     return tmp_path, registry, store, create
@@ -139,6 +143,127 @@ def test_single_request_returns_to_original_transcript_without_second_model_turn
         list((store.root / "sessions" / session["session_id"] / "turns").glob("*.json"))
     ) == len(before_turns)
     assert reply_status(root, receipt)[0]["status"] == "delivered"
+
+
+@pytest.mark.parametrize("project", [False, True], ids=["steward", "project"])
+def test_owner_return_does_not_create_source_policy(flow, project):
+    root, registry, store, create = flow
+    session, turn, receipt = create(project=project)
+    rid = receipt["request_id"]
+    acknowledge(root, "research", "worker", rid, "adopt", "Checked")
+    report(root, "research", "worker", rid, "conclusion", "Owner result.")
+    assert drain(root, registry, store, None) == 1
+    assert reply_status(root, receipt)[0]["status"] == "delivered"
+    returned = [m for m in store.messages(session["session_id"])
+                if m.get("origin") == "manager_followup"]
+    assert len(returned) == 1 and returned[0]["turn_id"] == turn["turn_id"]
+    assert not list(_root(root).glob("policy*"))
+
+
+@pytest.mark.parametrize("audience", ["local_owner", "bound_owner"])
+@pytest.mark.parametrize("drift", ["channel", "goal", "context", "context_missing", "context_null"])
+def test_recovered_project_identity_cannot_publish_as_a_manager(flow, audience, drift):
+    root, registry, _, _ = flow
+    store = ChatSessionStore(root / "separate-chat-host")
+    project = {"kind": "project_workspace", "project_ref": "a" * 24,
+               "workspace_path": str(root), "audience": audience, "grant": "workspace_read"}
+    channel = "project." + project["project_ref"]
+    if audience == "bound_owner":
+        project.update(binding_id="b" * 24, source_ref="c" * 24,
+                       provider_ref="d" * 24, operator_ref="e" * 24)
+        channel = "project.external." + project["binding_id"] + "." + project["source_ref"]
+    session = store.create_session(goal_id=None, agent_id="codex", adapter_kind="codex_app_server",
+                                   upstream_thread_id="original", channel_id=channel, project_context=project)
+    turn, _ = store.create_turn(session["session_id"], client_turn_id="question",
+                                message="Read-only project question", origin="web")
+    # Inject inconsistent recovered metadata only in this disposable store.
+    # The registered receiver exists; the project never gained its source grant.
+    path = store.root / "sessions" / session["session_id"] / "session.json"
+    saved = json.loads(path.read_text())
+    saved["channel_id"] = "manager"
+    if drift == "goal":
+        saved["goal_id"] = "research"
+    elif drift == "context":
+        saved["project_context"]["grant"] = "invalid"
+    elif drift == "context_missing":
+        saved.pop("project_context")
+    elif drift == "context_null":
+        saved["project_context"] = None
+    path.write_text(json.dumps(saved))
+    observed = store.load_session(session["session_id"])
+    before = {p.relative_to(_root(root)): p.read_bytes() for p in _root(root).rglob("*.json")}
+    with pytest.raises(ValueError, match="context recipient is not authorized or registered"):
+        deliver(root, registry, session=observed, turn=turn,
+                request={"goal_id": "research", "agent_id": "worker"}, source_store=store)
+    assert {p.relative_to(_root(root)): p.read_bytes() for p in _root(root).rglob("*.json")} == before
+    assert not pending(root, "research", "worker")["items"]
+    assert json.loads(path.read_text()) == saved
+    assert store.load_turn(session["session_id"], turn["turn_id"]) == turn
+
+
+def test_legacy_manager_source_preserves_missing_goal_instead_of_project_null(flow):
+    root, registry, store, _ = flow
+    session = store.create_session(goal_id="loopx-manager", agent_id="codex", adapter_kind="codex_app_server",
+                                   upstream_thread_id="original", channel_id="manager")
+    turn, _ = store.create_turn(session["session_id"], client_turn_id="question", message="Original question", origin="web")
+    legacy = {key: value for key, value in session.items() if key != "goal_id"}
+    assert conversation_scope(legacy)["kind"] == "owner_portfolio"
+    assert conversation_scope({**legacy, "goal_id": None})["kind"] == "unavailable"
+    assert authority(root, registry, legacy, turn)["targets"] == [{"goal_id": "research", "agent_id": "worker"}]
+    assert authority(root, registry, {**legacy, "goal_id": None}, turn) == {"mode": "unavailable", "targets": []}
+
+
+@pytest.mark.parametrize("explicit_source", [False, True], ids=["legacy-root", "pinned-root"])
+def test_other_chat_host_cannot_delay_original_host_return(flow, explicit_source):
+    root, registry, store, create = flow
+    if explicit_source:
+        store = ChatSessionStore(root / "private-chat-host")
+    session, turn, receipt = create(True, source_store=store if explicit_source else None)
+    rid = receipt["request_id"]
+    acknowledge(root, "research", "worker", rid, "adopt", "Checked")
+    report(root, "research", "worker", rid, "conclusion", "The original task is complete.")
+    state_path = _root(root) / "replies" / rid / "conclusion.delivery.json"
+    before = state_path.read_bytes() if state_path.exists() else None
+    foreign = ChatSessionStore(root / "other-chat-host")
+    sent = []
+
+    def sender(route, session, turn, text):
+        sent.append(text)
+        return {"reply_verified": True, "idempotency_key": "sha256:provider-proof"}
+
+    now = datetime.now(timezone.utc)
+    assert drain(root, registry, foreign, sender, now=now) == 0
+    assert (state_path.read_bytes() if state_path.exists() else None) == before
+    assert sent == []
+    # The wrong host cannot impose retry_at and starve the source host's
+    # immediately following tick. A restart must not duplicate the result.
+    assert drain(root, registry, store, sender, now=now) == 1
+    drain(root, registry, ChatSessionStore(store.root.parent), sender, now=now)
+    returned = [m for m in store.messages(session["session_id"])
+                if m.get("origin") == "manager_followup"]
+    assert len(sent) == len(returned) == 1
+    assert returned[0]["turn_id"] == turn["turn_id"]
+    assert reply_status(root, receipt)[0]["status"] == "delivered"
+
+
+def test_exact_return_skips_other_host_before_admission(flow, monkeypatch):
+    from loopx.capabilities.manager_context import roundtrip
+    from loopx.control_plane.projects.registry_codec import SOURCE_SESSION_PROFILE_ID
+
+    root, registry, store, create = flow
+    _, _, receipt = create()
+    acknowledge(root, "research", "worker", receipt["request_id"], "adopt", "Checked")
+    report(root, "research", "worker", receipt["request_id"], "conclusion", "Complete.")
+    profile = json.loads(registry.read_text())
+    profile["profile_id"] = SOURCE_SESSION_PROFILE_ID
+    registry.write_text(json.dumps(profile))
+    foreign = ChatSessionStore(root / "other-chat-host")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("A foreign host must not admit or deliver this return")
+
+    monkeypatch.setattr(roundtrip, "_exact_return_context", unexpected)
+    assert drain(root, registry, foreign, unexpected) == 0
 
 
 def test_conclusion_coalesces_unsent_intermediate_decision_and_is_immutable(flow):
@@ -855,6 +980,16 @@ def test_background_service_delivers_without_another_agent_or_query(flow, monkey
     assert observations == []  # Legacy delivery is outside the exact-source telemetry contract.
 
 
+def test_return_service_can_close_before_start(flow):
+    root, registry, store, _ = flow
+    service = ReturnService(root, registry, store, lambda *_: {"reply_verified": True})
+
+    service.close()
+
+    assert service.stop.is_set()
+    assert not service.thread.is_alive()
+
+
 @pytest.mark.parametrize("project", [False, True], ids=["steward", "project"])
 def test_registration_revocation_blocks_return_without_retargeting(flow, project):
     root, registry, store, create = flow
@@ -1239,7 +1374,7 @@ def test_exact_loop_payload_conflict_sets_terminal_state_without_retry(
         return_roundtrip, "_write_exact_return_state", fake_settlement
     )
 
-    def fake_context(root, registry, store, path, state_path, now):
+    def fake_context(root, registry, store, path, state_path, now, effects):
         reply = return_roundtrip._read(path)
         return {
             "reply": {**reply, "phase": path.stem},

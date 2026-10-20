@@ -119,7 +119,10 @@ export const typedActionsScenario = {
             context: {kind: "goal", goal_id: "product-release"},
             expected_state_fingerprint: "creation-basis", permission_classification: "durable_write",
             validation_evidence: ["Workspace validated before storage initialization."], available_transitions: ["apply", "cancel"],
-            checkpoint: {steps: {workspace_validated: {outcome: "workspace_validated"}}},
+            checkpoint: {steps: {workspace_validated: {
+              outcome: "workspace_validated",
+              workspace_digest: "a".repeat(64),
+            }}},
             failure: {error_code: "canonical_action_failed"}, receipt: null, stale: null,
             created_at: "2026-09-14T01:00:00Z", updated_at: "2026-09-14T01:00:01Z",
           },
@@ -838,8 +841,9 @@ export const typedActionsScenario = {
       const goalButton = page.locator(".personal-goal-link").first();
       await goalButton.click();
       const goalNavigation = page.getByRole("navigation", { name: "Goal 视图" });
-      const defaultTasksTab = goalNavigation.getByRole("button", { name: /^(Tasks|任务)$/ });
-      if (await defaultTasksTab.getAttribute("aria-current") !== "page") throw new Error("Selecting a Goal did not prioritize its Tasks view");
+      await goalNavigation.getByRole("button", { name: /^(Overview|概览)$/, current: "page" }).waitFor();
+      const tasksTab = goalNavigation.getByRole("button", { name: /^(Tasks|任务)$/ });
+      await tasksTab.click();
       await page.screenshot({ path: resolve(outputDir, "goal-tasks-loopx-theme.png"), fullPage: false, animations: "disabled" });
       await goalNavigation.getByRole("button", { name: /^(Files|成果)$/ }).click();
       const publicFiles = page.locator(".personal-files-list > button");
@@ -849,7 +853,7 @@ export const typedActionsScenario = {
       await goalNavigation.getByRole("button", { name: /^(Chat|对话)$/ }).click();
       await page.locator(".personal-channel-timeline").waitFor({ state: "visible" });
       await page.screenshot({ path: resolve(outputDir, "goal-chat-loopx-theme.png"), fullPage: false, animations: "disabled" });
-      await defaultTasksTab.click();
+      await tasksTab.click();
       const desktopNavigationTrigger = page.locator(".personal-mobile-menu");
       if (await desktopNavigationTrigger.isVisible()) {
         throw new Error("Mobile-only Goal navigation trigger leaked into the persistent desktop sidebar layout");
@@ -888,6 +892,7 @@ export const typedActionsScenario = {
       await page.screenshot({ path: resolve(outputDir, "goal-header-compact-width.png"), fullPage: false, animations: "disabled" });
       if (fullDesktopViewport) await page.setViewportSize(fullDesktopViewport);
       await page.locator(".personal-goal-link", { hasText: "Progress Projection" }).click();
+      await tasksTab.click();
       await page.getByRole("heading", { name: "Progress Projection" }).waitFor({ state: "visible" });
       await page.locator(".personal-task-card").getByText("Current Todo", {exact: true}).waitFor();
       const unclaimedCard = page.locator(".personal-task-card", {hasText: "Current Todo"});
@@ -945,7 +950,7 @@ export const typedActionsScenario = {
         await historyScroll.evaluate(element => { element.scrollTop = element.scrollHeight; });
         await response;
         await page.waitForFunction(minimum => {
-          const window = document.querySelector('[data-testid="completed-task-lane"] .personal-completed-window');
+          const window = document.querySelector('[data-goal-panel="tasks"] [data-testid="completed-task-lane"] .personal-completed-window');
           return window && Number.parseFloat(window.style.height) >= minimum;
         }, Math.min(4087, (batch + 1) * 40) * 148);
         if (await completedColumn.locator('.personal-completed-row').count() > 20) throw new Error('Completed history DOM grew with accumulated pages');
@@ -972,7 +977,7 @@ export const typedActionsScenario = {
       page.on('request', request => { if (request.url().includes('/api/chat/completed-todos?')) historyRequests += 1; });
       await page.getByRole('button', { name: '列表', exact: true }).click();
       await assertDeferredTask();
-      const listHistory = page.getByTestId('completed-task-lane');
+      const listHistory = page.locator('[data-goal-panel="tasks"]').getByTestId('completed-task-lane');
       await listHistory.getByRole('button', { name: '已完成', exact: false }).click();
       await listHistory.getByText('4087', { exact: true }).waitFor();
       await listHistory.getByText('Completed A', { exact: true }).waitFor();
@@ -984,6 +989,7 @@ export const typedActionsScenario = {
       await completedColumn.getByText('Completed A', { exact: true }).waitFor();
       if (historyRequests) throw new Error('Switching presentation replaced the completed-history snapshot');
       await page.locator(".personal-goal-link", { hasText: "Multi Agent Projection" }).click();
+      await tasksTab.click();
       const multiAgentHeader = await page.locator(".personal-channel-title").innerText();
       if (multiAgentHeader.includes("codex-older-lane")) {
         throw new Error(`Multi-Agent Goal header still implies arbitrary single-lane ownership: ${multiAgentHeader}`);
@@ -1002,6 +1008,7 @@ export const typedActionsScenario = {
       const runtimeSelector = page.getByRole("combobox", { name: "选择聊天 Runtime" });
       if (!await runtimeSelector.count()) throw new Error("Chat runtime selector is not explicitly labelled independently from work-Agent lanes");
       await goalButton.click();
+      await tasksTab.click();
       const readBoardGeometry = async () => {
         const kanban = page.locator(".personal-task-kanban");
         await kanban.waitFor({ state: "visible" });
@@ -1025,6 +1032,7 @@ export const typedActionsScenario = {
       };
       const selectFirstGoal = async () => {
         await page.locator(".personal-goal-link").first().click();
+        await tasksTab.click();
         await page.locator(".personal-task-kanban").waitFor({ state: "visible" });
       };
       const selectProductReleaseGoal = async () => {
@@ -1034,6 +1042,7 @@ export const typedActionsScenario = {
           if (await stoppedGoals.getAttribute("open") === null) await stoppedGoals.locator("summary").click();
         }
         await goal.click();
+        await tasksTab.click();
         await page.locator(".personal-task-kanban").waitFor({ state: "visible" });
       };
       const populatedGeometry = await readBoardGeometry();
@@ -1059,7 +1068,7 @@ export const typedActionsScenario = {
       await page.setViewportSize(desktopViewport);
       await page.waitForTimeout(200);
       await selectFirstGoal();
-      await page.locator(".personal-object-list").first().waitFor({ state: "visible" });
+      await page.locator('[data-goal-panel="tasks"] .personal-object-list').first().waitFor({ state: "visible" });
       if (await page.locator(".personal-task-capability-callout").count()) throw new Error("Goal capability settings still consume a full-width Tasks row");
       await page.getByRole("button", { name: "Goal 设置", exact: true }).click();
       await page.getByRole("heading", { level: 1, name: "能力中心", exact: true }).waitFor({ state: "visible" });
@@ -1071,9 +1080,9 @@ export const typedActionsScenario = {
       }
       if (await page.locator(".personal-capability-editor-status").count()) throw new Error("Editable Goal settings must not show internal editor-contract notices");
       const expectedGoalCapabilities = [
-        "变更质量验证", "Goal 复核周期", "探索图谱", "探索 Harness", "飞书事件收件箱",
+        "变更质量验证", "Goal 复盘与步幅", "探索图谱", "探索 Harness", "飞书事件收件箱",
         "飞书看板心跳同步", "已退役的 Authority 观测", "自适应子 Agent 容量",
-        "已注册 Peer 任务协调", "周期报告", "Reward Memory 实验",
+        "已注册 Peer 任务协调", "周期报告", "记忆与资料", "内容制作",
       ];
       if (JSON.stringify([...goalCapabilityOrder].sort()) !== JSON.stringify(expectedGoalCapabilities.sort())) {
         throw new Error(`Goal capability workbench did not render the complete catalog: ${JSON.stringify(goalCapabilityOrder)}`);
@@ -1083,10 +1092,48 @@ export const typedActionsScenario = {
       const capabilityIndex = (name) => goalCapabilityOrder.indexOf(name);
       if (capabilityIndex("周期报告") >= capabilityIndex("探索 Harness")
         || capabilityIndex("自适应子 Agent 容量") <= capabilityIndex("探索 Harness")
-        || capabilityIndex("自适应子 Agent 容量") >= capabilityIndex("已退役的 Authority 观测")
-        || capabilityIndex("自适应子 Agent 容量") >= capabilityIndex("Reward Memory 实验")) {
+        || capabilityIndex("自适应子 Agent 容量") >= capabilityIndex("已退役的 Authority 观测")) {
         throw new Error(`Goal capability maturity ordering drifted: ${JSON.stringify(goalCapabilityOrder)}`);
       }
+      await page.locator(".personal-capability-list").getByRole("button", {name:"记忆与资料",exact:true}).click();
+      await page.getByRole("heading", {level:2,name:"记忆与资料",exact:true}).waitFor({state:"visible"});
+      const memoryTabs = page.getByRole("tablist", {name:"记忆用途"});
+      if (JSON.stringify(await memoryTabs.getByRole("tab").allTextContents()) !== JSON.stringify(["资料召回", "经验学习"])) {
+        throw new Error("Memory navigation must retain evidence and experience purposes; reference styles belong to Content production");
+      }
+      await page.getByRole("tab", {name:"资料召回",exact:true}).focus();
+      await page.keyboard.press("ArrowRight");
+      if (await page.getByRole("tab", {name:"经验学习",exact:true}).getAttribute("aria-selected") !== "true") {
+        throw new Error("Keyboard purpose navigation did not open the existing Agent experience editor");
+      }
+      // Authored native-shape snapshots exercise view continuity only; the
+      // real configuration/isolation owner is covered by the native suite.
+      const memoryGoalId = await page.getByLabel("目标 Goal", {exact:true}).inputValue();
+      const memoryView = {
+        registered_agents:["reviewer", "writer"], enabled_agents:["reviewer"],
+        binding_status:"available", binding_revision:`sha256:${"a".repeat(64)}`,
+        agent_bindings:[
+          {agent_id:"reviewer",binding_source:"agent",enabled:true,status:"available",automatic_recall:true,automatic_ingest:true},
+          {agent_id:"writer",binding_source:"agent",enabled:false,status:"disabled",automatic_recall:false,automatic_ingest:false},
+        ],
+      };
+      api.goalMemoryConfigurations.set(memoryGoalId, memoryView);
+      await page.getByRole("button", {name:"重新读取配置",exact:true}).click();
+      const memoryScope = page.getByLabel("经验作用范围", {exact:true});
+      await memoryScope.waitFor({state:"visible"});
+      await memoryScope.selectOption("writer");
+      api.goalMemoryConfigurations.set(memoryGoalId, {...memoryView,binding_revision:`sha256:${"b".repeat(64)}`});
+      await page.getByRole("button", {name:"重新读取配置",exact:true}).click();
+      await page.waitForFunction(revision => document.querySelector(".personal-capability-raw-values")?.textContent?.includes(revision), "b".repeat(64));
+      if (await memoryScope.inputValue() !== "writer") {
+        throw new Error("A fresh native readback silently switched the selected Agent to the shared binding");
+      }
+      if (await page.getByLabel("已启用的 Goal Agent", {exact:true}).count()) {
+        throw new Error("An independent Agent editor exposed the shared allowlist");
+      }
+      await page.keyboard.press("Home");
+      await page.getByRole("tab", {name:"资料召回",exact:true}).click();
+      await page.getByRole("region", {name:"资料召回",exact:true}).waitFor({state:"visible"});
       await page.locator(".personal-capability-list").getByRole("button", { name: "已退役的 Authority 观测" }).click();
       const retiredDetail = page.locator(".personal-capability-detail");
       await retiredDetail.getByText(/--clear-local-authority-shadow/).waitFor();
@@ -1291,7 +1338,7 @@ export const typedActionsScenario = {
           || api.machineConfigurationRequests.length !== requestsBeforeReadOnly) {
         throw new Error("Other machine settings mixed Goal-only or steward controls into the catalog");
       }
-      await machineCatalog.getByRole("button", { name: /^Goal 复核周期/ }).click();
+      await machineCatalog.getByRole("button", { name: /^Goal 复盘与步幅/ }).click();
       const reviewUnit = page.getByLabel(/^复核计数依据/u);
       const reviewCount = page.getByLabel("两次复核间的数量", { exact: true });
       await reviewUnit.waitFor({ state: "visible" });
@@ -1599,7 +1646,7 @@ export const typedActionsScenario = {
       await page.getByRole("button", { name: "返回工作区", exact: true }).click();
       await selectProductReleaseGoal();
       await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: /^(Tasks|任务)$/ }).click();
-      await page.locator(".personal-object-list").first().waitFor({ state: "visible" });
+      await page.locator('[data-goal-panel="tasks"] .personal-object-list').first().waitFor({ state: "visible" });
       await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: /^(Files|成果)$/ }).click();
       const reportOutput = page.getByTestId("personal-goal-outputs").getByRole("button", { name: /Product Release milestone report/ });
       await reportOutput.waitFor({ state: "visible" });
@@ -1720,6 +1767,26 @@ export const typedActionsScenario = {
       if (await page.getByText("stale", { exact: true }).count()) throw new Error("Fresh Session result left a stale status visible");
       await page.getByText("运行记录", { exact: true }).waitFor({ state: "visible" });
       await page.screenshot({ path: resolve(outputDir, "session-execution-record.png"), fullPage: false, animations: "disabled" });
+      for (const [status, activeTurnId, rowStatus, recordStatus, progress] of [
+        ["busy", "turn-authoritative-followup", "执行中", "执行中", "0/1"],
+        ["resume_failed", null, "需检查", "恢复失败", "0/1"],
+        ["stale", null, "已完成", "已完成", "1/1"],
+      ]) {
+        await page.getByRole("button", { name: /关闭详情/ }).press("Escape");
+        Object.assign(page.__loopxRuntime.sessions.get(authoritativeSessionId), {
+          status, active_turn_id: activeTurnId,
+        });
+        const currentStatus = authoritativeRun.locator(".personal-row-status").filter({ hasText: rowStatus });
+        await currentStatus.waitFor({ state: "attached", timeout: 8_000 });
+        if (!(await currentStatus.isVisible())) await page.locator(".personal-activity-summary > summary").click();
+        await currentStatus.waitFor({ state: "visible" });
+        await authoritativeRun.click();
+        await page.locator(".personal-session-summary > small").filter({ hasText: recordStatus }).waitFor({ state: "visible", timeout: 8_000 });
+        await page.getByLabel("执行 Session").getByText(progress, { exact: true }).waitFor({ state: "visible" });
+        await authoritativeRecord.locator("header strong").filter({ hasText: "已完成" }).first().waitFor({ state: "visible" });
+        await page.getByText("权威 Session 已完成只读分析，并返回可核验结果。", { exact: true }).waitFor({ state: "visible" });
+        await page.screenshot({ path: resolve(outputDir, `session-current-state-${status}.png`), fullPage: false, animations: "disabled" });
+      }
       await page.getByRole("tab", { name: "详情与操作" }).click();
       const correction = page.getByLabel("输入纠偏信息");
       const turnCountBeforeCorrection = api.turnRequests.length;
@@ -1746,13 +1813,27 @@ export const typedActionsScenario = {
       await page.getByRole("button", {name: "设置 Heartbeat", exact: true}).click();
       await page.getByRole("dialog", {name: "Goal Heartbeat", exact: true}).getByRole("button", {name: "检查配置"}).click();
       await page.getByText("确认执行").waitFor({ state: "visible" });
+      const heartbeatPreview = api.actionPreviews.at(-1);
+      if (heartbeatPreview?.action_kind !== "heartbeat.bind") throw new Error("Continuation intent did not map to heartbeat.bind");
+      const heartbeatApplyResponse = page.waitForResponse(response => response.request().method() === "POST"
+        && new URL(response.url()).pathname === `/api/actions/${heartbeatPreview.proposalId}/apply`);
       await page.getByRole("button", { name: "确认并应用", exact: true }).click();
+      const response = await heartbeatApplyResponse;
+      const gateResponse = await response.json();
+      if (response.status() !== 409 || gateResponse.proposal?.status !== "gated"
+        || gateResponse.proposal?.gate?.kind !== "host_activation_required") {
+        throw new Error(`Heartbeat refusal did not persist the canonical host gate: ${JSON.stringify(gateResponse)}`);
+      }
       await page.getByText("需要宿主确认").waitFor({ state: "visible" });
       if (api.durableWriteCount !== writesBeforeHeartbeat) throw new Error("Protected heartbeat gate wrote durable state");
+      await page.reload({ waitUntil: "networkidle" });
+      await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: /^(Chat|对话)$/ }).click();
+      await page.locator(".personal-gated-summary summary").click();
+      await page.locator('.personal-proposal-row[data-action-kind="heartbeat.bind"].is-gated').click();
+      await page.getByText("需要宿主确认").waitFor({ state: "visible" });
+      if (api.durableWriteCount !== writesBeforeHeartbeat) throw new Error("Reading the persisted heartbeat gate wrote durable state");
       pass(8, "Agent semantic protected intent creates only a typed preview, while discussion and targetless requests remain conversational and all protected-gate paths perform zero durable writes before confirmation.");
-      pass(11, "Heartbeat apply surfaced an explicit host-activation gate.");
-      const heartbeatPreview = api.actionPreviews.find((preview) => preview.action_kind === "heartbeat.bind");
-      if (!heartbeatPreview) throw new Error("Continuation intent did not map to heartbeat.bind");
+      pass(11, "Heartbeat apply persisted its host-activation gate and kept it visible after canonical reload, without an automation write.");
       await page.getByRole("button", { name: "关闭", exact: true }).click();
 
       await page.getByRole("button", { name: "概览", exact: true }).click();
@@ -1910,6 +1991,9 @@ export const typedActionsScenario = {
       if (monitorShortcut?.normalized_parameters.target !== "检查当前 Goal 的阻塞、进度与新产出") throw new Error(`定时检查快捷方式未回落到本地化默认检查目标：${JSON.stringify(monitorShortcut?.normalized_parameters)}`);
       if (api.durableWriteCount !== writesBeforeMonitorShortcut) throw new Error("定时检查快捷方式在确认前写入了持久状态");
       await page.getByRole("button", { name: "关闭", exact: true }).click();
+      if (await page.locator(".personal-composer-tools").getAttribute("open") === null) {
+        throw new Error("Closing a configuration draft lost the open shortcut menu across composer folding");
+      }
       await page.getByRole("button", {name: "配置定时检查"}).click();
       const monitorForm = page.getByRole("dialog", {name: "配置定时检查", exact: true});
       const previewsBeforeUnsupportedSchedule = api.actionPreviews.length;
@@ -1946,7 +2030,7 @@ export const typedActionsScenario = {
           api.nextStatusDelayMs = 1_600;
           await page.getByRole("button", { name: "查看更新后的 Goal", exact: true }).click();
           await page.getByRole("dialog").filter({ hasText: "执行结果" }).waitFor({ state: "hidden", timeout: 600 });
-          await goalNavigation.getByRole("button", { name: /^(Tasks|任务)$/, current: "page" }).waitFor({ state: "visible", timeout: 600 });
+          await goalNavigation.getByRole("button", { name: /^(Overview|概览)$/, current: "page" }).waitFor({ state: "visible", timeout: 600 });
           await goalNavigation.getByRole("button", { name: /^(Chat|对话)$/ }).click();
         } else {
           await page.getByRole("button", { name: "关闭", exact: true }).click();
@@ -2026,7 +2110,7 @@ export const typedActionsScenario = {
       await needsYouCard.click();
       await page.getByRole("heading", { name: needsYouSource }).waitFor({ state: "visible" }).catch(() => {});
       await page.getByText(needsYouAction, { exact: true }).first().waitFor({ state: "visible" });
-      await page.locator(".personal-object-list").first().getByRole("button").first().click();
+      await page.locator(".goal-overview-attention button", { hasText: needsYouAction }).first().click();
       await page.getByText("需要你", { exact: true }).last().waitFor({ state: "visible" });
       await page.getByText("更多决定").click();
       const writesBeforeDecision = api.durableWriteCount;
@@ -2069,5 +2153,101 @@ export const typedActionsScenario = {
       coverageEntries: context.coverageEntries,
       note: notes.join(" "),
     };
+  },
+};
+
+// The list is the conversation frontier; an opened original proposal has its
+// own canonical identity even when a global create started inside a Goal.
+export const proposalReadbackScopeScenario = {
+  id: "proposal-readback-scope",
+  async run({browser, url}) {
+    const reads = [];
+    let readFailure = false;
+    let wrongIdentity = false;
+    let releaseRead;
+    let readStarted;
+    let delayedRead;
+    const ui = await openWorkspacePage(browser, url, {beforeGoto: async (_api, page) => {
+      await page.route(/\/api\/actions\/[^/?]+$/, async route => {
+        const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
+        if (id === "preview" || route.request().method() !== "GET") return route.fallback();
+        reads.push(id);
+        const stored = page.__loopxRuntime.actionProposals.get(id);
+        const proposal = stored && wrongIdentity ? {...stored, proposal_id: "wrong-operation"} : stored;
+        if (delayedRead) {
+          const wait = delayedRead; delayedRead = null;
+          readStarted(); await wait;
+        }
+        await route.fulfill({status: readFailure ? 503 : proposal ? 200 : 404,
+          json: readFailure ? {ok: false, error: "Readback offline"} : proposal
+            ? {ok: true, proposal} : {ok: false, error: "Proposal missing"}});
+      });
+    }});
+    try {
+      const {page, api} = ui;
+      await page.locator(".personal-goal-link", {hasText: "Product Release"}).click();
+      await page.getByRole("navigation", {name: "Goal 视图"}).getByRole("button", {name: /^(Chat|对话)$/}).click();
+      if (await page.locator(".personal-composer-tools").getAttribute("open") === null) await page.locator(".personal-composer-tools > summary").click();
+      await page.getByRole("button", {name: "创建 Goal", exact: true}).last().click();
+      const form = page.getByRole("dialog", {name: "创建新 Goal", exact: true});
+      await form.getByLabel("目标", {exact: true}).fill("Create independent Goal");
+      await form.getByLabel("完成标准", {exact: true}).fill("Preserve the reviewed operation");
+      await form.getByRole("button", {name: "检查配置"}).click();
+      const original = api.actionPreviews.at(-1);
+      assert.equal(original.context.goal_id, null, "Global creation keeps its manager authority context");
+      const drawer = page.locator('.personal-context-drawer[data-context-kind="proposal"]');
+      await drawer.getByRole("button", {name: "创建 Goal 并开始首轮", exact: true}).waitFor();
+      // Allow a complete list refresh: a temporary mutation cache cannot be the fix.
+      await page.waitForTimeout(5500);
+      assert.ok(reads.includes(original.proposalId), "Opened original proposal is independently read back");
+      assert.equal(await drawer.getByText(/提案状态刷新失败/).count(), 0, "A valid original proposal is not missing from another conversation's list");
+      const foreign = {...page.__loopxRuntime.actionProposals.get(original.proposalId), proposal_id: "unrelated-manager-proposal", summary: "Unrelated manager proposal", normalized_parameters: {...original.normalized_parameters, title: "Unrelated manager Goal"}};
+      page.__loopxRuntime.actionProposals.set(foreign.proposal_id, foreign);
+      await page.waitForTimeout(5500);
+      assert.equal(await page.locator(".personal-proposal-row", {hasText: foreign.summary}).count(), 0, "Other manager proposals never join this Goal");
+      readFailure = true;
+      await drawer.getByText(/提案状态刷新失败/).waitFor({timeout: 10000});
+      readFailure = false;
+      await drawer.getByRole("button", {name: "重试状态读取", exact: true}).click();
+      await drawer.getByText(/提案状态刷新失败/).waitFor({state: "hidden"});
+      wrongIdentity = true;
+      await drawer.getByText(/提案状态刷新失败/).waitFor({timeout: 10000});
+      wrongIdentity = false;
+      await drawer.getByRole("button", {name: "重试状态读取", exact: true}).click();
+      await drawer.getByText(/提案状态刷新失败/).waitFor({state: "hidden"});
+      const saved = page.__loopxRuntime.actionProposals.get(original.proposalId);
+      page.__loopxRuntime.actionProposals.delete(original.proposalId);
+      await drawer.getByText(/提案状态刷新失败/).waitFor({timeout: 10000});
+      page.__loopxRuntime.actionProposals.set(original.proposalId, saved);
+      await drawer.getByRole("button", {name: "重试状态读取", exact: true}).click();
+      await drawer.getByText(/提案状态刷新失败/).waitFor({state: "hidden"});
+      await page.getByRole("button", {name: /关闭详情/}).click();
+      await page.locator(".personal-manager-link").first().click();
+      await page.reload({waitUntil: "networkidle"});
+      await page.getByRole("button", {name: "对话", exact: true}).first().click();
+      await page.getByText("另有 1 个待确认提议", {exact: true}).click();
+      await page.locator(".personal-proposal-row", {hasText: original.normalized_parameters.title}).click();
+      await drawer.getByRole("button", {name: "创建 Goal 并开始首轮", exact: true}).waitFor();
+      const started = new Promise(resolve => { readStarted = resolve; });
+      delayedRead = new Promise(resolve => { releaseRead = resolve; });
+      await Promise.race([started, new Promise((_, reject) => setTimeout(() => reject(new Error("No delayed original read")), 10000))]);
+      await drawer.getByRole("button", {name: "创建 Goal 并开始首轮", exact: true}).focus();
+      await page.keyboard.press("Enter");
+      await drawer.getByText("已应用，LoopX 状态将刷新。", {exact: true}).waitFor();
+      releaseRead();
+      await page.waitForTimeout(500);
+      await drawer.getByText("已应用，LoopX 状态将刷新。", {exact: true}).waitFor();
+      assert.deepEqual(api.actionApplies, [original.proposalId], "Confirmation applies the original operation exactly once despite a late preview read");
+      await page.screenshot({path: resolve(outputDir, "proposal-original-scope.png"), animations: "disabled"});
+      const readCount = reads.length;
+      const readonlyUrl = new URL(url);
+      readonlyUrl.searchParams.set("statusUrl", new URL("/status.json", url).href);
+      await page.goto(readonlyUrl.href, {waitUntil: "networkidle"});
+      await page.getByText("只读", {exact: true}).first().waitFor();
+      await page.waitForTimeout(5500);
+      assert.equal(reads.length, readCount, "A read-only source performs no original-proposal reads");
+      assert.deepEqual(api.actionApplies, [original.proposalId], "Source switching performs no additional effect");
+    } catch (error) { throw new Error(error.message + "\n" + await ui.page.locator("body").innerText()); } finally { releaseRead?.(); await ui.close(); }
+    return {coverageEntries: ui.coverageEntries, note: "Cross-Goal global creation reads the original proposal, fences unrelated cards and preserves errors/retry/reload and keyboard confirmation."};
   },
 };

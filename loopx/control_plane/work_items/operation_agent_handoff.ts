@@ -67,14 +67,22 @@ export function resolveOperationSourceRoute(input: JsonObject): JsonObject {
  * Accept the CLI's provider-neutral effort vocabulary; actual model support
  * remains a host qualification, not something this preflight can establish. */
 export function projectManagedOperationTransport(input: JsonObject): JsonObject {
-  const reason = input.host !== "codex-cli" ? "operation_transport_host_unsupported"
-    : !["read-only", "workspace-write"].includes(String(input.sandbox)) ? "operation_transport_sandbox_unsupported"
+  const dshTransport = input.host === "dsh" && input.dsh_operation_module_configured === true;
+  const supportedHosts = input.dsh_operation_module_configured === true ? ["codex-cli", "dsh"] : ["codex-cli"];
+  const supportedSandboxes = dshTransport ? [] : ["read-only", "workspace-write"];
+  const reason = typeof input.host !== "string" || !supportedHosts.includes(input.host) ? "operation_transport_host_unsupported"
+    : !dshTransport && (typeof input.sandbox !== "string" || !supportedSandboxes.includes(input.sandbox)) ? "operation_transport_sandbox_unsupported"
     : typeof input.model !== "string" || !ID.test(input.model)
       || typeof input.reasoning_effort !== "string"
       || !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(input.reasoning_effort)
       ? "operation_transport_profile_required" : null;
-  return {reason, transport: {schema_version: "loopx_operation_transport_v0",
-    kind: "owned_app_server", revision: "app-server-operation-tools-v0",
+  const remediation = reason === "operation_transport_host_unsupported" ? ["select_supported_operation_host"]
+    : reason === "operation_transport_sandbox_unsupported" ? ["select_supported_operation_sandbox"]
+    : reason === "operation_transport_profile_required" ? ["correct_execution_profile"] : [];
+  return {reason, remediation, transport: {schema_version: "loopx_operation_transport_v0",
+    kind: dshTransport ? "owned_native_sdk" : "owned_app_server",
+    revision: dshTransport ? "dsh-native-operation-tools-v0" : "app-server-operation-tools-v0",
+    supported_hosts: supportedHosts, supported_sandboxes: supportedSandboxes,
     configuration_valid: reason === null, runtime_qualified: false,
     identity_source: "native_thread_turn_metadata", human_confirmation_required: true,
     first_consumption_required: true, source_conversation_is_executor: false}};
@@ -83,16 +91,20 @@ export function projectManagedOperationTransport(input: JsonObject): JsonObject 
 export function normalizeAgentOperationExecutor(input: JsonObject): JsonObject {
   const executor = requireJsonObject(input.executor, "agent executor");
   if (executor.kind === "managed_turn") {
-    const keys = ["kind", "todo_id", "session_id", "profile_digest", "model", "reasoning_effort", "revision"];
+    const keys = ["kind", "todo_id", "session_id", "profile_digest", "model", "reasoning_effort", "revision",
+      ...("host" in executor ? ["host"] : [])];
     if (Object.keys(executor).length !== keys.length || keys.some(key => !(key in executor))
       || executor.revision !== MANAGED_OPERATION_REVISION
       || typeof executor.profile_digest !== "string" || !BARE_SHA256_PATTERN.test(executor.profile_digest)) {
       throw new EffectRuntimeRequestError("managed operation executor binding is invalid");
     }
+    if ("host" in executor && executor.host !== "dsh") {
+      throw new EffectRuntimeRequestError("unsupported managed operation host");
+    }
     return {kind: "managed_turn", todo_id: id(executor.todo_id, "todo_id"),
       session_id: id(executor.session_id, "session_id"), profile_digest: executor.profile_digest,
       model: id(executor.model, "model"), reasoning_effort: id(executor.reasoning_effort, "reasoning_effort"),
-      revision: MANAGED_OPERATION_REVISION};
+      revision: MANAGED_OPERATION_REVISION, ...("host" in executor ? {host: executor.host} : {})};
   }
   const keys = ["kind", "host_surface", "thread_id", "revision"];
   if (Object.keys(executor).length !== keys.length || keys.some(key => !(key in executor))
@@ -101,6 +113,15 @@ export function normalizeAgentOperationExecutor(input: JsonObject): JsonObject {
   }
   return {kind: "agent_session", host_surface: id(executor.host_surface, "host_surface"),
     thread_id: id(executor.thread_id, "thread_id"), revision: AGENT_OPERATION_REVISION};
+}
+
+/** Legacy tickets retain their exact Codex encoding; new hosts are explicit
+ * immutable executor operands, never inferred from the calling transport. */
+function managedHost(executor: JsonObject): string {
+  return executor.host === "dsh" ? "dsh" : "codex-cli";
+}
+function managedSurface(executor: JsonObject): string {
+  return managedHost(executor) === "dsh" ? "loopx-managed-dsh" : "loopx-managed-codex";
 }
 
 /** Filesystem/session observations are supplied by the existing Turn session
@@ -118,10 +139,12 @@ export function managedOperationBindingCurrent(input: JsonObject): JsonObject {
     : observedRef !== null && expectedRef.goal_id === observedRef.goal_id
       && expectedRef.goal_instance_id === observedRef.goal_instance_id;
   return {current: executor.kind === "managed_turn" && session !== null
-    && session.schema_version === "loopx_codex_cli_session_v1"
+    && (managedHost(executor) === "dsh"
+      ? session.schema_version === "loopx_managed_cli_session_v1" && session.host === "dsh"
+      : session.schema_version === "loopx_codex_cli_session_v1" && (session.host == null || session.host === "codex-cli"))
     && session.goal_id === parameters.goal_id && session.agent_id === parameters.agent_id
     && session.todo_id === executor.todo_id && session.session_id === executor.session_id
-    && session.operation_transport === "app-server-operation-tools-v0"
+    && session.operation_transport === (managedHost(executor) === "dsh" ? "dsh-native-operation-tools-v0" : "app-server-operation-tools-v0")
     && session.operation_profile_digest === executor.profile_digest
     && session.operation_model === executor.model && session.operation_reasoning_effort === executor.reasoning_effort
     && sameGoalRef};
@@ -152,7 +175,7 @@ function historicalAccess(input: JsonObject, route: JsonObject, consumed: boolea
   return {mode: original ? "original_session" : "replacement_reconciliation", owner,
     original_route: route, permission: "historical_evidence_only", execution_allowed: false,
     authority_source: original ? "original_operation_route"
-      : actor.host_surface === "loopx-managed-codex" ? "current_turn_session_binding" : "current_registry_binding"};
+      : actor.host_surface === "loopx-managed-codex" || actor.host_surface === "loopx-managed-dsh" ? "current_turn_session_binding" : "current_registry_binding"};
 }
 
 export function planAgentOperationHandoff(input: JsonObject): JsonObject {
@@ -180,7 +203,7 @@ export function planAgentOperationHandoff(input: JsonObject): JsonObject {
   const expires = timestamp(operation.expires_at);
   const managed = executor.kind === "managed_turn";
   const route: JsonObject = {goal_id: parameters.goal_id, agent_id: parameters.agent_id,
-    ...(managed ? {host_surface: "loopx-managed-codex", thread_id: executor.session_id,
+    ...(managed ? {host_surface: managedSurface(executor), thread_id: executor.session_id,
       todo_id: executor.todo_id, profile_digest: executor.profile_digest}
       : {host_surface: executor.host_surface, thread_id: executor.thread_id})};
   const base: JsonObject = {schema_version: "loopx_operation_agent_handoff_v0", operation_id: operation.operation_id,
@@ -189,6 +212,7 @@ export function planAgentOperationHandoff(input: JsonObject): JsonObject {
     route, authorization_source: "canonical_typed_operation", execution_allowed: false,
     host_delivery: hostStart ? "native_start_accepted" : "not_attempted", host_start: hostStart,
     external_write_performed: false,
+    ...(operation.turn_launch != null ? {turn_launch: operation.turn_launch} : {}),
     executor_kind: executor.kind, source_route: parameters.source_route ?? null,
     host_authentication_required: !managed};
   const handoff = operation.agent_handoff == null ? null
@@ -215,17 +239,48 @@ export function planAgentOperationHandoff(input: JsonObject): JsonObject {
     const launch = requireJsonObject(input.launch_context, "operation wake launch context");
     const selected = requireJsonObject(input.executor_route, "operation wake executor route");
     requireThat(managed && input.binding_current === true
-      && launch.host === "codex-cli" && launch.operation_tools === true
+      && launch.host === managedHost(executor) && launch.operation_tools === true
       && launch.iteration_context !== "fresh"
       && Object.entries(route).every(([key, value]) => selected[key] === value)
       && selected.model === executor.model && selected.reasoning_effort === executor.reasoning_effort,
       "operation wake must resume the original managed session and profile");
+    // An explicitly granted original-owner continuation is not peer work.
+    // Its durable launch intent lives with this operation, not a second Todo
+    // completion or delegation acceptance record. Ordinary delegation keeps
+    // its different-Agent requirement.
+    let turnLaunch: JsonObject | null = null;
+    if (input.turn_launch != null) {
+      const launchIntent = requireJsonObject(input.turn_launch, "operation Turn launch");
+      const binding = requireJsonObject(input.operator_binding, "operation continuation binding");
+      requireThat(binding.continuation_kind === "original_operation"
+        && binding.agent_id === parameters.agent_id && binding.todo_id === executor.todo_id
+        && input.requester_agent_id === parameters.agent_id
+        && Array.isArray(binding.requesters) && binding.requesters.includes(input.requester_agent_id),
+      "original operation continuation requires its exact owner launch grant");
+      requireThat(typeof launchIntent.configuration_digest === "string"
+        && BARE_SHA256_PATTERN.test(launchIntent.configuration_digest)
+        && launchIntent.binding_id === binding.id,
+      "operation Turn launch requires the current operator configuration");
+      turnLaunch = {schema_version: "operation_turn_launch_v0",
+        binding_id: id(binding.id, "binding_id"),
+        turn_instance_id: id(launchIntent.turn_instance_id, "turn_instance_id"),
+        configuration_digest: launchIntent.configuration_digest};
+      if (operation.turn_launch != null) {
+        const prior = requireJsonObject(operation.turn_launch, "original operation Turn launch");
+        requireThat(Object.entries(turnLaunch).every(([key, value]) => prior[key] === value),
+          "operation Turn launch changed; reconcile the original attempt");
+        return {...base, status: "wake_admitted", wake_allowed: false,
+          launch_new_turn: false, turn_launch: prior};
+      }
+    }
     requireThat(!hostStart && !handoff && !observed
       && operation.lifecycle_state === "claimed" && proposal.status === "applying",
       "operation wake requires an unstarted, unconsumed confirmed operation");
     requireThat(now < expires && timestamp(confirmation.confirmed_at) <= now,
       "operation wake is outside the confirmation lifetime");
-    return {...base, status: "wake_admitted", wake_allowed: true};
+    return {...base, status: "wake_admitted", wake_allowed: true,
+      ...(turnLaunch ? {launch_new_turn: true,
+        write_turn_launch: {...turnLaunch, recorded_at: input.now}} : {})};
   }
   if (action === "observe_host_start") {
     const actor = requireJsonObject(input.actor, "native start actor");

@@ -20,6 +20,33 @@ function observe(overrides: Record<string, unknown> = {}) {
     rows: [row("todo_a", "worker-a")], ...overrides});
 }
 
+test("summary classification shares claim scope and keeps visibility floors separate", () => {
+  const fact = (claim: string | null = null, excluded: string[] = [], actionable = true) =>
+    ({claim, excluded, actionable, advancement: true});
+  const request = {schema_version: "todo_frontier_revision_request_v0", operation: "classify",
+    agent_id: "worker-a", claimed_count_floor: "12", diagnostic_peers: [fact(), fact()],
+    sources: {executable_backlog_items: [fact("worker-a"), fact(), fact("worker-b"),
+      fact("worker-a", ["worker-a"]), fact(null, [], false)],
+      unclaimed_priority_open_items: [fact()], claimed_advancement_open_items: [fact("worker-a")]}};
+  assert.deepEqual(projectAdvancementFrontier(request), {groups: {
+    current_agent_claimed_items: {source: "executable_backlog_items", indices: [0]},
+    unclaimed_items: {source: "executable_backlog_items", indices: [1]},
+    other_agent_claimed_items: {source: "executable_backlog_items", indices: [2]},
+  }, counts: {current_agent_claimed_advancement_count: 12,
+    unclaimed_advancement_count: 1, other_agent_claimed_advancement_count: 2}});
+  const empty = projectAdvancementFrontier({...request, sources: {...request.sources, executable_backlog_items: []}});
+  assert.deepEqual((empty.groups as Record<string, unknown>).unclaimed_items,
+    {source: "executable_backlog_items", indices: []});
+  const fallback = projectAdvancementFrontier({...request, sources: {...request.sources, executable_backlog_items: null}});
+  assert.deepEqual((fallback.groups as Record<string, unknown>).current_agent_claimed_items,
+    {source: "claimed_advancement_open_items", indices: [0]});
+  for (const value of ["-1", "0.5", "01", 1, false, "bad"]) assert.throws(() => projectAdvancementFrontier({...request, claimed_count_floor: value}));
+  const large = projectAdvancementFrontier({...request, claimed_count_floor: "9007199254740993"});
+  assert.equal((large.counts as Record<string, unknown>).current_agent_claimed_advancement_count, "9007199254740993");
+  assert.throws(() => projectAdvancementFrontier({...request,
+    sources: {...request.sources, executable_backlog_items: [{...fact(null, [], false), advancement: "true"}]}}));
+});
+
 test("lossless compressed rows preserve index and ACK semantics and reject malformed transport", () => {
   const rows = [row("todo_a", "worker-a"), row("todo_b", null, ["worker-a"])];
   const compressed = {encoding: "deflate-base64-json-v0",
@@ -47,6 +74,45 @@ test("revision is order-independent and maintenance timestamps do not change mat
   const changed = [{...rows[0], updated: "2026-09-02T00:00:00Z"}, rows[1]];
   assert.equal(project(rows).frontier_revision, project(changed).frontier_revision);
   assert.notEqual(project(rows).frontier_updated_at, project(changed).frontier_updated_at);
+});
+
+test("display metadata changes freshness but not the owned replan basis", () => {
+  const original = row("todo_a", "worker-a");
+  const initial = JSON.parse(original.serialized);
+  original.serialized = JSON.stringify({...initial, text: "Preserve the original requirement", title: "Original name", priority: "P1"});
+  const updated = {...original, updated: "2026-09-02T00:00:00Z",
+    serialized: JSON.stringify({...initial, text: "[P3] Preserve the original requirement", title: "New display name", priority: "P3"})};
+  const first = project([original], "worker-a"), changed = project([updated], "worker-a");
+  assert.notEqual(first.frontier_revision, changed.frontier_revision);
+  assert.equal(first.frontier_owned_identity, changed.frontier_owned_identity);
+  const observed = observe({rows: [original]}).observation as Record<string, unknown>;
+  const ack = {recorded: true, semantic_delta: {accepted: true, obligation_id: "replan-0123456789abcdef",
+    trigger_kinds: ["long_todo_chain"], trigger_checkpoints: [{kind: "long_todo_chain",
+      frontier_revision: observed.frontier_revision, frontier_owned_identity: observed.frontier_owned_identity}]}};
+  assert.deepEqual(observe({rows: [updated], ack}).decision,
+    {acknowledged: true, rearmed_after_obligation_id: null});
+  const candidate = {...updated,
+    serialized: JSON.stringify({...JSON.parse(updated.serialized), target_key: "experiment:authorized-probe-v2"})};
+  assert.notEqual(project([candidate], "worker-a").frontier_owned_identity, first.frontier_owned_identity);
+  assert.deepEqual(observe({rows: [candidate], ack}).decision,
+    {acknowledged: false, rearmed_after_obligation_id: "replan-0123456789abcdef"});
+});
+
+test("a canonical Todo body change cannot inherit the prior long-chain ACK", () => {
+  const original = row("todo_a", "worker-a");
+  original.serialized = JSON.stringify({...JSON.parse(original.serialized),
+    text: "Evaluate route A against the accepted cases", target_key: "experiment:route-comparison"});
+  const observed = observe({rows: [original]}).observation as Record<string, unknown>;
+  const ack = {recorded: true, semantic_delta: {accepted: true, obligation_id: "replan-0123456789abcdef",
+    trigger_kinds: ["long_todo_chain"], trigger_checkpoints: [{kind: "long_todo_chain",
+      frontier_revision: observed.frontier_revision, frontier_owned_identity: observed.frontier_owned_identity}]}};
+  const changed = {...original, updated: "2026-09-02T00:00:00Z",
+    serialized: JSON.stringify({...JSON.parse(original.serialized),
+      text: "Evaluate route B and prove equivalence to route A before rollout"})};
+  assert.notEqual(project([changed], "worker-a").frontier_owned_identity,
+    project([original], "worker-a").frontier_owned_identity);
+  assert.deepEqual(observe({rows: [changed], ack}).decision,
+    {acknowledged: false, rearmed_after_obligation_id: "replan-0123456789abcdef"});
 });
 
 test("excluded-only agents receive an explicit checkpoint instead of the unclaimed fallback", () => {

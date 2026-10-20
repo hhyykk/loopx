@@ -191,13 +191,15 @@ def _resolve_preview_settlement(
     if (
         isinstance(readback.progress, dict)
         and readback.progress.get("closeout_kind")
-        == "typed_blocked_writeback_no_spend"
+        in {"typed_blocked_writeback_no_spend", "capability_duty_retired_no_spend"}
     ):
         return {
             "identity": readback.identity.value,
             "result": readback.settlement,
             "delivery_run": readback.writeback_run,
             "reason": (
+                "this exact capability duty was retired and must not consume a quota slot; reassess the current frontier in a new Turn"
+                if readback.progress.get("closeout_kind") == "capability_duty_retired_no_spend" else
                 "this Turn already closed with an exact typed blocked writeback "
                 "and must not consume a quota slot; retry the Todo only after "
                 "its external blocker changes or a bounded backoff"
@@ -563,6 +565,33 @@ def _admits_delivery_completion_spend_state(
     )
 
 
+def _workspace_repair_blocks_spend(
+    before: Mapping[str, Any],
+    *,
+    delivery_workspace_validated: bool,
+    delivery_run: Mapping[str, Any] | None,
+    settlement_identity: SettlementIdentity | None,
+    workspace_requirement: str,
+) -> bool:
+    """Keep the current workspace guard separate from an original settlement.
+
+    The existing typed requirement owner decides whether that settlement needs
+    a workspace. This adapter only applies the recovered result to the guard;
+    an unbound or unwritten settlement cannot waive it.
+    """
+    settlement_does_not_require_workspace = (
+        delivery_run is not None
+        and settlement_identity is not None
+        and workspace_requirement == "not_required"
+    )
+    return (
+        before.get("effective_action") == EffectiveAction.AGENT_WORKSPACE_REPAIR.value
+        and before.get("workspace_repair_allowed") is True
+        and not delivery_workspace_validated
+        and not settlement_does_not_require_workspace
+    )
+
+
 def build_quota_slot_preview_for_decision(
     status_payload: dict[str, Any],
     *,
@@ -796,12 +825,13 @@ def build_quota_slot_preview_for_decision(
             "after": None,
         }
     delivery_workspace_validated = bool(delivery_workspace)
-    workspace_repair_no_spend = (
-        before.get("effective_action") == EffectiveAction.AGENT_WORKSPACE_REPAIR.value
-        and before.get("workspace_repair_allowed") is True
-        and not delivery_workspace_validated
-    )
-    if workspace_repair_no_spend:
+    if _workspace_repair_blocks_spend(
+        before,
+        delivery_workspace_validated=delivery_workspace_validated,
+        delivery_run=delivery_completion_run,
+        settlement_identity=settlement_identity,
+        workspace_requirement=workspace_requirement,
+    ):
         return {
             "ok": False,
             "mode": "spend-slot",
@@ -859,6 +889,10 @@ def build_quota_slot_preview_for_decision(
             "appended": False,
             "registry_mutated": False,
             "reason": before.get("reason") or "goal is not eligible for quota accounting preview",
+            # Transport the actual rejecting action, not an incidental quota
+            # snapshot on an earlier validation/workspace refusal. TS owns the
+            # mapping to settlement failure kinds; prose carries no such rule.
+            "quota_rejection_action": before.get("effective_action") if before.get("ok") is True else None,
             "before": before,
             "after": None,
         }

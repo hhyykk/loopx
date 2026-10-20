@@ -1,3 +1,4 @@
+import {retiredHandoffModeRejection, HANDOFF_MODE_RETIRED_REASON} from "./handoff_mode_policy.ts";
 import {AUTHORITY_SOURCE_CHANGED, uncheckedAuthoritySource, type AuthoritySourceCheck} from "./authority_source.ts";
 import {currentLeaseAcquisitionProof} from "./lease_acquisition_proof.ts";
 import {canonicalTaskLeaseAcquireFacts} from "./task_lease_state.ts";
@@ -56,6 +57,8 @@ export interface CoordinationTodoClaimInput {
   readonly operation_id: string;
   readonly expected_provider_revision?: string;
   readonly transfer_grant?: CoordinationTodoClaimTransferGrant;
+  /** Optional causal binding materialized atomically with an actual runnable claim. */
+  readonly replan_obligation_id?: string;
   readonly lease_request?: CoordinationTodoClaimLeaseRequest | null;
   readonly dry_run: boolean;
   readonly now: Date;
@@ -374,6 +377,11 @@ async function executeClaimAttempt(
       error instanceof Error ? error.message : "invalid Todo claim",
     );
   }
+  if (input.replan_obligation_id !== undefined &&
+      (typeof input.replan_obligation_id !== "string" || !/^replan-[a-f0-9]{16}$/.test(input.replan_obligation_id) ||
+       input.actor_agent_id !== input.claimed_by)) {
+    return failure("invalid_replan_successor_claim", "A replan successor claim requires an exact obligation and the claiming Agent");
+  }
   const leaseRequest = input.lease_request ?? null;
 
   // Intent identity excludes observation time and current authorization facts.
@@ -389,6 +397,7 @@ async function executeClaimAttempt(
     ...(input.transfer_grant === undefined ? {} : {transfer_grant: input.transfer_grant}),
     dry_run: input.dry_run,
     ...(leaseRequest === null ? {} : {lease_request: leaseRequest}),
+    ...(input.replan_obligation_id === undefined ? {} : {replan_obligation_id: input.replan_obligation_id}),
   });
   const receipt = new CoordinationCommandReceipt({result_schema: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
     identity: {schema_version: COORDINATION_TODO_CLAIM_RECEIPT_SCHEMA,
@@ -403,6 +412,9 @@ async function executeClaimAttempt(
           typeof result.handoff_mode !== "string" ||
           result.mutation_authority === null || typeof result.mutation_authority !== "object") {
         throw new AuthorityStoreProtocolError("original claim result is invalid");
+      }
+      if (input.replan_obligation_id !== undefined && result.replan_obligation_id !== input.replan_obligation_id) {
+        throw new AuthorityStoreProtocolError("claim replan binding differs from its original receipt");
       }
       if (leaseRequest !== null) {
         const lease = canonicalAuthorityObject(result.lease, "original claim lease");
@@ -479,6 +491,13 @@ async function executeClaimAttempt(
     );
   }
 
+  if (input.replan_obligation_id !== undefined &&
+      (todo.role !== "agent" || todo.status !== "open" || todo.task_class !== "advancement_task" ||
+       typeof todo.action_kind !== "string" || !todo.action_kind.trim() ||
+       !(typeof todo.target_key === "string" && todo.target_key.trim()) ||
+       (todo.replan_obligation_id !== undefined && todo.replan_obligation_id !== input.replan_obligation_id))) {
+    return failure("invalid_replan_successor_claim", "A successor must be open advancement work with a concrete action/target and unchanged causal identity");
+  }
   const activeLeaseOwner = projection.leases.get(input.todo_id);
   const activeLeaseActive = activeLeaseOwner !== undefined && leaseIsActive(activeLeaseOwner, input.now);
   const activeLeaseHolder = activeLeaseActive && activeLeaseOwner !== undefined && typeof activeLeaseOwner.owner === "string"
@@ -508,6 +527,9 @@ async function executeClaimAttempt(
   if (!["legacy", "soft_claim", "hard_lease"].includes(handoffMode)) {
     return failure("invalid_handoff_mode", "canonical projection has an invalid handoff mode");
   }
+  const retired = retiredHandoffModeRejection(handoffMode);
+  if (retired !== null) return failure(retired, HANDOFF_MODE_RETIRED_REASON,
+    {todo_id: input.todo_id, handoff_mode: handoffMode}, "decision_rejection");
   if (leaseRequest !== null && handoffMode !== "hard_lease") {
     return failure(
       "claim_lease_requires_hard_lease",
@@ -600,7 +622,7 @@ async function executeClaimAttempt(
       {goal_acceptance_guard: acceptance}, "decision_rejection");
   }
   if (leaseRequest !== null) {
-    const dependency = todoExecutionDependencyRejection(projection.todos, input.todo_id);
+    const dependency = todoExecutionDependencyRejection(projection.todos, input.todo_id, input.now);
     if (dependency !== null) return failure(dependency.code, dependency.reason,
       {resume_condition: dependency.condition}, "decision_rejection");
   }
@@ -610,11 +632,13 @@ async function executeClaimAttempt(
     "Todo claim mutation authority",
   );
   const updatedAt = input.now.toISOString().replace(/\.\d{3}Z$/u, "Z");
-  const todoChanged = todo.claimed_by !== authority.owner;
+  const todoChanged = todo.claimed_by !== authority.owner ||
+    (input.replan_obligation_id !== undefined && todo.replan_obligation_id !== input.replan_obligation_id);
   const changed = todoChanged || leaseChanged;
   const result = {
     todo_id: input.todo_id,
     claimed_by: authority.owner,
+    ...(input.replan_obligation_id === undefined ? {} : {replan_obligation_id: input.replan_obligation_id}),
     changed,
     handoff_mode: handoffMode,
     ...(changed ? {updated_at: updatedAt} : {}),
@@ -647,7 +671,8 @@ async function executeClaimAttempt(
       : []),
     ...(todoChanged
       ? [{ kind: "todo_upsert" as const, todo: {...todo,
-        claimed_by: authority.owner, updated_at: updatedAt} }]
+        claimed_by: authority.owner, updated_at: updatedAt,
+        ...(input.replan_obligation_id === undefined ? {} : {replan_obligation_id: input.replan_obligation_id})} }]
       : []),
   ];
   const commit: AuthorityStoreCommit = mutations.length > 0 ? prepareCoordinationProjectionCommit({

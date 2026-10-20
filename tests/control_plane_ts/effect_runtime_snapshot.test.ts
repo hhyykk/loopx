@@ -6,6 +6,7 @@ import {join} from "node:path";
 import {test} from "node:test";
 import {
   openPrivateResponseSink, readPrivateJsonSnapshot, writePrivateResponse,
+  MAX_LOCAL_SNAPSHOT_BYTES,
 } from "../../loopx/control_plane/effect_runtime_snapshot.ts";
 
 test("local snapshot accepts exact private bytes and rejects altered or unsafe references", async () => {
@@ -21,12 +22,21 @@ test("local snapshot accepts exact private bytes and rejects altered or unsafe r
       /snapshot unavailable or invalid/);
     await assert.rejects(readPrivateJsonSnapshot({...ref, byte_count: bytes.length - 1}),
       /snapshot unavailable or invalid/);
-    await chmod(path, 0o644);
-    await assert.rejects(readPrivateJsonSnapshot(ref), /snapshot unavailable or invalid/);
-    const link = join(directory, "link.json");
-    await symlink(path, link);
-    await assert.rejects(readPrivateJsonSnapshot({...ref, path: link}),
+    await assert.rejects(readPrivateJsonSnapshot({...ref, byte_count: MAX_LOCAL_SNAPSHOT_BYTES + 1}),
       /snapshot unavailable or invalid/);
+    // Windows has no POSIX mode denial: the private-mode rejection is only
+    // observable where process.getuid exists.
+    if (process.getuid) {
+      await chmod(path, 0o644);
+      await assert.rejects(readPrivateJsonSnapshot(ref), /snapshot unavailable or invalid/);
+    }
+    // File symlink creation needs Developer Mode or admin on Windows.
+    if (process.platform !== "win32") {
+      const link = join(directory, "link.json");
+      await symlink(path, link);
+      await assert.rejects(readPrivateJsonSnapshot({...ref, path: link}),
+        /snapshot unavailable or invalid/);
+    }
   } finally {
     await rm(directory, {recursive: true, force: true});
   }

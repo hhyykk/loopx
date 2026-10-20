@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -43,13 +44,30 @@ def main() -> int:
             "finance_market_snapshot",
         )
         assert completed.returncode == 0, completed.stderr
-        assert '"status": "migrated_to_extension"' in completed.stdout
-        assert (
-            '"replacement_extension_id": "loopx-finance-value-discovery"'
-            in completed.stdout
-        )
-        assert '"replacement_capability_id": null' in completed.stdout
-        assert '"legacy_connector_executes_finance": false' in completed.stdout
+        packet = json.loads(completed.stdout)
+        assert packet["ok"] is True, packet
+        if command == "source-map":
+            profiles = packet["source_profiles"]
+        elif command == "install-check":
+            profiles = packet["checks"]
+        else:
+            profiles = None
+        if profiles is not None:
+            assert len(profiles) == 1, profiles
+            profile = profiles[0]
+            assert profile["connector_id"] == "finance_market_snapshot", profile
+            assert profile["status"] == "migrated_to_extension", profile
+            migration = profile["migration"]
+        else:
+            migration = packet
+        assert migration["schema_version"] == "value_connector_extension_migration_v0", migration
+        assert migration["status"] == "migrated_to_extension", migration
+        assert migration["replacement_extension_id"] == "loopx-finance-value-discovery", migration
+        assert migration["replacement_capability_id"] is None, migration
+        truth = migration["truth_contract"]
+        assert truth["legacy_connector_executes_finance"] is False, truth
+        assert truth["external_reads_performed"] is False, truth
+        assert truth["external_writes_performed"] is False, truth
 
     doc = " ".join(DOC.read_text(encoding="utf-8").lower().split())
     for marker in (

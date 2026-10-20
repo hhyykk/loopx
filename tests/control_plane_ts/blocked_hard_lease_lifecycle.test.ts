@@ -123,6 +123,27 @@ for (const provider of ["file", "sqlite"] as const) {
     assert.equal((after.head.leases as JsonObject[])[0]!.status, "released");
   });
 
+  providerTest(`${provider}: typed prerequisite wait preserves pause fencing and grants no execution`, async () => {
+    const store = await seeded(provider, "2026-09-25T05:00:00Z");
+    const input = {...pause("pause-typed-wait"), planning_intent: {
+      status: "blocked", reason: "Await the identified prerequisite", resume_when: "todo_done:todo_successor"}};
+    assert.equal((await executeCoordinationTodoUpdate(store, input)).status, "applied");
+    const after = await read(store), todo = (after.head.todos as JsonObject[])[0]!;
+    assert.equal(todo.status, "blocked");
+    assert.equal(todo.resume_when, "todo_done:todo_successor");
+    assert.equal(todo.claimed_by, OWNER);
+    assert.equal((after.head.leases as JsonObject[])[0]!.status, "released");
+    assert.equal((await executeCoordinationTodoUpdate(store, input)).status, "replayed");
+    assert.deepEqual(await read(store), after);
+    const active = await seeded(provider, "2026-09-25T07:00:00Z");
+    const before = await read(active);
+    assert.equal((await executeCoordinationTodoUpdate(active, input)).reason_code, "blocked_lifecycle_active_lease");
+    assert.equal((await executeCoordinationTodoUpdate(active, {...input,
+      lease_idempotency_key: "old-execution", lease_expected_version: 29})).reason_code,
+      "lease_cas_mismatch");
+    assert.deepEqual(await read(active), before);
+  });
+
   providerTest(`${provider}: live lease, unauthorized actor and bundled work are rejected`, async () => {
     const active = await seeded(provider, "2026-09-25T07:00:00Z");
     const before = await read(active);
@@ -130,8 +151,9 @@ for (const provider of ["file", "sqlite"] as const) {
       [{}, "blocked_lifecycle_active_lease"],
       [{lifecycle_grants: []}, "update_owner_mismatch"],
       [{lease_idempotency_key: "old-execution", lease_expected_version: 29},
-        "blocked_lifecycle_execution_proof_not_allowed"],
-      [{patch: {note: "Bundled work"}}, "lease_fence_required"],
+        "lease_cas_mismatch"],
+      [{patch: {note: "Bundled note"}}, "blocked_lifecycle_active_lease"],
+      [{patch: {text: "Changed work"}}, "lease_fence_required"],
     ];
     for (const [change, code] of cases) {
       const result = await executeCoordinationTodoUpdate(active, {...pause("reject-pause"), ...change});

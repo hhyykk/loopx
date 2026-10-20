@@ -6,7 +6,7 @@ export function normalizeProjectContext(value: unknown): Record<string, string> 
   const ref = context.project_ref, workspace = context.workspace_path;
   if (typeof ref !== "string" || !/^[a-f0-9]{24}$/.test(ref)
       || typeof workspace !== "string" || !workspace || context.kind !== "project_workspace"
-      || !["local_owner", "bound_owner"].includes(String(context.audience))
+      || !["local_owner", "bound_owner", "bound_group"].includes(String(context.audience))
       || !["workspace_read", "workspace_write"].includes(String(context.grant))
       || (workspace[0] !== "/" && !/^[A-Za-z]:[\\/]/.test(workspace))) {
     throw new Error("invalid project conversation context");
@@ -17,10 +17,18 @@ export function normalizeProjectContext(value: unknown): Record<string, string> 
     if (context.filesystem_scope !== "workspace_only") throw new Error("invalid project filesystem scope");
     normalized.filesystem_scope = "workspace_only";
   }
-  if (context.audience === "bound_owner") {
+  if (context.audience === "bound_owner" || context.audience === "bound_group") {
     for (const field of ["binding_id", "source_ref", "provider_ref", "operator_ref"]) {
       const value = context[field];
       if (typeof value !== "string" || !/^[a-f0-9]{24}$/.test(value)) throw new Error("incomplete bound project identity");
+      normalized[field] = value;
+    }
+  }
+  if (context.audience === "bound_group") {
+    if (context.filesystem_scope !== "workspace_only") throw new Error("group Chat requires workspace-only isolation");
+    for (const field of ["group_ref", "topic_ref"]) {
+      const value = context[field];
+      if (typeof value !== "string" || !/^[a-f0-9]{24}$/.test(value)) throw new Error("incomplete group topic identity");
       normalized[field] = value;
     }
   }
@@ -31,6 +39,11 @@ export function projectConversationIdentity(input: Record<string, unknown>): Rec
   const context = normalizeProjectContext(input.context);
   const writable = context.grant === "workspace_write";
   const permissions = context.filesystem_scope === "workspace_only" ? {
+    // Share authentication within this authorized workspace/owner binding,
+    // never with another App or local-owner context. Source topics retain
+    // separate threads without requiring a new login for every message.
+    host_store_key: [context.project_ref, ...(context.audience !== "local_owner"
+      ? [context.binding_id, context.provider_ref, context.operator_ref] : ["local"])].join("."),
     permissions_profile: `loopx_workspace_only_${writable ? "write" : "read"}`,
     host_config: {
       default_permissions: `loopx_workspace_only_${writable ? "write" : "read"}`,
@@ -108,19 +121,28 @@ export function resolveConversationScope(input: Record<string, unknown>): Conver
           && channel === `project.${context.project_ref}`) {
         return {kind: "project_workspace", goal_ids: [], private_conversation: true};
       }
-      if (context.audience === "bound_owner" && (input.origin === undefined || input.origin === "lark")
+      if (context.audience !== "local_owner" && (input.origin === undefined || input.origin === "lark" || input.origin === "external"
+          || input.origin === "web" && context.audience === "bound_owner")
           && channel === `project.external.${context.binding_id}.${context.source_ref}`) {
         return {kind: "project_workspace", goal_ids: [], private_conversation: false};
       }
     } catch { /* Incomplete host identity grants no context. */ }
+    // Explicit null identifies a project Session; a missing legacy Goal field
+    // is different and must not be manufactured by an observation adapter.
+    return {kind: "unavailable", goal_ids: [], private_conversation: false};
   }
-  if (goal === "loopx-manager" && (input.origin === undefined || input.origin === "lark")) {
+  if (goal === "loopx-manager" && (input.origin === undefined || input.origin === "lark" || input.origin === "external" || input.origin === "web")) {
     try {
       const selected = stewardConversationIdentity({context: input.steward_context});
       if (channel === selected.channel_id) {
         return {kind: "external_audience", goal_ids: [], private_conversation: false, bound_steward: true};
       }
     } catch { /* An incomplete steward identity cannot authorize a portfolio. */ }
+  }
+  // Declared context must match a typed identity above; a legacy channel cannot
+  // turn inconsistent recovered project metadata into broader authority.
+  if (input.project_context != null) {
+    return {kind: "unavailable", goal_ids: [], private_conversation: false};
   }
   if (channel === "manager") {
     return {kind: "owner_portfolio", goal_ids: null, private_conversation: true};

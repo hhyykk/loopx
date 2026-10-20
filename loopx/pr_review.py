@@ -860,16 +860,24 @@ def _review_conclusion(
             "invalid_reasons": reasons,
         }
 
-    latest_result = evaluate(reviews[0])
-    if (
-        str(reviews[0].get("state") or "").upper() == "COMMENTED"
-        and not latest_result["valid"]
-    ):
-        for earlier in reviews[1:]:
-            earlier_result = evaluate(earlier)
-            if earlier_result["valid"]:
-                return earlier_result
-    return latest_result
+    conclusions = [evaluate(review) for review in reviews]
+    if len(reviews) == 1 and pr.get("reviews_complete") is not True:
+        return conclusions[0]
+    from .capabilities.pr_review_queue.approval_closeout import select_review_history
+    selection = select_review_history({"head": head_oid, "author": pr_author,
+        "reviews_complete": pr.get("reviews_complete") is True,
+        "reviews": [{"state": conclusion["state"],
+            "login": str(_as_dict(review.get("author")).get("login") or ""),
+            "head": str(_as_dict(review.get("commit")).get("oid") or ""),
+            "time": _parse_updated_epoch(review.get("submittedAt")),
+            "review_id": review.get("id"), "url": review.get("url"),
+            "association": review.get("authorAssociation"),
+            "is_bot": _as_dict(review.get("author")).get("is_bot"),
+            "submitted_at": review.get("submittedAt"),
+            "conclusion": conclusion}
+            for review, conclusion in zip(reviews, conclusions)]})
+    return conclusions[selection["index"]] | ({"independent_review": selection["independent_review"]}
+        if "independent_review" in selection else {})
 
 
 def _review_sequence_entry(item: dict[str, Any], *, rank: int) -> dict[str, Any]:
@@ -934,6 +942,7 @@ def _normalize_pr(
     )
     conclusion = _review_conclusion(pr, reviewer_login=reviewer_login,
         behavior_bearing=bool({item["area"] for item in files} & (CODE_AREAS | BEHAVIORAL_POLICY_AREAS)))
+    independent = conclusion.pop("independent_review", None)
     item: dict[str, Any] = {
         "number": number,
         "title": _redact_text(pr.get("title"), limit=180),
@@ -964,6 +973,7 @@ def _normalize_pr(
         "is_draft": bool(pr.get("isDraft")),
         "review_decision": str(pr.get("reviewDecision") or "UNKNOWN"),
         "review_conclusion": conclusion,
+        **({"independent_review": independent} if independent else {}),
         "merge_state": str(
             pr.get("mergeStateStatus") or pr.get("mergeable") or "UNKNOWN"
         ),
@@ -1311,6 +1321,8 @@ def build_pr_review_packet(
 def _review_why_now(item: dict[str, Any]) -> str:
     if item.get("fresh_audit_requested") is True:
         return "A caller explicitly requested a fresh audit of this unchanged exact head."
+    if item.get("independent_review") and not item.get("review_action_kind"):
+        return "The current exact head has a submitted independent review; skip duplicate full review."
     state = str(item.get("state") or "").upper()
     if state == "MERGED":
         return "Merged exact head lacks a valid conclusion; audit outcome, validation, and follow-up quality."
@@ -1369,7 +1381,7 @@ def render_pr_review_markdown(payload: dict[str, Any]) -> str:
         "",
         "- Do not stop at the queue/table summary.",
         "- Do not collapse this packet to `.summary` and `.review_sequence` only; preserve the paths named by `agent_response_contract.required_packet_fields_to_preserve`.",
-        "- For each actionable selected PR, read PR body/files/diff/checks first, then return one review card.",
+        "- For each actionable selected PR, follow review_execution_contract.decision_procedure: establish goal/specification first, then execute its evidence_commands and applicable validation; honor wait_for_ci before any CI read.",
         "- Execute each non-null `pull_requests[].review_plan` against `agent_response_contract.review_execution_contract`; inventory-only rows expose no execution artifacts.",
         "- Code-changing PRs must include a `关键代码讲解` subsection under `具体改动`, grounded in exact-head symbols and short excerpts or equivalent pseudocode.",
         "- Bind the verdict to the remote head SHA and recheck it before answering.",
@@ -1414,11 +1426,11 @@ def render_pr_review_markdown(payload: dict[str, Any]) -> str:
         template = _as_dict(pr.get("review_template"))
         review_plan = _as_dict(pr.get("review_plan"))
         action_kind = str(pr.get("review_action_kind") or "").strip()
-        row_instruction = (
-            "> Agentloop should fill the five-block review after reading the PR body and diff. The template below is intentionally blank."
-            if action_kind
-            else "> Inventory-only exact head: read back the existing conclusion; do not run a full evidence review."
-        )
+        row_instruction = "> " + str(pr.get("review_goal") or (
+            "Follow the current review plan and decision procedure."
+            if action_kind else
+            "Inventory-only exact head: read back lifecycle and conclusion state; do not invent a review action."
+        ))
         lines.extend(
             [
                 "",
@@ -1438,6 +1450,11 @@ def render_pr_review_markdown(payload: dict[str, Any]) -> str:
             ]
         )
         applicability = _as_dict(review_plan.get("applicability"))
+        memory = _as_dict(pr.get("repository_experience"))
+        if memory:
+            lines.extend(["", "### Repository experience (advisory)", "",
+                          "Compare this experience with the current review frame; context delivery does not establish adoption or utility.",
+                          "", "```json", json.dumps(memory, ensure_ascii=False, indent=2), "```", ""])
         if review_plan:
             lines.append(
                 "- review plan: "

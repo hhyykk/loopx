@@ -3,8 +3,10 @@ import {createHash} from "node:crypto";
 import type {JsonObject} from "../effect_program.ts";
 import {EffectRuntimeRequestError} from "../effect_runtime_errors.ts";
 import {requireInteger, requireJsonObject, requireNonEmptyString, requireStringArray} from "../runtime_decode.ts";
+import {PLANNING_TODO_ID} from "../work_items/planning_relations.ts";
 
 import {EXPLORE_WRITEBACK_SUMMARY_LIMIT, exploreResultWritebackAffordance} from "./explore_result_writeback.ts";
+import {normalizeExploreResultPages} from "./explore_result_page.ts";
 
 function rows(value: unknown): JsonObject[] {
   return Array.isArray(value) ? value.map(item => requireJsonObject(item, "Explore row")) : [];
@@ -12,6 +14,10 @@ function rows(value: unknown): JsonObject[] {
 function compact(row: JsonObject, fields: string[]): JsonObject {
   return Object.fromEntries(fields.filter(key => row[key] !== undefined)
     .map(key => [key, typeof row[key] === "string" ? (row[key] as string).slice(0, 240) : row[key]]));
+}
+function findingDigest(row: JsonObject, findingSources?: Map<string, JsonObject>): JsonObject {
+  const source = findingSources?.get(String(row.finding_id));
+  return source ? {source_sha256: createHash("sha256").update(JSON.stringify(source)).digest("hex")} : {};
 }
 function evidenceCount(audit: JsonObject, kind: string, detailCount: number): number {
   if (audit.status_counts == null) return detailCount;
@@ -26,17 +32,25 @@ function evidenceCount(audit: JsonObject, kind: string, detailCount: number): nu
   }
   return Math.max(detailCount, total);
 }
-function branchContext(row: JsonObject): JsonObject {
-  const result = compact(row, ["todo_id", "text", "branch_role", "score", "confidence"]);
+function branchContext(row: JsonObject, findingSources?: Map<string, JsonObject>): JsonObject {
+  const result = compact(row, ["todo_id", "text", "branch_role", "score", "confidence",
+    "selection_status", "status", "actionable_open", "resume_when", "resume_ready"]);
   if (row.typed_evidence_audit == null) return result;
   const audit = requireJsonObject(row.typed_evidence_audit, "Explore evidence audit");
   const nodes = rows(audit.nodes), findings = rows(audit.findings), edges = rows(audit.relevant_edges);
+  const requested = requireStringArray(audit.requested_node_refs ?? [], "requested_node_refs");
+  const unknown = requireStringArray(audit.unknown_node_refs ?? [], "unknown_node_refs");
   // Preserve the existing diagnostic owner: no score change, inferred links or
   // new execution gate. Full status counts include details omitted upstream.
   result.typed_evidence_audit = {
-    ...compact(audit, ["mode", "score_delta", "requested_node_refs", "unknown_node_refs", "hazards"]),
+    ...compact(audit, ["mode", "score_delta", "hazards"]),
+    requested_node_refs: requested.slice(0, 8),
+    unknown_node_refs: unknown.slice(0, 8),
+    omitted_requested_node_refs: Math.max(0, requested.length - 8),
+    omitted_unknown_node_refs: Math.max(0, unknown.length - 8),
     nodes: nodes.slice(0, 3).map(node => compact(node, ["node_id", "title", "status"])),
-    findings: findings.slice(0, 3).map(finding => compact(finding, ["finding_id", "node_id", "finding", "status"])),
+    findings: findings.slice(0, 3).map(finding => ({...compact(finding, ["finding_id", "node_id", "finding", "status"]),
+      ...findingDigest(finding, findingSources)})),
     relevant_edges: edges.slice(0, 3).map(edge => compact(edge, ["from_node", "to_node", "edge_type"])),
     omitted_audit_nodes: Math.max(0, nodes.length - 3),
     omitted_audit_findings: Math.max(0, evidenceCount(audit, "findings", findings.length) - 3),
@@ -57,7 +71,14 @@ export function projectExploreTurnContext(params: JsonObject): JsonObject {
   const nodes = rows(projection.nodes).sort((a, b) =>
     String(b.last_updated_at ?? "").localeCompare(String(a.last_updated_at ?? "")));
   const findings = rows(projection.findings);
+  if (params.include_finding_digests != null && typeof params.include_finding_digests !== "boolean") {
+    throw new EffectRuntimeRequestError("include_finding_digests must be a boolean");
+  }
+  // Retain full sources, but hash only findings emitted by the bounded view.
+  const findingSources = params.include_finding_digests === true ? new Map(findings.map(row =>
+    [String(row.finding_id), row])) : undefined;
   const branches = rows(plan.selected_branches);
+  const rejected = rows(plan.rejected_candidates);
   const frontier = rows(projection.frontier);
   const selectedRefs = new Set(harness ? branches.slice(0, 3).flatMap(branch => {
     if (branch.typed_evidence_audit == null) return [];
@@ -95,7 +116,57 @@ export function projectExploreTurnContext(params: JsonObject): JsonObject {
   }
   const resultNode = params.result_node == null ? null : requireNonEmptyString(params.result_node, "result_node");
   const resultRows = resultNode == null ? writebackResults : writebackResults.filter(row => row.node_id === resultNode);
-  const resultRevision = createHash("sha256").update(JSON.stringify([goal, agent, resultNode, resultRows])).digest("hex");
+  const nodeById = new Map(nodes.map(node => [node.node_id, node]));
+  // Bind current Todo links to the results on this page. Include the full
+  // planner's nonselected branches: a heuristic/batch budget cannot prevent
+  // the Agent from comparing a lower-ranked method. This grants no claim,
+  // lease, quota or execution permission; their existing owners still apply.
+  const comparisonCandidates = (page: JsonObject[], limit: number): JsonObject => {
+    if (!harness) return {};
+    const linkedCandidates = [...branches, ...rejected].flatMap(branch => {
+      if (typeof branch.todo_id !== "string" || !PLANNING_TODO_ID.test(branch.todo_id)
+        || branch.actionable_open !== true || branch.claimed_by && branch.claimed_by !== agent
+        || branch.typed_evidence_audit == null) return [];
+      const audit = requireJsonObject(branch.typed_evidence_audit, "Explore evidence audit");
+      const linked = new Set(requireStringArray(audit.requested_node_refs ?? [], "Explore node refs")
+        .filter(ref => nodeById.has(ref)));
+      const outcomes = page.filter(row => linked.has(String(row.node_id))).slice(0, 3);
+      return outcomes.length ? [{todo_id: branch.todo_id, outcomes}] : [];
+    });
+    if (!linkedCandidates.length) return {};
+    return {
+      comparison_candidates: linkedCandidates.slice(0, limit).map(card => ({todo_id: card.todo_id,
+        outcomes: card.outcomes.map(row => ({node_id: row.node_id, finding_id: row.finding_id,
+          source_sha256: createHash("sha256").update(JSON.stringify(row)).digest("hex")}))})),
+      omitted_comparison_candidates: Math.max(0, linkedCandidates.length - limit),
+    };
+  };
+  const relationsByNode = new Map<unknown, JsonObject[]>();
+  for (const edge of rows(projection.edges)) {
+    for (const id of new Set([edge.from_node, edge.to_node])) {
+      const incident = relationsByNode.get(id) ?? [];
+      incident.push(edge);
+      relationsByNode.set(id, incident);
+    }
+  }
+  const currentQuestion = (row: JsonObject): JsonObject => {
+    const node = nodeById.get(row.node_id);
+    const relations = relationsByNode.get(row.node_id) ?? [];
+    return {
+      ...(node ? {question_status: node.status,
+        ...(node.blocked_reason ? {question_blocked_reason: node.blocked_reason} : {})} : {}),
+      ...(relations.length ? {
+        relations: relations.slice(0, 3).map(edge => ({...compact(edge, ["from_node", "to_node", "edge_type"]),
+          summary: String(edge.summary ?? "").slice(0, 320),
+          ...(String(edge.summary ?? "").length > 320 ? {summary_truncated: true} : {}),
+        })),
+        omitted_relations: Math.max(0, relations.length - 3),
+      } : {}),
+    };
+  };
+  const resultRevision = createHash("sha256").update(JSON.stringify([
+    goal, agent, resultNode, resultRows, resultRows.map(currentQuestion),
+  ])).digest("hex");
   if (params.result_revision != null && params.result_revision !== resultRevision) {
     throw new EffectRuntimeRequestError("Explore evidence changed; restart at result_offset 0 without result_revision");
   }
@@ -103,22 +174,40 @@ export function projectExploreTurnContext(params: JsonObject): JsonObject {
     throw new EffectRuntimeRequestError("Continuation requires result_revision from the previous page");
   }
   const visibleResults = resultRows.slice(resultOffset, resultOffset + resultLimit);
+  // Write-time replay uses this same source snapshot and ordering. The caller
+  // supplies only page coordinates, never the findings admitted by that page.
+  const reviewPages = params.review_pages === undefined ? null : normalizeExploreResultPages(params.review_pages).flatMap(page => {
+    if (!graph || resultNode !== null || page.revision !== resultRevision) {
+      // A stale query is not an unavailable source. Retain the current bounded
+      // context/read route; the replan owner refuses any unresolved citation.
+      return [];
+    }
+    const found = resultRows.slice(Number(page.offset), Number(page.offset) + Number(page.limit));
+    return [{...page, finding_refs: found.map(row => row.finding_id),
+      ...comparisonCandidates(found, Number(page.limit))}];
+  });
+  const visibleComparisons = comparisonCandidates(visibleResults, resultLimit);
   const remainingResults = Math.max(0, resultRows.length - resultOffset - visibleResults.length);
   const resultRead = (...args: string[]) => command("turn-context", "--agent-id", agent, ...args);
   const writeback = exploreResultWritebackAffordance();
   return {
     ok: true, goal_id: goal, agent_id: agent, graph_enabled: graph, harness_enabled: harness,
+    ...(reviewPages ? {review_pages: reviewPages} : {}),
     graph: graph ? {
       counts: projection.counts ?? {},
       recent_nodes: nodes.slice(0, 3).map(row => compact(row, ["node_id", "title", "status", "blocked_reason"])),
       // The canonical evidence projection calls the finding's title `finding`.
-      recent_findings: findings.slice(0, 3).map(row => compact({...row, title: row.finding}, ["finding_id", "node_id", "title", "status"])),
+      recent_findings: findings.slice(0, 3).map(row => ({...compact({...row, title: row.finding}, ["finding_id", "node_id", "title", "status"]),
+        ...findingDigest(row, findingSources)})),
       // Full scoped summaries; progressive reads can raise the page size.
       // These retain the observation AND applicability; clipping away conditions
       // could turn a bounded refutation into a blanket route ban.
       writeback_results: visibleResults
         .map(row => ({...compact(row, ["finding_id", "node_id", "finding", "status", "evidence_refs"]),
-          summary: String(row.summary ?? "").slice(0, EXPLORE_WRITEBACK_SUMMARY_LIMIT)})),
+          summary: String(row.summary ?? "").slice(0, EXPLORE_WRITEBACK_SUMMARY_LIMIT),
+          ...(row.execution_observation ? {execution_observation: row.execution_observation} : {}),
+          ...currentQuestion(row),
+          ...findingDigest(row, findingSources)})),
       result_page: {
         total: resultRows.length, offset: resultOffset, limit: resultLimit,
         remaining: remainingResults, revision: resultRevision,
@@ -138,6 +227,7 @@ export function projectExploreTurnContext(params: JsonObject): JsonObject {
       path_delta_attachment_schema: writeback.path_delta_attachment_schema,
       path_delta_attachment_template: writeback.path_delta_attachment_template,
       linked_question_attachment_template: writeback.linked_question_attachment_template,
+      optional_question_evolution_example: writeback.optional_question_evolution_example,
       result_writeback_guidance: writeback.guidance,
       result_attachment_template: writeback.attachment_template,
       record_node_template: command("node", "--title", "<hypothesis or experiment>", "--status", "exploring"),
@@ -147,11 +237,16 @@ export function projectExploreTurnContext(params: JsonObject): JsonObject {
     harness: harness ? {
       orchestration_gate: gate,
       candidate_count: plan.candidate_count ?? 0,
-      selected_branches: branches.slice(0, 3).map(branchContext),
+      selected_branches: branches.slice(0, 3).map(branch => branchContext(branch, findingSources)),
+      ...visibleComparisons,
       omitted_selected_branches: Math.max(0, branches.length - 3),
+      rejected_candidates: rejected.slice(0, 3).map(branch => branchContext(branch)),
+      omitted_rejected_candidates: Math.max(0,
+        requireInteger(plan.rejected_candidate_count ?? rejected.length, "rejected_candidate_count") - 3),
       frontier: frontier.slice(0, 3).map(node => compact(node, ["node_id", "title", "status", "summary"])),
       omitted_frontier: Math.max(0, frontier.length - 3),
-      plan_command: command("worker-branch-plan", "--agent-id", agent),
+      // Expand the same Todo audit shown above, not a different worker-lane plan.
+      plan_command: command("todo-branch-plan", "--agent-id", agent),
       link_evidence_template: [...route, "todo", "update", "--goal-id", goal, "--agent-id", agent, "--todo-id", "<todo-id>", "--explore-result-node-ref", "<node-id>"],
       guidance: "Before choosing an experiment, compare its question with linked findings and the active frontier. Explain which evidence supports changing or retaining the route, and what the next probe can distinguish. Refutation is scoped evidence, not a permanent ban: a retry can test changed conditions or uncertainty. Link relevant existing nodes to the Todo; missing links mean unknown evidence, not a clean route. With one candidate or no active frontier, form useful alternatives only when evidence warrants them. Record results on the same hypothesis and adopt the decision through the ordinary task step or successor. These are decision guidelines, not a new writeback gate or permission to spawn. Read the full planner/summary when this bounded view is insufficient; normal quota, claim and lease admission still applies.",
     } : null,

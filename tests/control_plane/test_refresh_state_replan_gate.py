@@ -986,7 +986,8 @@ def test_todo_lifecycle_rejection_projects_exact_direct_settlement() -> None:
     ]
     actions = transition["next_cli_actions"]
     assert "--todo-id todo_unsettled_completion" in actions[0]
-    assert "--turn-instance-id turn-unsettled" in actions[0]
+    assert "--completion-identity-key turn-unsettled" in actions[0]
+    assert "--turn-instance-id" not in actions[0]
     assert "--agent-id codex-replan-gate-agent" in actions[0]
     assert all("refresh-state" not in action for action in actions)
     assert all("spend-slot" not in action for action in actions)
@@ -1041,6 +1042,21 @@ def test_todo_complete_then_refresh_cli_projects_direct_settlement(
             }
         ),
         encoding="utf-8",
+    )
+    from canonical_authority_fixture import initialize_canonical_authority
+    from loopx.control_plane.coordination.runtime_shadow import (
+        build_todo_runtime_shadow_projection,
+    )
+
+    initialize_canonical_authority(
+        runtime_root,
+        GOAL_ID,
+        build_todo_runtime_shadow_projection(
+            goal_id=GOAL_ID,
+            todos=[],
+            handoff_mode="soft_claim",
+        ),
+        state_path=state,
     )
     assert cli_main(
         [
@@ -1179,9 +1195,20 @@ def test_todo_complete_then_refresh_cli_projects_direct_settlement(
     assert terminal_quota["effective_action"] == "terminal_no_followup"
 
 
-def test_legacy_unscoped_completion_projects_executable_identity_repair(
+@pytest.mark.parametrize(
+    "stored_completion_key",
+    [
+        None,
+        (
+            f"{GOAL_ID}:{AGENT_ID}:todo_legacy_unscoped:"
+            "guided-start:025d252ade77fd3d202dd29188f5ff0d"
+        ),
+    ],
+)
+def test_completed_todo_identity_repair_preserves_settlement_fence(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    stored_completion_key: str | None,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -1189,6 +1216,7 @@ def test_legacy_unscoped_completion_projects_executable_identity_repair(
     state.write_text(
         "---\n"
         f"goal_id: {GOAL_ID}\n"
+        "handoff_mode: soft_claim\n"
         "updated_at: 2026-08-22T00:00:00+00:00\n"
         "---\n\n"
         "## User Todo / Owner Review Reading Queue\n\n"
@@ -1198,7 +1226,12 @@ def test_legacy_unscoped_completion_projects_executable_identity_repair(
         "task_class=advancement_task "
         f"claimed_by={AGENT_ID} no_followup=false "
         "completion_continuation=active_goal "
-        "completed_at=2026-08-22T00%3A00%3A00%2B00%3A00 -->\n",
+        + (
+            f"completion_turn_key={stored_completion_key} "
+            if stored_completion_key is not None
+            else ""
+        )
+        + "completed_at=2026-08-22T00%3A00%3A00%2B00%3A00 -->\n",
         encoding="utf-8",
     )
     registry_path = tmp_path / "registry.json"
@@ -1225,6 +1258,30 @@ def test_legacy_unscoped_completion_projects_executable_identity_repair(
             }
         ),
         encoding="utf-8",
+    )
+    from canonical_authority_fixture import initialize_canonical_authority
+    from loopx.control_plane.coordination.authority_source_capture import (
+        build_runtime_shadow_source_snapshot,
+    )
+    from loopx.history import load_registry
+
+    runtime_root = tmp_path / "runtime"
+    goal = next(
+        goal
+        for goal in load_registry(registry_path)["goals"]
+        if goal["id"] == GOAL_ID
+    )
+    projection, _ = build_runtime_shadow_source_snapshot(
+        goal=goal,
+        runtime_root=runtime_root,
+        state_path=state,
+        registry_path=registry_path,
+    )
+    initialize_canonical_authority(
+        runtime_root,
+        GOAL_ID,
+        projection,
+        state_path=state,
     )
 
     assert cli_main(
@@ -1258,17 +1315,34 @@ def test_legacy_unscoped_completion_projects_executable_identity_repair(
             "completion_turn_key": transition["triggers"][0][
                 "completion_turn_key"
             ],
-            "completion_identity_source": "unscoped_completion",
+            "completion_identity_source": (
+                "turn_settlement"
+                if stored_completion_key is not None
+                else "unscoped_completion"
+            ),
         }
     ]
     completion_key = transition["triggers"][0]["completion_turn_key"]
-    assert str(completion_key).startswith("local_completion_")
+    if stored_completion_key is None:
+        assert str(completion_key).startswith("local_completion_")
+    else:
+        assert completion_key == stored_completion_key
     action = next(
         item for item in transition["next_cli_actions"] if "loopx todo complete" in item
     )
+    assert "--completion-identity-key" in action
+    assert "--turn-instance-id" not in action
     action_tokens = shlex.split(action)
     loopx_index = action_tokens.index("loopx")
-    assert cli_main(
+    from loopx.control_plane.coordination.local_authority import (
+        read_canonical_todos_if_promoted,
+    )
+
+    before_state = state.read_bytes()
+    before_authority = read_canonical_todos_if_promoted(
+        runtime_root=runtime_root, goal_id=GOAL_ID,
+    )
+    exit_code = cli_main(
         [
             "--registry",
             str(registry_path),
@@ -1276,9 +1350,23 @@ def test_legacy_unscoped_completion_projects_executable_identity_repair(
             "json",
             *action_tokens[loopx_index + 1 :],
         ]
-    ) == 0
+    )
     repaired = json.loads(capsys.readouterr().out)
+    if stored_completion_key is not None:
+        # An imported scoped identity is not proof of its original settlement.
+        # Real settled-turn success/replay is covered by the declared terminal
+        # settlement CLI journey; this fixture deliberately has no receipts.
+        assert exit_code == 1, repaired
+        assert repaired["error_code"] == "invalid_todo_completion_transaction"
+        assert "original quota identity and settled receipts" in repaired["error"]
+        assert state.read_bytes() == before_state
+        assert read_canonical_todos_if_promoted(
+            runtime_root=runtime_root, goal_id=GOAL_ID,
+        ) == before_authority
+        assert not (runtime_root / "goals" / GOAL_ID / "runs" / "index.jsonl").exists()
+        return
 
+    assert exit_code == 0, repaired
     assert repaired["completion_continuation"] == "no_followup"
     assert repaired["completion_recovery"] == (
         "lifecycle_reentry_terminal_closeout"

@@ -115,7 +115,16 @@ export function goalHeartbeatReceiptsFromSnapshot(
       "rollout_event_snapshot_scope_mismatch",
     );
   }
-  return snapshot.events.filter((event) =>
+  return heartbeatReceiptsFromEvents(snapshot.events, goalId, agentId);
+}
+
+/** The heartbeat receipt filter over events a caller already read. */
+export function heartbeatReceiptsFromEvents(
+  events: readonly JsonObject[],
+  goalId: string,
+  agentId?: string | null,
+): JsonObject[] {
+  return events.filter((event) =>
     event.event_kind === HEARTBEAT_RECEIPT_EVENT_KIND &&
     event.goal_id === goalId &&
     // A failed invocation without a real Turn identity is an audit, not a

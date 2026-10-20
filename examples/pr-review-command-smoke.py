@@ -110,6 +110,13 @@ def main() -> int:
         "详细中文评审",
         "英文简短结论",
         "complete Chinese five-block review plus one concise English verdict",
+        "review_execution_contract.verdict_policy",
+        "validation_matrix",
+        "validation_source",
+        "failure_attribution",
+        "durable_smoke_value",
+        "null action does not imply an existing conclusion",
+        "Reserve Draft for unfinished author work",
         "review_execution_contract.policy_revision",
         "review_policy_revision",
         "Do not retain expired temporary worktree overrides",
@@ -1064,7 +1071,7 @@ def main() -> int:
         "review_sequence_membership": "review_action_kind_non_null_only",
         "no_action_inventory_location": "pull_requests",
         "generic_rereview_terms_force_fresh_audit": False,
-        "no_action_behavior": "compact_exact_head_conclusion_readback_only",
+        "no_action_behavior": "compact_exact_head_review_or_lifecycle_readback_only",
         "no_action_execution_artifacts": "plan_and_template_null_commands_empty",
         "force_fresh_audit_requires": (
             "An explicit request to rerun evidence despite the unchanged/no-action "
@@ -1320,7 +1327,8 @@ def main() -> int:
     assert "## Combined Review Sequence" in markdown, markdown
     assert markdown.index("## Unmerged PRs") < markdown.index("## Merged PRs"), markdown
     assert "risk_hint=`medium`" in markdown, markdown
-    assert "template below is intentionally blank" in markdown, markdown
+    assert "establish the goal and specification first" in markdown, markdown
+    assert "then execute this exact-head review_plan and its evidence commands" in markdown, markdown
     assert "- 推荐阅读顺序:" in markdown, markdown
     assert "- 五块模板（留空给 agentloop 填写）:" in markdown, markdown
     assert "动机（至少 " in markdown, markdown

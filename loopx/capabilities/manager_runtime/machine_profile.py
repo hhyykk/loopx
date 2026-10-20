@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..machine_configuration.contract import (
     MACHINE_CONFIGURATION_SCHEMA,
@@ -10,10 +10,14 @@ from ..machine_configuration.contract import (
     machine_configuration_revision,
 )
 
+if TYPE_CHECKING:
+    from ..native_chat.conversation_bindings import ChatConversationBindings
+
 MANAGER_RUNTIME_PROFILE_SCHEMA = "manager_runtime_profile_v0"
 MANAGER_RUNTIME_EFFECTIVE_SCHEMA = "manager_runtime_effective_profile_v0"
 RESTRICTED_PROFILE = "restricted"
 TRUSTED_OWNER_PROFILE = "trusted_owner"
+DEFAULT_MANAGER_RUNTIME_PROFILE = TRUSTED_OWNER_PROFILE
 SUPPORTED_MANAGER_RUNTIME_PROFILES = frozenset(
     {RESTRICTED_PROFILE, TRUSTED_OWNER_PROFILE}
 )
@@ -48,7 +52,8 @@ def manager_runtime_machine_configuration_namespace() -> MachineConfigurationNam
         title="Manager runtime",
         description=(
             "Selects the effective host-tool profile for owner manager conversations. "
-            "The trusted profile is an explicit persistent machine grant; protected "
+            "Owner conversations use normal host tools by default. An explicit machine "
+            "choice can restrict them; protected "
             "operations and external provider permissions remain separately governed."
         ),
         documentation={
@@ -60,7 +65,7 @@ def manager_runtime_machine_configuration_namespace() -> MachineConfigurationNam
         },
         default_configuration={
             "schema_version": MANAGER_RUNTIME_PROFILE_SCHEMA,
-            "runtime_profile": RESTRICTED_PROFILE,
+            "runtime_profile": DEFAULT_MANAGER_RUNTIME_PROFILE,
         },
     )
 
@@ -72,7 +77,7 @@ def _projection(*, profile: str, source: str, revision: str) -> dict[str, Any]:
         "runtime_profile": profile,
         "source": source,
         "configuration_revision": revision,
-        "standing_grant": "machine_configuration" if trusted else "none",
+        "standing_grant": source if trusted else "none",
         "sandbox": "danger-full-access" if trusted else "read-only",
         "approval_policy": "never",
         "tool_classes": (
@@ -97,7 +102,7 @@ def effective_manager_runtime_profile(
 
     if machine_configuration is None:
         return _projection(
-            profile=RESTRICTED_PROFILE,
+            profile=DEFAULT_MANAGER_RUNTIME_PROFILE,
             source="capability_default",
             revision="absent",
         )
@@ -116,7 +121,7 @@ def effective_manager_runtime_profile(
     raw = namespaces.get("manager_runtime")
     if raw is None:
         return _projection(
-            profile=RESTRICTED_PROFILE,
+            profile=DEFAULT_MANAGER_RUNTIME_PROFILE,
             source="capability_default",
             revision="absent",
         )
@@ -138,12 +143,14 @@ def load_effective_manager_runtime_profile(
     runtime_root: Path,
     *,
     channel_id: str = "manager",
+    owner_manager_audience: bool = False,
 ) -> dict[str, Any]:
     """Read the selected profile for one audience-bound manager channel.
 
-    The machine choice is sufficient for the private owner conversation.  An
-    external audience is a different trust boundary and cannot inherit broad
-    host-tool access until an existing audience/resource grant can be checked.
+    The machine choice is sufficient for the local owner conversation. Native
+    bindings may also supply a freshly checked Core owner-audience proof. This
+    proof alone grants no host tools; the effective machine profile still applies.
+    Other external audiences always remain restricted.
     """
 
     from ..machine_configuration.store import read_stored_machine_configuration
@@ -159,6 +166,7 @@ def load_effective_manager_runtime_profile(
         }
         if (
             channel_id != "manager"
+            and owner_manager_audience is not True
             and effective["runtime_profile"] == TRUSTED_OWNER_PROFILE
         ):
             return {
@@ -181,6 +189,26 @@ def load_effective_manager_runtime_profile(
             "status": "configuration_invalid",
             "repair": "Open machine capability settings and repair Manager runtime.",
         }
+
+
+def load_bound_manager_runtime_profile(
+    runtime_root: Path,
+    *,
+    channel_id: str,
+    bindings: ChatConversationBindings | None,
+    steward_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Compose fresh Core audience authority with the machine-owned host grant."""
+
+    owner_manager_audience = False
+    if steward_context is not None:
+        if bindings is None:
+            raise ValueError("bound manager authority is unavailable")
+        owner_manager_audience = bindings.manager_runtime_owner(steward_context, channel_id)
+    return load_effective_manager_runtime_profile(
+        runtime_root, channel_id=channel_id,
+        owner_manager_audience=owner_manager_audience,
+    )
 
 
 def manager_runtime_session_fields(profile: Mapping[str, Any]) -> dict[str, Any]:

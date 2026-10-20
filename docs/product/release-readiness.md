@@ -199,6 +199,18 @@ attestation separately binds those bytes to the repository, workflow, commit,
 and build event; neither mechanism claims that the package is vulnerability
 free.
 
+Wheel builds recreate the LoopX package subtrees in `build_lib` and wheel staging
+after verifying the frontend bundle. Reused build or retained staging directories
+must not carry modules, packages or resources deleted from current source.
+Current package data and the bundle's qualified previous asset generation
+remain included; unrelated build output
+and editable setup remain untouched. A build destination overlapping the
+source package is rejected. Explicit `bdist_wheel --skip-build` still packages
+the selected existing build; it is not a fresh-source qualification. Before
+qualifying retirement, inspect the built wheel and run its installed entry
+points outside the source checkout; a source
+test or a manually cleaned build directory alone does not prove this rule.
+
 Before a recovery dispatch, inspect the existing `pypi` environment's allowed
 branch/tag refs as well as the Trusted Publisher and enabled variable:
 
@@ -216,10 +228,12 @@ relax the environment policy, or replace Trusted Publishing with a token.
 For a browser-fixture error discovered after an immutable tag was published,
 maintainers may dispatch the release workflow from reviewed tooling with
 `tag` set to that existing release and `browser_fixture_commit` set to a full,
-merged commit SHA. Only the personal-workspace fixture, typed-actions and goal-work-map
-scenario files are extracted from that commit; its other changes are not
-applied to the product checkout. A non-default commit must contain at least
-one correction in these fixture owners. The wheel and sdist are built before
+merged commit SHA. Only the personal-workspace fixture, typed-actions,
+goal-work-map and goal-workspace-m2 scenario files are extracted from that commit;
+its other changes are not applied to the product checkout. All candidate files
+must remain regular source files before any correction is copied; deletion or a
+symlink fails closed without partially applying the fixture correction.
+A non-default commit must contain at least one correction in these fixture owners. The wheel and sdist are built before
 those test corrections are applied; checksums are verified again after the
 browser and managed-runtime tests, and the fixtures are restored. An empty
 input uses the tagged fixtures. This does not skip browser validation, rebuild
@@ -250,6 +264,80 @@ job is skipped. With publication enabled, a disallowed workflow ref or invalid
 Trusted Publisher configuration fails closed; it does not become a successful
 or skipped publication. GitHub packages and PyPI publication retain separate
 readbacks.
+
+## Desktop Builder Publication Preflight
+
+The Desktop Release Artifacts workflow has a default-off, **read-only**
+`publication_probe` mode. It measures whether an already admitted Windows builder
+can verify the complete release set without waiting for another runner. It does
+not publish assets or reserve organization capacity. Ordinary release events,
+PR/fork builds and manual dispatches with this input omitted or false retain the
+existing separate Ubuntu publisher, job permissions, signing, complete asset set,
+backup and manifest-last ordering.
+
+Activate only from a reviewed workflow ref with an existing public Release tag:
+
+```bash
+gh workflow run desktop-release-artifacts.yml --ref <reviewed-workflow-ref> \
+  -f tag=<existing-release-tag> -f publication_probe=true
+```
+
+The probe checks out immutable workflow tooling separately from the product tag.
+It records and attests each platform's actual product commit, workflow commit,
+run/attempt and artifact digests in isolated source artifacts. Windows requires a
+successful terminal Mac job and at least 10 minutes plus a 60-second margin within
+its existing 30-minute job. It performs bounded metadata reads without polling or
+holding a runner while another builder is queued. On a failed-jobs-only rerun, an
+earlier successful Mac attempt is usable only with matching attested source
+lineage; a later failed/unfinished Mac attempt cannot fall back to older success.
+The bounded probe supports at most ten attempts and ten metadata pages per attempt.
+
+Read back the actual run and both build jobs, then download the report:
+
+```bash
+gh run view <run-id> --json headSha,event,status,conclusion,jobs
+gh run download <run-id> -n desktop-publication-preflight-<attempt> -D preflight-result
+cat preflight-result/report.json
+```
+
+The report distinguishes `eligible`, `held` and `unavailable` and always sets
+`publicationAuthorized=false`. An eligible report requires same-run downloads,
+verified source/binary attestations pinned to the workflow commit, the canonical
+four-asset/checksum owner, an unchanged Release inventory and a final budget check.
+It still precedes the Windows job's post-actions and final outcome. Missing Release,
+changed tag/source, incomplete or ambiguous jobs, failed downloads, API 403/429,
+timeouts, missing/extra/stale bytes and verification failures never qualify a
+writer. A green build or report is not permission to publish.
+
+In probe mode, the existing `upload-release` job is disabled, including on manual
+dispatch: only CI artifacts, their provenance attestations and a job summary are produced. The builder retains
+`contents:read` and its existing attestation permissions. The probe grants no
+release-content, infrastructure, billing, credential or merge authority. Check the
+before/after Release asset inventory when qualifying a hosted pilot; synthetic
+metadata/local smokes do not establish Windows transport, signing, timing or cost.
+A writing fast path would change job-wide credentials and the two-build-terminal
+success condition and requires its own exact-head review and maintainer authorization.
+
+Disable by omitting `publication_probe` or setting it to false; this restores the
+ordinary isolated publisher. Reverting the probe change removes the optional CI
+mode without modifying already published Release assets. Publication recovery keeps
+the existing backup, complete replacement, manifest-last and remote readback rules;
+never launch a second writer after a mutation's response is unknown. Standard runner
+reuse cannot guarantee the first admission or organization-wide release priority.
+See the [versioned release contract](https://github.com/loopx-project/loopx/blob/v1.4.0/docs/product/release-readiness.md)
+for the published baseline; this probe remains unqualified until its reviewed
+workflow has actual hosted evidence. No hosted pilot or release mutation is part
+of a local validation run.
+
+桌面发布只读预检默认关闭。仅在既有公开 Release tag 和已评审 workflow ref 上显式
+传入 `publication_probe=true` 激活；该模式禁用原上传 job，不写 Release。通过真实
+run/attempt 的完整 jobs、`desktop-publication-preflight-<attempt>` 制品及前后 Release
+库存验收。`eligible` 只表示源码、四资产、证明和预算的只读条件满足，Windows 最终
+job 结果仍待确认，`publicationAuthorized` 始终为 false。API/下载/校验失败、移动 tag、
+不明 lineage 或预算不足都不能放行；不占槽轮询等另一平台。省略该输入或设为 false
+恢复既有隔离 publisher；撤回代码不影响已发布资产。写入快路的权限、双 job 终态门、
+实际 Windows 路径及发布恢复须独立评审和维护者授权；本机 smoke 不等于 hosted 采用，
+复用 runner 也不构成组织级容量预留。
 
 ## Public Release Timeline
 
@@ -743,6 +831,84 @@ path, and canary route rather than as a user-facing release baseline.
   Windows execution, Apple Developer ID/notarization, live Lark/Bot channels
   and unavailable Harbor/SForge/PostgreSQL/NoKV environments remain unqualified.
   This release does not claim a paired-version benchmark uplift.
+
+- `v1.3.1` on 2026-10-06 16:10 +08:00: a focused compatibility release at
+  commit `7445ae360aaf330e0067959a5e0084ffd9f76de4`, adapting the renderer to
+  the `linkify-it` 6 named export while preserving user-info URL handling.
+  The [published release](https://github.com/loopx-project/loopx/releases/tag/v1.3.1)
+  records the shipped operating instructions and validation limits. Package,
+  PyPI, desktop assets, signed update feed, `stable` installation and the
+  personal illustrated guide were independently read back. Focused checks
+  passed; full Python/public smoke and paid model matrices were not rerun.
+
+- `v1.4.0` on 2026-10-11 22:47 +08:00: evidence reuse, native workspace
+  continuity and semantic control-plane quality at frozen commit
+  `1b452b00a114bd9f0d9c24868c9f45df42661748`. New unconfigured Goals use
+  canonical SQLite/hard leases; existing Goals retain their recorded storage
+  and use reviewed migration or cold-source import. The
+  [published release](https://github.com/loopx-project/loopx/releases/tag/v1.4.0)
+  includes fifteen bilingual capability operating entries and annotated
+  community credits. Public GitHub/PyPI packages, four desktop installers,
+  the signed macOS update feed, `desktop-stable` and source `stable` were
+  independently read back. Package hashes and hosted source attestations
+  match the frozen tag; actual PyPI 1.3.1-to-1.4.0 upgrade, installed Chat,
+  installation/deep doctor and stable runtime activation passed. The
+  [personal illustrated guide](https://my.feishu.cn/docx/E9sTdmBuSoX9wqxkKGPcuAPRnTc)
+  has verified user ownership, actual released UI screenshots and native
+  rendering. At the frozen source, 515 public smokes and 360 affected Python
+  checks passed; the authorized DS Flash/high alternative passed all 22
+  scenarios twice and six contrasts, with zero failures or skips. Earlier
+  Doubao qualification failures remain unqualified; this does not claim a
+  fresh full-tree Python sweep. Windows execution, Apple notarization,
+  authenticated Host interaction, external backend execution and sustained
+  SQLite qualification remain unqualified. No paired-version benchmark uplift
+  or isolated Astra causal effect is claimed.
+
+- `v1.4.1` on 2026-10-15: workspace visibility, semantic replan and recovery
+  hardening at frozen commit `4f27801c4e26fd51246d352eada72c98f8e7e657`.
+  The [published release](https://github.com/loopx-project/loopx/releases/tag/v1.4.1)
+  records nineteen bilingual operating entries and concrete community credits.
+  GitHub/PyPI packages, four desktop installers, the signed macOS update feed,
+  `desktop-stable`, source `stable`, the website download path and the personal
+  illustrated guide were independently read back. An actual PyPI
+  1.4.0-to-1.4.1 upgrade preserved existing work; package hashes and source bytes
+  matched the immutable product tag. Reviewed publication-fixture recovery did
+  not move that tag. At the final source, 515 public smokes and 2,213 affected
+  Python checks passed, with five explicit native-environment skips; this was
+  not a fresh full-tree Python sweep. Doubao Evolving/high completed the fixed
+  22-scenario, two-repeat portfolio and six contrasts with zero failures or
+  skips. Mac artifacts retain ad-hoc signing without Apple notarization;
+  Windows artifacts were verified without native client execution. No paired
+  benchmark, sustained scientific continuation or isolated model causal uplift
+  is claimed.
+  Existing Goals retain their recorded policy and require explicit migration;
+  canonical-only retirement remains a separate 2.0 candidate.
+
+- `v1.4.2` on 2026-10-16: clearer workspace onboarding and Agent work pages,
+  state-aware suggestions, version-bound delivery checks, and original-operation
+  recovery. New Todos default to P1; existing unranked work remains unchanged.
+  The immutable tag targets `77d6b07fb65c7ddffe14f45549f97295aca995d6`.
+  The [published release](https://github.com/loopx-project/loopx/releases/tag/v1.4.2)
+  records twenty-one bilingual operating entries and annotated community credits.
+  GitHub/PyPI packages, four Mac/Windows desktop installers, signed macOS updates,
+  `desktop-stable`, source `stable`, and website download links were independently
+  read back. Package checksums, hosted attestations, and included source bytes
+  match the tag. An actual PyPI 1.4.1-to-1.4.2 upgrade preserved the original
+  Goal/Todo; fresh installation, doctor, and packaged UI checks passed. The
+  [personal illustrated guide](https://my.feishu.cn/docx/HsYgdSqSHo4u6gxJR03cNmVEnrb)
+  has verified user ownership, two released UI screenshots, reviewed native
+  rendering, and public-link read-only access. At the final source, 515 public
+  smokes and 1,655 affected checks across 37 complete modules passed; this was
+  not a fresh full-tree Python sweep. Dependency-pinned benchmark tests recorded
+  781 passes and 68 explicit environment qualification skips. The authorized
+  DS V4.1 Flash/high alternative passed all 22 scenarios twice and six contrasts,
+  with zero failures or skips. The final-source Evolving/high selected-Todo
+  failure remains unqualified; diagnostic passes do not establish a repair.
+  The separate native-Codex live profile was unavailable and explicitly skipped.
+  Mac artifacts remain ad-hoc signed without Apple notarization; Windows client
+  execution and optional host dependency security remain separately unqualified.
+  No paired benchmark, sustained scientific continuation, or isolated model
+  causal improvement is claimed.
 
 When a new public release is promoted, add it here only after the matching tag,
 release note, stable ref, update path, and focused release canary agree.

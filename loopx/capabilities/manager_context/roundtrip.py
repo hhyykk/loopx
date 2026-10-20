@@ -34,39 +34,17 @@ from ...control_plane.effect_runtime import EffectRuntimeRejected, effect_runtim
 from ...control_plane.collaboration.inbox import (
     _request_lock,
     iter_result_paths,
-    result_paths,
-    result_identity_matches,
+    inspect_result_identity,
     prior_result_delivered,
+    DELIVERY_STATUSES as DELIVERY_STATUSES,
+    DELIVERY_ERRORS as DELIVERY_ERRORS,
+    reply_status as reply_status,
 )
 from ...control_plane.content_digest import BARE_SHA256_PATTERN
+from ...control_plane.collaboration.source_chat_observation import original_delivery_facts
 from ...chat import ChatMessagePayloadConflictError
 
-DELIVERY_STATUSES = {
-    "admitted",
-    "queued",
-    "retry_pending",
-    "verification_required",
-    "delivered",
-    "superseded",
-    "explicit_unverified",
-}
 EXACT_DELIVERY_ADMISSION_SECONDS = 60
-DELIVERY_ERRORS = {
-    "provider_delivery_unverified",
-    "provider_locator_unavailable",
-    "provider_verifier_unavailable",
-    "provider_verification_unavailable",
-    "provider_delivery_intent_conflict",
-    "provider_message_missing",
-    "provider_delivery_mismatch",
-    "return_authorization_unavailable",
-    "original_route_unavailable",
-    "initial_delivery_receipt_unavailable",
-    "original_route_or_return_delivery_unavailable",
-    "delivery_state_unreadable",
-    "return_transport_unavailable",
-    "manager_return_payload_conflict",
-}
 
 class ReturnResolutionBlocked(ValueError, RuntimeError):
     """A return cannot be resolved; ``reason`` is the provider-neutral code.
@@ -128,7 +106,7 @@ def _verification_exception_error(exc):
     return decision["error"] if decision["status"] == "explicit_unverified" else None
 
 
-def _register_unlocked(root, row, session, turn):
+def _register_unlocked(root, row, session, turn, *, source_store=None):
     value = {
         key: row[key]
         for key in ("request_id", "goal_id", "agent_id", "source_id", "goal_ref")
@@ -140,10 +118,22 @@ def _register_unlocked(root, row, session, turn):
         channel_id=session["channel_id"],
     )
     path = _root(root) / "roundtrips" / (row["request_id"] + ".json")
+    source_root = None
+    if source_store is not None:
+        from ...control_plane.collaboration.source_chat_observation import trusted_source_chat_root
+
+        source_root = trusted_source_chat_root(source_store, value)
+        if source_root != str(root.resolve()):
+            value["source_chat_runtime_root"] = source_root
     if path.exists():
         old = _read(path)
-        if any(old.get(key) != value for key, value in value.items()):
+        if (any(old.get(key) != item for key, item in value.items()
+                if key != "source_chat_runtime_root")
+                or (source_root is not None and old.get("source_chat_runtime_root")
+                    not in (None, source_root))):
             raise ValueError("context return route conflict")
+        if "source_chat_runtime_root" in value and "source_chat_runtime_root" not in old:
+            _write(path, old | {"source_chat_runtime_root": source_root})
     else:
         _write(path, value | {"registered_at": _now()})
     saved = _read(path)
@@ -151,7 +141,7 @@ def _register_unlocked(root, row, session, turn):
         raise ValueError("context return route readback failed")
 
 
-def register(root, row, session, turn, *, scope=None):
+def register(root, row, session, turn, *, scope=None, source_store=None):
     """Called by trusted Chat delivery, never with model-authored routing."""
     path = _root(root) / "roundtrips" / (row["request_id"] + ".json")
     with _request_lock(
@@ -160,7 +150,7 @@ def register(root, row, session, turn, *, scope=None):
         scope,
         path.with_suffix(".lock"),
     ):
-        _register_unlocked(root, row, session, turn)
+        _register_unlocked(root, row, session, turn, source_store=source_store)
 
 
 def _route(root, row, *, scope=None):
@@ -220,6 +210,7 @@ def report(
     update_id=None,
     attachment_refs=None,
     workspace=None,
+    request_revision=None,
 ):
     """Chat audience adapter; the shared Inbox owns result validation/persistence."""
     if scope is None and registry is not None:
@@ -244,6 +235,7 @@ def report(
                 update_id=update_id,
                 attachment_refs=attachment_refs,
                 workspace=workspace,
+                request_revision=request_revision,
             )
     row = _entry(root, goal_id, agent_id, request_id, scope=scope)
     route = _route(root, row, scope=scope)
@@ -273,6 +265,7 @@ def report(
             route=route,
             update_id=update_id,
             attachments=attachments,
+            request_revision=request_revision,
         ),
         "status": (
             "queued_for_requester"
@@ -280,45 +273,6 @@ def report(
             else "queued_for_original_conversation"
         ),
     }
-
-
-def reply_status(root, row):
-    result = []
-    for path in result_paths(_root(root) / "replies" / row["request_id"]):
-        phase = "decision" if path.stem == "decision" else "conclusion"
-        state_path = path.with_name(path.stem + ".delivery.json")
-        try:
-            reply = _read(path)
-            state = _read(state_path) if state_path.exists() else {}
-        except (OSError, ValueError):
-            result.append({
-                "phase": phase, "status": "explicit_unverified",
-                **({"result_key": path.stem} if path.stem != phase else {}),
-                "created_at": None, "delivered_at": None,
-                "error": "delivery_state_unreadable",
-            })
-            continue
-        status = state.get("status", "queued")
-        error = state.get("error")
-        if status not in DELIVERY_STATUSES:
-            status, error = "explicit_unverified", "delivery_state_unreadable"
-        elif error is not None and error not in DELIVERY_ERRORS:
-            status, error = "explicit_unverified", "delivery_state_unreadable"
-        delivered_at = state.get("delivered_at")
-        if not isinstance(delivered_at, str) or len(delivered_at) > 80:
-            delivered_at = None
-        item = {
-            "phase": phase,
-            **({"result_key": path.stem} if path.stem != phase else {}),
-            "status": status,
-            "created_at": reply.get("created_at"),
-            "delivered_at": delivered_at,
-            "error": error,
-        }
-        if state.get("verification") == "reconciled_after_restart":
-            item["verification"] = "reconciled_after_restart"
-        result.append(item)
-    return result
 
 
 def project_chat_return_deliveries(root, session_id, messages):
@@ -378,21 +332,6 @@ def project_chat_session_snapshot(root, store, session_id, *, registry):
     return snapshot
 
 
-def _original_delivery_facts(row, route, turn, *, source_id):
-    # Adapt trusted store/authority facts only. The common typed owner decides
-    # whether a committed handoff survived a lost caller response.
-    identity = {key: row[key] for key in ("request_id", "goal_id", "agent_id", "source_id", "goal_ref") if key in row}
-    return {
-        "request": identity,
-        "route": route,
-        "authorized_source_id": source_id,
-        "turn": {
-            "client_turn_id": turn.get("client_turn_id"),
-            "status": turn.get("status"),
-            "context_handoff_receipt": (turn.get("response") or {}).get("context_handoff_receipt"),
-        },
-    }
-
 
 def _exact_return_scope(registry, reply):
     return collaboration_goal_scope(
@@ -403,10 +342,23 @@ def _exact_return_scope(registry, reply):
     )
 
 
-def _exact_return_context(root, registry, store, path, state_path, now):
+def _hold_return_source_fence(root, route, effects):
+    # Match the grant writer through transcript/provider publication. Owner-only
+    # returns stay independent of source policy and create no policy storage.
+    if conversation_scope(route)["kind"] == "external_audience":
+        effects.enter_context(
+            exclusive_file_lock((_root(root) / "policy.json").with_suffix(".lock"))
+        )
+
+
+def _exact_return_context(root, registry, store, path, state_path, now, effects):
     reply = _read(path)
     if not isinstance(reply.get("goal_ref"), dict):
         raise ValueError("exact return reply is missing goal_ref")
+    # Observe the frozen route only to select the fence, before Goal/request
+    # locks. Validate it against the exact request again under those locks.
+    frozen_route = _read(_root(root) / "roundtrips" / (path.parent.name + ".json"))
+    _hold_return_source_fence(root, frozen_route, effects)
     with _exact_return_scope(registry, reply) as scope:
         row = _entry(
             root,
@@ -415,9 +367,10 @@ def _exact_return_context(root, registry, store, path, state_path, now):
             reply["request_id"],
             scope=scope,
         )
+        inspected = inspect_result_identity(reply, row, path)
         if (
             path.parent.name != row["request_id"]
-            or not result_identity_matches(reply, row, path)
+            or inspected is None
             or any(
                 reply.get(key) != row.get(key)
                 for key in ("source_id", "goal_ref")
@@ -425,6 +378,8 @@ def _exact_return_context(root, registry, store, path, state_path, now):
         ):
             raise ValueError("return_reply_identity_mismatch")
         route = _route(root, row, scope=scope)
+        if route != frozen_route:
+            raise ValueError("context return route changed during admission")
         if route.get("kind") == "peer":
             return None
         session = store.load_session(route["session_id"])
@@ -453,7 +408,7 @@ def _exact_return_context(root, registry, store, path, state_path, now):
             operation="original_return_admit",
             record=row,
             route=route,
-            initial_delivery=_original_delivery_facts(row, route, turn, source_id=grant.get("source_id")),
+            initial_delivery=original_delivery_facts(row, route, turn, source_id=grant.get("source_id")),
         )
         with _request_lock(
             root,
@@ -497,9 +452,7 @@ def _exact_return_context(root, registry, store, path, state_path, now):
                 and now.isoformat() < state["retry_at"]
             ):
                 return None
-            if path.stem == "decision" and (
-                path.parent / "conclusion.json"
-            ).exists():
+            if inspected["interim_superseded"]:
                 _write(
                     state_path,
                     {
@@ -572,7 +525,7 @@ def _write_exact_return_state(
             record=row,
             route=route,
             initial_delivery=(
-                _original_delivery_facts(row, route, turn, source_id=context["source_id"])
+                original_delivery_facts(row, route, turn, source_id=context["source_id"])
                 if isinstance(turn, dict) else None
             ),
         )
@@ -653,11 +606,28 @@ def _resolve_delivery_sender(external_sender):
     return None, False
 
 
+def _belongs_to_chat_host(root, store, path):
+    from ...control_plane.collaboration.source_chat_observation import is_source_chat_host
+
+    route_path = _root(root) / "roundtrips" / (path.parent.name + ".json")
+    try:
+        # Missing legacy routes can only be recovered from the coordination
+        # root's Chat receipts. Private hosts recover their frozen provenance
+        # at startup before draining; a foreign host must never claim them.
+        route = _read(route_path) if route_path.exists() else {}
+        return route.get("kind") != "peer" and is_source_chat_host(root, route, store)
+    except (OSError, ValueError, TypeError):
+        logging.getLogger(__name__).warning("Manager return source provenance unavailable")
+        return False
+
+
 def _drain_exact(root, registry, store, external_sender, *, now, cancelled):
     processed = 0
     for path in iter_result_paths(_root(root) / "replies"):
         if cancelled():
             break
+        if not _belongs_to_chat_host(root, store, path):
+            continue
         state_path = path.with_name(path.stem + ".delivery.json")
         effect_locks = ExitStack()
         try:
@@ -681,6 +651,7 @@ def _drain_exact(root, registry, store, external_sender, *, now, cancelled):
                 path,
                 state_path,
                 now,
+                effect_locks,
             )
         except (OSError, ValueError, KeyError, TypeError, RuntimeError):
             effect_locks.close()
@@ -939,7 +910,10 @@ def _drain_exact(root, registry, store, external_sender, *, now, cancelled):
                 next_state = _retry_state(
                     state,
                     now,
-                    error="original_route_or_return_delivery_unavailable",
+                    # Before a provider write, preserve the Core-classified
+                    # resolution cause without changing its retry lifecycle.
+                    error=exc.reason if isinstance(exc, ReturnResolutionBlocked)
+                    else "original_route_or_return_delivery_unavailable",
                 )
             try:
                 _write_exact_return_state(
@@ -980,8 +954,10 @@ def drain(root, registry, store, external_sender, *, now=None, cancelled=lambda:
     for path in iter_result_paths(_root(root) / "replies"):
         if cancelled():
             break
+        if not _belongs_to_chat_host(root, store, path):
+            continue
         state_path = path.with_name(path.stem + ".delivery.json")
-        with exclusive_file_lock(path.with_suffix(".lock")):
+        with exclusive_file_lock(path.with_suffix(".lock")), ExitStack() as effects:
             try:
                 state = _read(state_path) if state_path.exists() else {}
             except (OSError, ValueError):
@@ -998,15 +974,17 @@ def drain(root, registry, store, external_sender, *, now=None, cancelled=lambda:
                 row = _entry(
                     root, reply["goal_id"], reply["agent_id"], reply["request_id"]
                 )
+                inspected = inspect_result_identity(reply, row, path)
                 if (
                     path.parent.name != row["request_id"]
-                    or not result_identity_matches(reply, row, path)
+                    or inspected is None
                     or reply.get("source_id") != row["source_id"]
                 ):
                     raise ValueError("return_reply_identity_mismatch")
                 route = _transport_route(_route(root, row), reply, external_sender)
                 if route.get("kind") == "peer":
                     continue  # Delivered by the requester inbox, never a Chat audience.
+                _hold_return_source_fence(root, route, effects)
                 session = store.load_session(route["session_id"])
                 turn = store.turn_for_client(
                     route["session_id"], route["client_turn_id"]
@@ -1028,12 +1006,9 @@ def drain(root, registry, store, external_sender, *, now=None, cancelled=lambda:
                 with collaboration_goal_scope(registry, goal_id=row["goal_id"], agents=()) as scope:
                     decide_collaboration_lifecycle(
                         scope, operation="original_return_admit", record=row, route=route,
-                        initial_delivery=_original_delivery_facts(row, route, turn, source_id=grant.get("source_id")),
+                        initial_delivery=original_delivery_facts(row, route, turn, source_id=grant.get("source_id")),
                     )
-                if (
-                    path.stem == "decision"
-                    and (path.parent / "conclusion.json").exists()
-                ):
+                if inspected["interim_superseded"]:
                     _write(
                         state_path,
                         {"status": "superseded", "reason": "conclusion_ready"},
@@ -1333,7 +1308,8 @@ def drain(root, registry, store, external_sender, *, now=None, cancelled=lambda:
                     {
                         "status": "retry_pending",
                         "attempts": attempts,
-                        "error": "original_route_or_return_delivery_unavailable",
+                        "error": exc.reason if isinstance(exc, ReturnResolutionBlocked)
+                        else "original_route_or_return_delivery_unavailable",
                         "retry_at": (
                             now + timedelta(seconds=min(300, 5 * 2 ** min(attempts, 6)))
                         ).isoformat(),
@@ -1343,6 +1319,58 @@ def drain(root, registry, store, external_sender, *, now=None, cancelled=lambda:
             if processed >= 20:
                 break
     return processed
+
+
+def recover_source_chat_provenance(root, registry, store, *, cancelled=lambda: False):
+    """Backfill legacy addresses from this host's committed, authorized sources.
+
+    Run once on host startup, including for already delivered returns. Never
+    scan other Chat roots or rewrite a pinned source, grant, result or receipt.
+    """
+    from ...control_plane.collaboration.source_chat_observation import observe_source_chat
+
+    if store.root.parent.resolve() == root.resolve():
+        return 0  # Co-located legacy routes already have the right address.
+    recovered = 0
+    for path in sorted((_root(root) / "roundtrips").glob("*.json")):
+        if cancelled():
+            break
+        try:
+            route = _read(path)
+            if route.get("kind") == "peer" or "source_chat_runtime_root" in route:
+                continue
+            if path.stem != route.get("request_id"):
+                continue
+            # Reject other hosts before taking a Goal lifetime lock or loading
+            # its registry. This is one startup pass, not a polling-time scan.
+            session, turn = observe_source_chat(store.root.parent, route)
+            with collaboration_goal_scope(
+                registry, goal_id=route["goal_id"], agents=(route["agent_id"],),
+                caller_goal_ref=route.get("goal_ref"), require_active=True,
+            ) as scope:
+                row = _entry(root, scope.goal_id, route["agent_id"], route["request_id"], scope=scope)
+                if any(route.get(key) != row.get(key) for key in
+                       ("request_id", "goal_id", "agent_id", "source_id", "goal_ref")):
+                    continue
+                grant = (target_authority(root, session=session, turn=turn,
+                                          target={"goal_id": row["goal_id"], "agent_id": row["agent_id"]})
+                         if scope.exact else authority(root, registry, session, turn))
+                if {"goal_id": row["goal_id"], "agent_id": row["agent_id"]} not in grant["targets"]:
+                    continue
+                decide_collaboration_lifecycle(
+                    scope, operation="original_return_admit", record=row, route=route,
+                    initial_delivery=original_delivery_facts(row, route, turn,
+                                                               source_id=grant.get("source_id")),
+                )
+                if cancelled():
+                    break
+                register(root, row, session, turn, scope=scope, source_store=store)
+                recovered += 1
+        except (OSError, ValueError, KeyError, TypeError, EffectRuntimeRejected):
+            # Unrelated unavailable/revoked sources cannot starve valid ones.
+            # Preserve their records; peer admission still reports recovery.
+            continue
+    return recovered
 
 
 class ReturnService:
@@ -1355,10 +1383,14 @@ class ReturnService:
             target=self.run, daemon=True, name="loopx-manager-returns"
         )
 
-    def start(self):
+    def start(self) -> None:
         self.thread.start()
 
     def run(self):
+        try:
+            recover_source_chat_provenance(*self.args[:3], cancelled=self.stop.is_set)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            logging.getLogger(__name__).warning("Source Chat provenance recovery unavailable")
         while not self.stop.is_set():
             try:
                 drain(*self.args, cancelled=self.stop.is_set)
@@ -1368,6 +1400,7 @@ class ReturnService:
                 )
             self.stop.wait(3)
 
-    def close(self):
+    def close(self) -> None:
         self.stop.set()
-        self.thread.join(timeout=3)
+        if self.thread.ident is not None:
+            self.thread.join(timeout=3)

@@ -152,7 +152,7 @@ class QuotaSettlementReadback:
     terminal_closeout: SettlementResult[dict[str, Any]]
     terminal_settlement: SettlementResult[dict[str, Any]]
     workspace_causality: dict[str, str] | None
-    semantic_replan_guard: dict[str, str | None] | None
+    semantic_replan_guard: dict[str, Any] | None
     writeback_run: dict[str, Any] | None
     spend_run: dict[str, Any] | None
     heartbeat_receipt: dict[str, Any] | None
@@ -166,6 +166,7 @@ class QuotaSettlementReadback:
     progress: dict[str, Any] | None = None
     native_child_admission: dict[str, Any] | None = None
     heartbeat_reentry_qualification: dict[str, Any] | None = None
+    successor_replan_pending: bool = False
 
 
 def attach_settlement_progress(
@@ -221,6 +222,8 @@ def render_settlement_progress_markdown(payload: dict[str, Any]) -> list[str]:
     lines = [f"- settlement: `{progress.get('state')}`"]
     if progress.get("closeout_kind") == "typed_blocked_writeback_no_spend":
         lines.append("- closeout: typed blocked writeback; no quota slot spent")
+    elif progress.get("closeout_kind") == "capability_duty_retired_no_spend":
+        lines.append("- closeout: exact invalidated capability duty retired; no quota slot spent")
     owed = payload.get("settlement_owed")
     if isinstance(owed, dict):
         lines.extend([f"- settlement_owed: {owed['reason']}", "", "```sh", owed["command"], "```"])
@@ -276,7 +279,7 @@ def _optional_readback_record(value: Any) -> dict[str, Any] | None:
     return dict(value)
 
 
-def _semantic_replan_guard(value: Any) -> dict[str, str | None] | None:
+def _semantic_replan_guard(value: Any) -> dict[str, Any] | None:
     guard = _optional_readback_record(value)
     if guard is None:
         return None
@@ -296,11 +299,19 @@ def _semantic_replan_guard(value: Any) -> dict[str, str | None] | None:
         or legacy_guard_claims_selection
     ):
         raise RuntimeError("TypeScript semantic replan guard shape mismatch")
-    return {
+    result: dict[str, Any] = {
         "schema_version": SEMANTIC_REPLAN_GUARD_SCHEMA,
         "scope": str(scope),
         "selected_obligation_id": selected_obligation_id,
     }
+    if "selected_capability_guard" in guard:
+        capability = guard["selected_capability_guard"]
+        if not isinstance(capability, dict) or selected_obligation_id is None:
+            raise RuntimeError("selected capability guard requires a typed object and obligation")
+        # The TS readback owner validates the schema and ids. Preserve the
+        # selected authority evidence when adapting the receipt to refresh.
+        result["selected_capability_guard"] = dict(capability)
+    return result
 
 
 def read_heartbeat_settlement(
@@ -368,6 +379,7 @@ def read_heartbeat_settlement(
                         else {}
                     ),
                 },
+                large_local_snapshot=True,
             )
         except EffectRuntimeRejected as exc:
             raise ValueError(str(exc)) from None
@@ -428,6 +440,7 @@ def read_heartbeat_settlement(
         progress=_optional_readback_record(payload.get("progress")),
         native_child_admission=_optional_readback_record(payload.get("native_child_admission")),
         heartbeat_reentry_qualification=_optional_readback_record(payload.get("heartbeat_reentry_qualification")),
+        successor_replan_pending=payload.get("successor_replan_pending") is True,
         spend_run=_optional_readback_record(payload.get("spend_run")),
         heartbeat_receipt=_optional_readback_record(payload.get("heartbeat_receipt")),
         writeback_event=_optional_readback_record(payload.get("writeback_event")),

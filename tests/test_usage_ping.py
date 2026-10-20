@@ -9,6 +9,7 @@ import select
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -281,27 +282,38 @@ def test_real_cli_returns_while_http_response_is_held_and_disable_survives(isola
     assert str(isolated) not in json.dumps(received)
 
 
-def test_real_cli_first_result_reaches_http_without_next_day_return(isolated, collector, monkeypatch):
+@pytest.mark.parametrize('version', ['1.4.0', '2.0.0a1', '2.0.0b2', '2.0.0rc3'])
+def test_real_cli_first_result_reaches_http_without_next_day_return(isolated, collector, monkeypatch, version):
     endpoint, received, accepted, release = collector
     monkeypatch.setenv('LOOPX_USAGE_PING_ENDPOINT', endpoint)
+    monkeypatch.setattr(usage_ping, '__version__', version)
     release.set()
-    setup = 'import sys; from pathlib import Path; from loopx import usage_ping; usage_ping.select_default_runtime_root=lambda: Path(sys.argv[1]); from loopx.cli_runtime import main; '
-    command = [sys.executable, '-c', setup + 'raise SystemExit(main(["version", "--format", "json"]))', str(isolated)]
+    setup = ('import sys,loopx; from pathlib import Path; loopx.__version__=sys.argv[2]; '
+             'from loopx import usage_ping; usage_ping.select_default_runtime_root=lambda: Path(sys.argv[1]); '
+             'from loopx.cli_runtime import main; ')
+    command = [sys.executable, '-c', setup + 'raise SystemExit(main(["version", "--format", "json"]))',
+               str(isolated), version]
     first = subprocess.run(command, capture_output=True, text=True, timeout=30)
     assert first.returncode == 0 and 'random installation ID' in first.stderr
     assert received == []
     second = subprocess.run(command, capture_output=True, text=True, timeout=30)
     assert second.returncode == 0 and json.loads(second.stdout) == json.loads(first.stdout)
+    assert json.loads(second.stdout)['version'] == version
+    schemas = {'loopx_usage_ping_v1', 'loopx_usage_diagnostics_v1', 'loopx_installation_usage_v1'}
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not any(p['schema'] == 'loopx_usage_diagnostics_v1' for p in received):
+    while time.monotonic() < deadline and not schemas.issubset({p['schema'] for p in received}):
         time.sleep(0.02)
+    assert schemas.issubset({p['schema'] for p in received}), 'every versioned channel must reach HTTP'
+    assert next(p for p in received if p['schema'] == 'loopx_usage_ping_v1')['version'] == version
+    profile = next(p for p in received if p['schema'] == 'loopx_installation_usage_v1')['profiles'][0]
+    assert profile['version'] == version
     aggregates = [p for p in received if p['schema'] == 'loopx_usage_diagnostics_v1']
     assert len(aggregates) == 1, 'one completed command must not depend on a next-day invocation'
     assert set(aggregates[0]) == {'schema', 'counters'}
     counters = aggregates[0]['counters']
     assert len(counters) == 1 and counters[0]['feature'] == 'version'
     assert counters[0]['outcome'] == 'ok' and counters[0]['count'] == 1
-    assert counters[0]['version'] and counters[0]['context'] == 'unknown'
+    assert counters[0]['version'] == version and counters[0]['context'] == 'unknown'
     assert usage_ping.control('status')['aggregate_preview'] is None
     usage_ping.control('disable')
 
@@ -353,6 +365,25 @@ def test_detached_sender_honors_proxy_and_no_proxy(isolated, collector, monkeypa
     assert not release.is_set(), 'CLI must finish before network response'
     usage_ping.control('disable')
     release.set()
+
+
+def test_detached_sender_leaves_the_callers_directory_free(isolated, tmp_path):
+    """On Windows a live child whose cwd is the caller's directory pins it."""
+    observed = tmp_path / 'sender-cwd.json'
+    code = ("import json, os, sys\n"
+            "json.load(sys.stdin)\n"
+            f"open({str(observed)!r}, 'w', encoding='utf-8').write(json.dumps(os.getcwd()))\n")
+    usage_ping._detach(usage_ping._request('observe', isolated / 'usage-ping.json'),
+                       command=[sys.executable, '-c', code])
+    deadline = time.monotonic() + 30
+    child_cwd = None
+    while time.monotonic() < deadline and child_cwd is None:
+        try:
+            child_cwd = json.loads(observed.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            time.sleep(0.05)
+    assert child_cwd is not None, 'detached sender did not report its working directory'
+    assert Path(child_cwd).resolve() == Path(tempfile.gettempdir()).resolve()
 
 
 @pytest.mark.parametrize('upgrade', [False, True])

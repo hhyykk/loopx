@@ -1,13 +1,17 @@
 import type { GoalDraft } from "../../../../../../loopx/control_plane/collaboration/goal_draft.js";
 import type { TurnStep } from "../../data/turn-steps";
 import type { ChatProject, CollaborationReadback, LoopXModeSettings } from "../../data/chat-model";
+import type { BoundConversationTarget, ChatSessionSummary, PrivateConversation } from "../../data/chat";
 import type { TeamPlanAppliedOutcome } from "./team-plan-preview";
 import type { ActionReviewPlan } from "../../../../../../loopx/control_plane/presentation/action_review_plan.js";
 import type { GoalAcceptanceObservation } from "../../data/goal-acceptance-observation";
 import type { AttentionDetails } from "./attention-details";
 import type { WorkspaceLoadError, WorkspaceReadScope } from "../../data/workspace-progressive-status";
 import type { TodoItem } from "../../data/status";
+import type { TodoUpdateSourceBasis } from "../../data/action-source-basis";
 import { goalWorkKind, type GoalHostThreadActivity, type WorkspaceGoalExecution } from "./goal-activity";
+import { receiptRetryReadback } from "./monitor-readback";
+import type { DigestAttentionSummary } from "../../../../../../loopx/control_plane/presentation/goal_workspace_digest.js";
 export type WorkspaceGoalState =
   | "需修复"
   | "等你"
@@ -36,7 +40,10 @@ export type WorkspaceAgentTodo = {
   completedAt?: string | null;
   resumeWhen?: string | null;
   resumeReady?: boolean | null;
+  resumeInvalidReason?: string | null;
   resumeReceiptId?: string | null;
+  /** Read-only provenance from the Run that owns this temporary retry. */
+  retryReadback?: { observedAt: string; dueAt: string; turnId: string } | null;
   blockedReason?: string | null;
   claimedBy?: string | null;
   dependencies?: string[];
@@ -52,8 +59,8 @@ export type WorkspaceAgentTodo = {
   requestText?: string;
   /** The authority id, absent when a legacy projection needs a display-only id. */
   sourceTodoId?: string | null;
-  /** Local map fallback: exact request reading without current-state actions. */
-  detailMode?: "request_only";
+  /** Local inspection mode: exact request only, or a previously current item lost from readback. Neither authorizes actions. */
+  detailMode?: "request_only" | "missing_current";
   text: string;
   todoId: string;
   validationDigest?: string | null;
@@ -88,7 +95,10 @@ export function workspaceAgentTodoFromItem(todo: Pick<TodoItem,
     completedAt: todo.completed_at ?? null,
     resumeWhen: todo.resume_when ?? null,
     resumeReady: todo.resume_ready ?? null,
+    resumeInvalidReason: typeof todo.resume_condition?.invalid_state === "string"
+      ? todo.resume_condition.invalid_state : null,
     resumeReceiptId: typeof receiptId === "string" && receiptId.trim() ? receiptId.trim() : null,
+    retryReadback: receiptRetryReadback(todo),
     validationDigest: todo.completion_validation_sha256 ?? null,
     validationRevision: todo.completion_validation_revision ?? null,
     validationRevisionActor: todo.completion_validation_revision_history.at(-1)?.actor_agent_id ?? null,
@@ -103,6 +113,9 @@ export type WorkspaceConversationDirectory = {
   selectedRef: string | null;
   /** null returns the conversation to the steward scope. */
   onSelect: (projectRef: string | null) => void;
+  onOpenOriginal?: (target: BoundConversationTarget) => void;
+  bound?: { target: BoundConversationTarget; session?: ChatSessionSummary; source?: PrivateConversation;
+    error?: string; retry: () => void };
 };
 
 export type WorkspaceTodo = WorkspaceAgentTodo & {
@@ -149,7 +162,20 @@ export type WorkspaceGoalSubagentConfiguration = {
 };
 
 export type WorkspaceGoal = {
+  sourceAccess?: {namespace: string; label: string; readOnly: true};
+  /** Registry organization in this status source; not Agent ownership or execution dependency. */
+  parentGoalId?: string | null;
+  /** Bounded, safe text from this Goal's declared source document. */
+  objective?: string | null;
   acceptanceObservation?: GoalAcceptanceObservation | null;
+  /** Driver readback only; it never changes Goal activation or grants work. */
+  workerObservations?: {
+    read_status: "read" | "stale" | "unreadable";
+    rows: Array<{
+      agent_id: string; status: "replan_paused" | "replan_outcome_unknown";
+      obligation_id: string; turn_instance_id: string | null; observed_at: string;
+    }>;
+  } | null;
   loadState?: "loading" | "error";
   loadError?: WorkspaceLoadError;
   activationState: "active" | "stopped";
@@ -159,7 +185,12 @@ export type WorkspaceGoal = {
     label: string;
     lastActivityAt?: string | null;
     state?: string | null;
+    hostSurfaces?: string[];
   }>;
+  /** Canonical registered identities; discovered task claimants do not grant binding authority. */
+  registeredAgentIds?: string[];
+  /** Host-compatible registered IDs from the canonical backend; absence grants no controls. */
+  zcodeGoalEligibleAgentIds?: string[];
   agentLaneCount?: number;
   agentLabel?: string;
   agentSentence: string;
@@ -168,6 +199,8 @@ export type WorkspaceGoal = {
   boundHostSurfaces?: string[];
   /** Completed agent Todo count from the status payload; item lists only carry open Todos. */
   doneTodoCount?: number;
+  /** Open agent Todo count projected beside a possibly bounded item list. */
+  openTodoCount?: number;
   execution?: WorkspaceGoalExecution;
   goalId: string;
   /** Bound host threads as observed from the host's own records. */
@@ -175,6 +208,7 @@ export type WorkspaceGoal = {
   latestActivity?: string;
   needsYou?: string | null;
   needsYouBlocking?: boolean;
+  attentionSummary?: DigestAttentionSummary;
   nextSentence: string;
   repository?: WorkspaceRepositoryContext;
   state: WorkspaceGoalState;
@@ -301,11 +335,14 @@ export type WorkspaceSchedule = {
 };
 
 export type WorkspaceActionPreview = {
+  /** Exact Todo target from the stored action, used only for display joins. */
+  todoId?: string;
   reviewPlan?: ActionReviewPlan;
   actionKind:
     | "goal.create"
     | "goal.update"
     | "goal.lifecycle"
+    | "goal.acceptance.check"
     | "todo.create"
     | "todo.update"
     | "agent.bind"
@@ -333,6 +370,9 @@ export type WorkspaceActionPreview = {
   // See proposal-recency.ts.
   createdAt?: string;
   previewId: string;
+  /** False for a refused preview held only in this page; no stored action exists to read back. */
+  persisted?: boolean;
+  regeneratedFrom?: string | null;
   primaryLabel?: string;
   errorMessage?: string;
   status: "draft" | "ready" | "applying" | "applied" | "gated" | "stale" | "error" | "rejected" | "deferred";
@@ -377,6 +417,7 @@ export type WorkspaceReturnDelivery = {
   error?: string | null;
   status: string;
   verification?: "reconciled_after_restart";
+  request_revision?: number | null;
 };
 
 export type WorkspaceImageAttachment = {
@@ -417,10 +458,29 @@ export type WorkspaceGoalNotification = {
 };
 
 export type WorkspaceSystemHealth = {
+  /** Status-source contract lines for a collapsed disclosure; never primary copy. */
+  diagnostics?: string[];
   freshnessWarning?: string | null;
   issues: string[];
   ok: boolean;
+  /** The current read of the source failed; a retry can clear it. */
+  retryable?: boolean;
   summary: string;
+};
+
+/** Outcome of a workspace refresh; a failed read never rejects, it reports. */
+export type WorkspaceRefreshResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Typed first-Goal classification of the manager home. `no_goals` means the
+ * status source reports zero registered Goals and no execution history, so
+ * the home shows its first-Goal state instead of empty lanes. `diagnostics`
+ * carries the status source's own contract lines for a collapsed disclosure;
+ * it is never primary copy.
+ */
+export type WorkspaceHomeOnboarding = {
+  kind: "no_goals";
+  diagnostics: string[];
 };
 
 export type WorkspaceModel = {
@@ -432,6 +492,7 @@ export type WorkspaceModel = {
     error?: string | null;
     loading: boolean;
   };
+  onboarding?: WorkspaceHomeOnboarding;
   systemHealth?: WorkspaceSystemHealth;
   timeline?: WorkspaceTimelineItem[];
   attentionHistory?: WorkspaceAttention[];
@@ -444,6 +505,10 @@ export type WorkspaceAgentOption = {
   agentId: string;
   available: boolean;
   capability?: string;
+  /** Service-reported readiness for an unavailable runtime; see runtime-readiness.ts. */
+  unavailableReason?: string | null;
+  executable?: string | null;
+  environmentVariable?: string | null;
   interrupt?: boolean;
   label: string;
   location?: string;
@@ -462,7 +527,7 @@ export type WorkspaceDrawerSelection =
   | { item: WorkspaceRun; kind: "run" }
   | { item: WorkspaceOutput; kind: "output" }
   | { item: WorkspaceActionPreview; kind: "proposal" }
-  | { goalId?: string; kind: "settings"; tab?: "appearance" | "capabilities" | "language" | "lark" | "machine" | "steward" }
+  | { goalId?: string; kind: "settings"; tab?: "appearance" | "capabilities" | "language" | "lark" | "machine" | "steward" | "conversation" }
   | {
       item: WorkspaceSchedule;
       kind: "schedule";
@@ -473,6 +538,7 @@ export type PersonalHomeCompatibleModel = {
   goalNotifications?: WorkspaceGoalNotification[];
   goals: WorkspaceGoal[];
   openUserTodoCount: number;
+  onboarding?: WorkspaceHomeOnboarding;
   systemHealth?: WorkspaceSystemHealth;
   attentionHistory?: WorkspaceAttention[];
   userTodos: WorkspaceAttention[];
@@ -484,6 +550,7 @@ export type WorkspaceGoalArchiveLoadState =
   | { phase: "error"; error: string };
 
 export type PersonalWorkspaceCallbacks = {
+  onSaveTodoRequirements?: (todo: WorkspaceTodo, text: string, basis: TodoUpdateSourceBasis, retry?: WorkspaceActionPreview) => Promise<WorkspaceActionPreview>;
   onApplyProposal?: (proposal: WorkspaceActionPreview) => void | Promise<void>;
   onApplyAttention?: (attention: WorkspaceAttention) => void;
   onCancelProposal?: (proposal: WorkspaceActionPreview) => void;
@@ -499,6 +566,7 @@ export type PersonalWorkspaceCallbacks = {
   onCancelConversationPreparation?: (contextId: string) => void;
   onInterruptConversationTurn?: (contextId: string, turnId: string) => Promise<void>;
   onSteerConversationTurn?: (contextId: string, turnId: string, message: string, ingressId: string) => Promise<void>;
+  onQueueConversationTurn?: (contextId: string, sessionId: string, message: string, ingressId: string, attachments?: WorkspaceImageAttachment[]) => Promise<void>;
   onOpenGoal?: (goalId: string) => void | Promise<void>;
   onOpenGoalView?: (tab: WorkspaceGoalTab) => void;
   onOpenRunSession?: (run: WorkspaceRun) => void | Promise<void>;
@@ -509,6 +577,7 @@ export type PersonalWorkspaceCallbacks = {
     changed: boolean;
     configuration: WorkspaceGoalSubagentConfiguration;
     previewId: string;
+  regeneratedFrom?: string | null;
   }>;
   onApplyGoalSubagentConfiguration?: (
     request: WorkspaceGoalSubagentConfiguration & { goalId: string; previewId: string },
@@ -527,7 +596,11 @@ export type PersonalWorkspaceCallbacks = {
    * names the Goals the action touched, so a peer's snapshot is not re-read for it. */
   onReconcileStatus?: (options?: { invalidateGoalIds?: string[] }) => void | Promise<void>;
   /** Full refresh by default; error recovery can explicitly read missing Goals only. */
-  onRefresh?: (scope?: WorkspaceReadScope) => void | Promise<void>;
+  onRefresh?: (scope?: WorkspaceReadScope) => void | WorkspaceRefreshResult | Promise<void | WorkspaceRefreshResult>;
+  /** Re-read the Chat service's runtime catalog after the owner repaired something. */
+  onRecheckRuntimes?: () => void;
+  /** Re-read the workspace without a loading state; used by background freshness such as notifications. */
+  onBackgroundRefresh?: () => void | Promise<void>;
   onRetryGoalArchive?: () => void | Promise<void>;
   onPreviewAction?: (request: WorkspaceActionPreviewRequest) => WorkspaceActionPreview | Promise<WorkspaceActionPreview>;
   onRequestGoalCreate?: () => WorkspaceActionPreview | Promise<WorkspaceActionPreview | void> | void;
@@ -545,9 +618,13 @@ export type PersonalWorkspaceCallbacks = {
   onStartLoopX?: (operation: "start" | "resume", agentId: string, goalId: string,
     settings?: LoopXModeSettings) => void;
   onSelectAgent?: (agentId: string) => void;
+  onSelectAgentModel?: (agentId: string, modelId: string) => void;
+  onSelectAgentReasoningEffort?: (agentId: string, effort: string) => void;
   onSelectChannel?: (channel: WorkspaceChannel) => void;
   onSelectGoal?: (goalId: string | null, view: WorkspaceGoalTab) => void;
+  onSelectTodo?: (todoId: string | null) => void;
   onSelectView?: (view: WorkspaceGoalTab) => void;
+  onSelectWorkAgent?: (agentId: string | null) => void;
   onOpenNotificationSettings?: (goalId?: string) => void;
   onFetchNotificationTargets?: () => Promise<Array<{ enabled: boolean; provider: string; target_name: string }>>;
   onSetupGoalChannel?: (options: { execute: boolean; goalId: string; target: string }) => Promise<{ ok: boolean; blocker?: string; public_summary?: string; status?: string }>;
@@ -576,6 +653,7 @@ export function normalizePersonalHomeModel(model: PersonalHomeCompatibleModel): 
     goalNotifications: model.goalNotifications,
     goals: model.goals,
     openUserTodoCount: model.openUserTodoCount,
+    onboarding: model.onboarding,
     systemHealth: model.systemHealth,
     attentionHistory: model.attentionHistory,
     userTodos: model.userTodos,
@@ -616,7 +694,6 @@ export function workspaceHomeLaneForGoal(goal: WorkspaceGoal): WorkspaceHomeLane
   if (goal.activationState === "stopped" || goal.state === "已停止") return "stopped";
   if (goal.state === "已完成") return "history";
   if (goal.needsYou || goal.state === "等你") return "needs_you";
-  if (goal.state === "需修复") return "running";
   const work = goalWorkKind(goal);
   if (work === "executing") return "running";
   if (work === "claimed") return "claimed";

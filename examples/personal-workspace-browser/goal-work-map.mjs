@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { resolveTestPython } from "../../scripts/test-python.mjs";
 import { outputDir, repoRoot } from "./fixture.mjs";
-import { openWorkspacePage } from "./scenario-context.mjs";
+import { deliveryReadFixture } from "./showcase-workspace.mjs";
+import { fetchWorkspaceBackend, openWorkspacePage } from "./scenario-context.mjs";
 
 async function requestAuthority(text) {
   const root = await mkdtemp(resolve(tmpdir(), "loopx-map-request-"));
@@ -106,24 +107,31 @@ export const goalWorkMapScenario = {
   async run({ browser, collectCoverage, url }) {
     let limits = {};
     const reads = [];
-    const originalRequest = "Reserve the hall only after approval; confirm the full room capacity.";
+    const requestParagraphs = [
+      "Reserve the hall only after approval; confirm the full room capacity.",
+      "Keep the original constraints and the source of each decision. Compare the approved capacity with the requested seating plan, retain the budget limit, and explain how to recover when the venue cannot meet it. A summary is not an acceptance result.",
+      "The final requirement is to read the verified capacity before releasing the deposit.",
+    ];
+    const originalRequest = requestParagraphs.join("\n\n");
+    const finalRequirement = requestParagraphs.at(-1);
     const authority = await requestAuthority(originalRequest);
     try {
       const routeRequest = (api, page) => page.route("**/api/chat/todo/detail?*", async route => {
         const url = new URL(route.request().url());
         api.todoRequestReads.push({ goalId: url.searchParams.get("goal_id"), todoId: url.searchParams.get("todo_id") });
-        await route.fulfill({ response: await route.fetch({ url: authority.url + url.pathname + url.search }) });
+        await route.fulfill({ response: await fetchWorkspaceBackend(route, authority.url) });
       });
       const routeReview = (api, page) => page.route("**/api/chat/delivery-review?*", route => {
         const goalId = new URL(route.request().url()).searchParams.get("goal_id");
         reads.push(goalId);
-        return route.fulfill({ json: { ok: true, goal_id: goalId, observed_at: new Date().toISOString(), graph: null, goal_map: goalMap(goalId, limits), acceptance: null } });
+        return route.fulfill({ json: deliveryReadFixture({ ok: true, goal_id: goalId, observed_at: new Date().toISOString(), graph: null, goal_map: goalMap(goalId, limits), acceptance: null }) });
       });
       const beforeGoto = async (api, page) => { await routeReview(api, page); await routeRequest(api, page); };
       const desktop = await openWorkspacePage(browser, url, { collectCoverage, beforeGoto });
       const { page } = desktop;
       await page.locator(".personal-goal-link", { hasText: "Product Release" }).click();
       await page.getByRole("button", { name: "概览", exact: true }).click();
+      await page.locator(".goal-work-lenses").getByRole("button", {name: "关系图", exact: true}).click();
       const map = page.locator(".work-map");
       await map.getByRole("heading", { name: "工作地图" }).waitFor();
       const canvas = map.getByRole("region", { name: "工作地图画布" });
@@ -153,9 +161,14 @@ export const goalWorkMapScenario = {
       const dimmed = await canvas.locator(".work-map-node[data-dimmed] strong").allInnerTexts();
       assert.deepEqual(new Set(dimmed), new Set(["Compare three venues", "Reprice catering"]), "Selection traces only recorded lineage");
       await page.screenshot({ path: resolve(outputDir, "goal-work-map.png"), animations: "disabled" });
-      await inspector.getByRole("button", { name: "打开详情" }).click();
+      // The shared selection opens the existing drawer on the same click.
       const drawer = page.getByRole("dialog", { name: "Todo 详情" });
-      await drawer.getByRole("heading", { name: originalRequest, exact: true }).waitFor();
+      await drawer.getByText(finalRequirement, { exact: true }).waitFor();
+      assert.deepEqual(await drawer.locator(".personal-task-request .personal-md > p").allTextContents(), requestParagraphs,
+        "The complete canonical request retains its paragraphs, including the final requirement");
+      assert.equal(await drawer.locator(".personal-task-request h3").count(), 0,
+        "A long request is reading copy, not a single heading");
+      assert.equal(await drawer.locator(".personal-task-request .personal-md > p").first().evaluate(node => getComputedStyle(node).fontWeight), "400");
       assert.deepEqual(desktop.api.todoRequestReads, [{ goalId: reads[0], todoId: "todo_map_reserve" }],
         "Map details read the exact canonical Task request rather than trusting the projected node title");
       assert.match(await drawer.innerText(), /当前状态与操作仍不可用/);
@@ -163,22 +176,25 @@ export const goalWorkMapScenario = {
         "A graph-only Task cannot present snapshot metadata as current or enable mutations");
       await page.screenshot({ path: resolve(outputDir, "goal-map-request-only-desktop.png"), animations: "disabled" });
       await page.getByRole("button", { name: /关闭详情/ }).click();
-      assert.equal(await canvas.locator('.work-map-node[aria-pressed="true"] strong').innerText(), "Reserve the hall", "Closing details returns to the same selection");
+      assert.equal(await drawer.count(), 0, "Closing details removes the task inspector");
+      assert.equal(await canvas.locator('.work-map-node[aria-pressed="true"]').count(), 0,
+        "Closing details clears the shared task selection");
+      assert.equal(new URL(page.url()).searchParams.get("todo"), null, "Closing details clears the task route");
 
       const hiddenRegistry = `${authority.registry}.hidden`;
       const errorsBeforeLoss = desktop.errors.length;
       await rename(authority.registry, hiddenRegistry);
-      await inspector.getByRole("button", { name: "打开详情" }).click();
+      await canvas.locator(".work-map-node", {hasText:"Reserve the hall"}).click();
       await drawer.getByRole("alert").filter({ hasText: "完整要求读取失败" }).waitFor();
       assert.deepEqual(desktop.errors.splice(errorsBeforeLoss), [
         "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
       ], "Only the deliberately unavailable source may emit a transport error");
-      assert.equal(await drawer.getByRole("heading", { name: originalRequest, exact: true }).count(), 0,
+      assert.equal(await drawer.getByText(finalRequirement, { exact: true }).count(), 0,
         "A missing source must not retain the previously read canonical request");
       assert.equal(await drawer.locator(".personal-task-inspector-actions").count(), 0);
       await rename(hiddenRegistry, authority.registry);
       await drawer.getByRole("button", { name: "重试读取完整要求", exact: true }).click();
-      await drawer.getByRole("heading", { name: originalRequest, exact: true }).waitFor();
+      await drawer.getByText(finalRequirement, { exact: true }).waitFor();
       await page.getByRole("button", { name: /关闭详情/ }).click();
 
       limits = { omitted_node_count: 3, topology_complete: false };
@@ -194,6 +210,7 @@ export const goalWorkMapScenario = {
       if (await navigation.isVisible()) await navigation.click();
       await phone.page.locator(".personal-goal-link", { hasText: "Product Release" }).click();
       await phone.page.getByRole("button", { name: "概览", exact: true }).click();
+      await phone.page.locator(".goal-work-lenses").getByRole("button", {name: "关系图", exact: true}).click();
       const list = phone.page.locator(".work-map-list");
       await list.waitFor();
       assert.equal(await list.locator("li").count(), 5);
@@ -204,11 +221,15 @@ export const goalWorkMapScenario = {
       await list.scrollIntoViewIfNeeded();
       await phone.page.screenshot({ path: resolve(outputDir, "goal-work-map-mobile.png"), animations: "disabled" });
       await list.locator(".work-map-node", { hasText: "Reserve the hall" }).click();
-      await phone.page.getByRole("region", { name: "选中事项" }).getByRole("button", { name: "打开详情" }).click();
       const phoneDrawer = phone.page.getByRole("dialog", { name: "Todo 详情" });
-      await phoneDrawer.getByRole("heading", { name: originalRequest, exact: true }).waitFor();
+      await phoneDrawer.getByText(finalRequirement, { exact: true }).waitFor();
+      assert.deepEqual(await phoneDrawer.locator(".personal-task-request .personal-md > p").allTextContents(), requestParagraphs);
       assert.equal(await phoneDrawer.locator(".personal-task-inspector-actions").count(), 0);
       await phone.page.screenshot({ path: resolve(outputDir, "goal-map-request-only-mobile.png"), animations: "disabled" });
+      await phone.page.getByRole("button", { name: /关闭详情/ }).click();
+      assert.equal(await phoneDrawer.count(), 0);
+      assert.equal(await list.locator('.work-map-node[aria-pressed="true"]').count(), 0);
+      assert.equal(new URL(phone.page.url()).searchParams.get("todo"), null);
       coverageEntries.push(...await phone.close());
       return { coverageEntries, note: "Work map opens canonical requests outside the status summary, withdraws lost sources, retries without mutation, and retains typed links and mobile navigation." };
     } finally { await authority.close(); }

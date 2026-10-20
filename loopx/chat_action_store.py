@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence
 import uuid
 
 from .file_lock import exclusive_file_lock
+from .public_safe_text import OPAQUE_ID_PATTERN as _OPAQUE_ID
 from .registry import atomic_write_json
 
 
@@ -20,6 +21,7 @@ CHAT_ACTION_STORE_SCHEMA_VERSION = "loopx_chat_action_store_v1"
 CHAT_ACTION_PROPOSAL_SCHEMA_VERSION = "loopx_chat_action_proposal_v1"
 
 ACTION_KINDS = {
+    "goal.acceptance.check",
     "goal.create",
     "goal.update",
     "goal.lifecycle",
@@ -54,7 +56,6 @@ OPERATION_LIFECYCLE_STATES = {
     "outcome_observed",
 }
 
-_OPAQUE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
 _LOCAL_PATH = re.compile(
     r"(?:^|[\s\"'])(?:/Users/|/home/|/private/|/var/folders/|/tmp/|~[/\\]|file://)",
     re.IGNORECASE,
@@ -98,6 +99,11 @@ def _opaque_id(value: Any, *, field: str) -> str:
     if not _OPAQUE_ID.fullmatch(token):
         raise ValueError(f"{field} must be a compact opaque id")
     return token
+
+
+def normalize_idempotency_key(value: Any) -> str:
+    """Return the canonical token this store binds and persists."""
+    return _opaque_id(value, field="idempotency_key")
 
 
 def _bounded_text(value: Any, *, field: str, limit: int = 4000) -> str:
@@ -201,6 +207,7 @@ class ChatActionStore:
         available_transitions: Sequence[Any],
         idempotency_key: str,
         canonical_update_basis: Mapping[str, Any] | None = None,
+        workspace_binding: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         selected_kind = str(action_kind or "").strip()
         if selected_kind not in ACTION_KINDS:
@@ -224,10 +231,12 @@ class ChatActionStore:
                 "available_transitions": list(available_transitions),
                 **({"canonical_update_basis": dict(canonical_update_basis)}
                    if canonical_update_basis is not None else {}),
+                **({"workspace_binding": dict(workspace_binding)}
+                   if workspace_binding is not None else {}),
             },
             path="preview",
         )
-        key = _opaque_id(idempotency_key, field="idempotency_key")
+        key = normalize_idempotency_key(idempotency_key)
         request_digest = _canonical_digest(request)
         with exclusive_file_lock(
             self.path,
@@ -1067,6 +1076,29 @@ class ChatActionStore:
             )
         except EffectRuntimeRemoteError as exc:
             raise ActionConflictError(str(exc)) from exc
+
+    def reserve_agent_operation_turn(
+        self, proposal_id: str, **launch_context: Any,
+    ) -> dict[str, Any]:
+        """Internal callback launch intent; neither host start nor consumption.
+
+        Commit before spawning. A lost/failed spawn is reconciled from the
+        original Turn; callback replay never launches a replacement process.
+        """
+        token = _opaque_id(proposal_id, field="proposal_id")
+        with exclusive_file_lock(self.path, operation="reserve_operation_turn"):
+            payload = self._read()
+            proposal = payload["proposals"].get(token)
+            if not isinstance(proposal, dict):
+                raise KeyError("typed operation was not found")
+            plan = self._agent_operation_plan(proposal, action="wake", **launch_context)
+            receipt = plan.pop("write_turn_launch", None)
+            if receipt is not None:
+                proposal["operation"]["turn_launch"] = receipt
+                proposal["updated_at"] = _utc_now()
+                self._write(payload)
+                plan["turn_launch"] = receipt
+            return plan
 
     def record_agent_operation_host_start(
         self, proposal_id: str, *, actor: Mapping[str, Any],

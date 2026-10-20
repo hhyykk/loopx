@@ -141,8 +141,9 @@ milestone status.
 | Stall detection | Consecutive materially equivalent typed observations can derive a replan trigger. |
 | Semantic replan closure | New typed dimensions, a grounded successor, a concrete blocker, or coverage-backed terminal result can close the current obligation. |
 | Host-delivered context | Quota can project a compact coverage ledger and uncovered frontier without requiring a manual evidence-read ritual. |
-| Explore evidence | Explore owns append-only nodes, edges, findings, and bounded public-safe projections. |
+| Explore evidence and ordinary capture | Explore owns append-only nodes/edges/findings. Existing result attachments validate before primary work commit, then deliver an idempotent finding and Todo link; a partial link failure retains the committed work and replays the same operation. Bounded turn context returns scoped evidence. This is capture/readback, not the §11.5 decision-adoption gate. |
 | Research evidence and cold shadow | [Research observation v0](../../reference/protocols/research-observation-v0.md) composes generic progress with typed closure and explicit binary candidates. CLI summary and Lark node summaries share the read-only projection; exact experiment input fingerprints guard stale results. |
+| Explicit M3 composition gate | [PR #5280](https://github.com/loopx-project/loopx/pull/5280) merged as `1e6cae19f` on 2026-10-12. Opt-in Goal-frontier, Todo, experiment and input lineage share a typed write-time qualification across File and SQLite; stale or unrelated evidence cannot discharge the current obligation. The existing Goal capability editor and CLI own activation. This is an integrated rule, not evidence of accepted scientific results or natural-host use. |
 | Explore planning | Optional branch planners are read-only and return execution to quota, Todo, claim, and lease. |
 | Evidence in turn context | Planning-mode turn-start reads retain bounded explicit Todo/node evidence diagnostics and existing exploring frontier nodes. Linked evidence is classified before detail truncation: all findings and relevant edges in the supplied projection contribute to diagnostic counts and hazards, while row details remain bounded. Turn context reports omitted detail counts from those totals. This delivers decision input, not the §11.5 adoption gate or proof of model behavior. |
 | Model behavior qualification | Real function-tool conversations can test whether a model reads an actual packet and selects a real semantic writeback. |
@@ -151,11 +152,9 @@ milestone status.
 
 | Gap | Consequence |
 |---|---|
-| No shared research write-time gate | The cold evidence codec cannot discharge or enforce a live composition obligation. |
-| No exact obligation/Todo/result lineage | A research receipt is not proof of an authorized Todo transition or accepted Goal closure. |
-| Cold shadow not adopted by hot status/frontier | The existing #3173 projection remains behavior-compatible; canonical research obligations still need M3 integration. |
-| No dismissal or deferral contract | Evidence invalidation is visible, but typed candidate retirement and resumption remain unimplemented. |
-| No experiment-result adoption gate | Negative evidence can be recorded without proving that the next bound decision used its scope, validity or uncertainty. Proposed single-experiment integration is defined in §11.5; current cold receipts do not enforce it. |
+| M3 integrated behavior lacks complete remote qualification | PR #5280 has an exact-head approved review and local File/SQLite, default-off and packaged-configuration evidence. Its final-head CI did not finish green: jobs were cancelled on merge and the Stage2c aggregate failed because its matrix result was `cancelled`. This is not a demonstrated Stage2c test failure or remote browser acceptance. The separate browser CI source-install and composer-focus PRs #6287/#6282 closed without merging; their unresolved checks remain independent of M3's local evidence. |
+| No experiment-result adoption gate | Negative evidence can be recorded without proving that the next bound decision used its scope, validity or uncertainty. Proposed single-experiment integration is defined in §11.5; merged PR #5280 does not enforce it. |
+| Execution attribution is not effect authority | An exact Todo/experiment/input receipt does not grant a task lease, effect permission or accepted Goal closure. |
 | Live qualification incomplete | Deterministic and real CLI/file-log tests establish state semantics, not model selection quality or scientific truth; no live Lark sync is qualified by projection tests. |
 | No promotion evidence for inferred combinations | Shared constraints are not known to be precise enough to trigger obligations. |
 
@@ -234,8 +233,9 @@ execution, and result into one ambiguous relation. This RFC rejects that shape.
 
 The research envelope and closure basis have an active CLI caller and the
 [versioned evidence protocol](../../reference/protocols/research-observation-v0.md).
-The action signature, shared write gate and model selection below remain design
-targets. The cold shadow does not promote them into current behavior.
+The opt-in M3 development path implements exact execution lineage and shared
+write gates and bounded retirement transitions. Model selection below
+remain design targets; the cold shadow does not activate enforcement.
 
 ### 7.1 Compose; do not mutate v0 silently
 
@@ -615,8 +615,14 @@ or infer research truth from Todo churn.
 
 #### Bind a question and the scope of its evidence
 
-For the first real caller, compose an explicit versioned Explore attachment;
-do not add unknown fields to research observation v0. Its conceptual data are:
+Ordinary scoped findings already use `explore_result_attachment_v0` or the
+existing `explore_result_from_path_delta_v0` form through
+[work writeback](../../../loopx/capabilities/explore/README.md#results-from-ordinary-work-writeback).
+Reuse that capture/replay path. The first §11.5 caller must identify which
+additional result-validity and decision-adoption facts it needs, then extend a
+registered contract only where those facts are absent; do not invent a second
+result log or add unknown fields to research observation v0. The remaining
+decision contract needs the following conceptual data:
 
 | Data | Owning meaning |
 |---|---|
@@ -625,8 +631,9 @@ do not add unknown fields to research observation v0. Its conceptual data are:
 | Result and validity | Exact provider result revision/evidence, comparison and uncertainty/guardrail assessment. Failed, missing or incomparable measurements remain distinct from valid negative evidence. |
 | Decision and adoption | Exact input/result fingerprints, existing `continue`/`no_change`/`replan` path outcome, evidence refs and bound task step or grounded successor. A repeat needs a new discriminating question or an explicit replication/uncertainty reason and budget. |
 
-This is a design inventory, not an accepted wire schema or new global enum.
-Explore owns the future TS codec/reducer; compute/capture providers adapt it
+This is a design inventory for the additional decision contract, not a claim
+that generic result capture is missing, an accepted wire schema or a new global
+enum. Explore owns its TS codec/reducer; compute/capture providers adapt it
 without a parallel decision owner. Reuse nodes, findings, `supports`/`refutes`,
 closure and input-fingerprint semantics. Compose a versioned decision
 attachment with the existing Goal path delta and Todo-bound recommendation
@@ -655,8 +662,10 @@ an unchanged measurement is not novelty. No fixed failure count forces a pivot.
    is not research evidence.
 2. Under an explicit per-Goal opt-in, project one compact pending decision for
    its bound experiment/Todo: question, incumbent, applicable exclusions,
-   uncertainty/invalidity, input/result refs and remaining budget. Building the
-   projection needs neither a full log nor a new reasoning-model call.
+   uncertainty/invalidity, input/result refs and remaining budget. Bound the
+   delivered packet without truncating its source truth. Measure source-log
+   validation, indexing and bridge costs separately; current bounded views may
+   read a complete log. Projection alone needs no additional reasoning call.
 3. The normal admitted Agent decides. Continuing is legal if it states what
    new information the next probe should obtain and why the exclusion does not
    already answer it. A pivot names the changed question/mechanism and its
@@ -677,6 +686,39 @@ Binding is not proof of quality. Operational validity, new research information,
 native outcome improvement and Goal acceptance are separate observations. A
 useful negative result can be delivery without a score gain; a series of
 negative experiments must still expose changed knowledge and remaining frontier.
+
+Progressive evidence access already has a production writeback consumer: the
+current source replays declared Explore result pages before admitting omitted
+finding references. Reuse the page/basis and recovery rules in
+[Stride §7.6](hierarchical-agent-stride-control-v0.md#76-research-scope-and-evidence-conditioned-control);
+do not define a second pagination or adoption receipt here. Page eligibility,
+explicit delegated-result use and actual model adoption establish different
+facts. Qualify the sequence **provider result → current source readback →
+admitted work → attributable artifact → independent outcome → next review**.
+Exercise unavailable sources, valid but inapplicable findings, scoped negative
+evidence and results that support continuing the incumbent. Copying a finding
+or filling an evidence reference is insufficient; a justified no-change decision
+remains legal. Inspect omitted counterevidence and measure source scan, sort,
+hash, serialization and delivered context separately as history grows.
+
+#### Choose investigation by the decision it can change
+
+Initial uncertainty, a new opportunity, explicit user direction or counterevidence
+can justify exploration; repeated failure is neither required nor an automatic
+method-switch rule. Name the question, unchanged constraints, discriminating
+evidence, budget and stopping condition before selecting a source-reading,
+external-research or experiment workflow. These are ordinary work choices, not
+a new skill router or a mandatory sequence of skills. Parallel branches require
+distinct useful questions and existing capacity/authority.
+
+A skill report or child completion is candidate evidence. Retain sources,
+applicability, tested revision and unresolved contradictions through capture;
+do not infer findings by parsing arbitrary report prose. The next admitted
+decision may adopt, defer, repeat with a scoped reason or retain the incumbent.
+Record the exact task/step or result relationship through existing owners and
+inspect actual work before claiming adoption. No-change can be a useful result;
+ordinary work without a reusable finding needs no empty attachment. Capture,
+model use, independent outcome and full cost are separate qualification rows.
 
 #### Smallest usable path and qualification
 
@@ -714,6 +756,46 @@ unjustified replay/renaming, over-retirement, changed inputs reopening a scope,
 valid same-family probes and default-off parity. Then independently qualify
 model adoption and scientific utility under matched total budgets. Lower
 control cost must not come from hiding useful negative evidence.
+
+### 11.6 Research scope review at the shared replan boundary
+
+See the [execution, exploration and correction integration guide](../long-running-execution-exploration-and-correction.md)
+for selecting a research method, returning evidence through the existing Explore
+attachment, and qualifying its effect on subsequent work. It reuses this RFC's
+owners without making exploration mandatory for ordinary execution.
+
+The [stride control loop](hierarchical-agent-stride-control-v0.md#76-research-scope-and-evidence-conditioned-control)
+complements result adoption. It asks whether the next experiment should change
+the mechanism, the validation coverage, or the uncertainty being resolved.
+More correct tests and more named hypotheses cannot establish broader research.
+Native/provider outcomes, noise and headroom remain domain evidence, not kernel
+classifications. In-scope method changes do not require a new user gate; task,
+acceptance, permission, feedback and budget changes retain their existing owners.
+
+The bounded source prerequisite reuses accepted `goal_path_delta_v0` decisions
+and subsequent typed progress in `replan_context.decision_followthrough`, delivered
+at the existing review entry. It adds no mandatory Explore attachment or capture,
+works independently of Explore activation, and cannot satisfy or discharge any
+extra obligation. Progress is recorded evidence, never an execution/adoption or
+scientific novelty verdict. §11.5's opt-in result-adoption gate and composition
+lineage are still separate, unqualified work.
+
+The Agent should preserve the qualified incumbent, identify the unexplained
+goal gap and compare a discriminating alternative with continuation or justified
+replication. Bind the chosen probe's prediction, adoption criterion and cost to
+normal task/Vision continuation, then examine actual candidate execution and
+result at the next review. A changed input can reopen a scoped negative finding;
+unchanged conditions need a reason to repeat. No elapsed-hour or losing-score
+rule forces a pivot or retires a family.
+
+Qualify this intervention through the [same-state continuation study](hierarchical-agent-stride-control-v0.md#77-research-state-branching-and-matched-continuation),
+retaining conversation, negative evidence, code/incumbent and feedback
+opportunities. Measure whether the next probe resolves an uncertainty and its
+result enters an adopted artifact, then compare native outcomes and full cost.
+Session opening, path writeback and context delivery are prerequisite facts,
+not research effectiveness. Keep automatic ranking/enforcement default-off
+until the scoped profile qualifies; neither this input slice nor a blog claim
+closes M3/M4.
 
 ## 12. Write-Time Enforcement
 
@@ -912,14 +994,38 @@ stable release, stable scheduler/harness, matched starting state, repeated arms,
 declared stopping rules, and separation between model variance and
 control-plane failures.
 
+### Research episodes and human-readable progress (proposed)
+
+The [benchmark measurement refinement](long-horizon-harness-benchmark-research-program-v0.md#evidence-based-episode-evaluation-proposed-refinement)
+defines a proposed analysis unit across Turns and separates native outcomes,
+information, discrimination, actual adoption, repetition, costs and coverage.
+Episode grouping and semantic judge output remain read-only annotations: they
+cannot create legal Explore edges, close a composition gap, accept an experiment,
+change a runnable frontier or discharge a replan obligation. Reuse the existing
+typed evidence/relationship and result-adoption owners in §7 and §11.5.
+
+Missing metadata or a subsequent adoption opportunity remains unknown, not
+negative progress. A supported negative result can narrow a specific next
+experiment without ruling out an entire method family. Source-version checks
+and observed receiver adoption are separate facts; neither time adjacency nor
+a summary supplies a causal link. Product receives only authorized safe
+projections; hidden evaluator analysis requires both solver termination and
+completed scoring and never becomes solver feedback.
+
+The [product reading journey](../../product/use-cases/auto-research/long-horizon-progress-design.md)
+reuses the Goal/Live Team presentation owners. Scientific segmentation and judge
+calibration, packaged evidence reading, and comprehension each need their own
+acceptance. This design advances none of the implementation milestones below
+and adds no automatic evaluation, intervention, graph authority or study cells.
+
 ## 16. Milestones
 
 | Milestone | Deliverable | Promotion gate | Status |
 |---|---|---|---|
 | M0 | RFC, current-state inventory, and explicit ownership decision | Maintainer review; no runtime behavior | Accepted design |
 | M1 | Characterization fixtures plus typed research observation and closure contract in Explore | Deterministic normalization, privacy, compatibility, and negative tests | Implemented evidence/CLI slice; live research qualification remains separate |
-| M2 | Explicit-only composition candidate, canonical gap projection, and read-only status shadow | No pairwise inference; bounded packet; projection parity | Partial: #3173 legacy quota/successor; canonical binary cold shadow in CLI/Lark projection; hot status adoption and live Lark qualification remain |
-| M3 | Goal-frontier obligation, exact Todo/experiment lineage, shared write-time gate; proposed §11.5 single-experiment result/adoption prerequisite | State/replay matrix, real provider/state readback, default-off parity and packaged journey before enforcement | Not started; §11.5 is a design proposal, not delivered runtime |
+| M2 | Explicit-only composition candidate, canonical gap projection, and read-only status shadow | No pairwise inference; bounded packet; projection parity | #3173 legacy quota/successor and canonical binary cold shadow in CLI/Lark projection; hot status/frontier adoption shipped with M3, while live Lark qualification remains |
+| M3 | Goal-frontier obligation, exact Todo/experiment lineage, shared write-time gate; proposed §11.5 single-experiment result/adoption prerequisite | State/replay matrix, real provider/state readback, default-off parity and packaged journey before enforcement | Explicit-only gate merged in #5280 at `1e6cae19f` with exact-head approved review. Integrated-source local checks passed: 67 focused Python, 37 focused TypeScript, control-plane typecheck, packaged Explore configuration journey and 19/19 risk canaries. The final-head CI was cancelled/failed as described in §5.2, so remote and installed-host acceptance remain unproven. §11.5 result adoption is still a proposal, not delivered runtime. |
 | M4 | Bounded multi-candidate cards, `composition_selection_v0`, real model-tool behavior qualification, and repeated live shadow | Model autonomously selects a legal semantic action from the delivered candidate set; selection quality is no worse than the declared fallback; compact receipts only | Not started |
 | M5 | Shared-constraint candidate ranking in shadow mode | Precision and cost evidence; no automatic trigger | Not started |
 | M6 | Optional inferred trigger | Explicit maintainer decision and measured promotion thresholds | Deferred |
@@ -935,8 +1041,8 @@ The M1/M2 evidence slice delivers:
 - characterize the current Explore projection before changing it;
 - prove public safety, canonical identity, and bounded projection;
 - show candidates and gaps in Explore summary and existing Lark node projections;
-  preserve #3173 quota behavior. Hot status adoption remains part of M3's common
-  frontier integration, with independent qualification before any promotion.
+  preserve #3173 quota behavior. The merged M3 gate now shares the live frontier
+  with status; remote and natural-host readback remain separate qualification.
 
 Validation uses `tests/control_plane_ts/explore_research.test.ts`,
 `tests/capabilities/test_explore_research_evidence.py` and the existing
@@ -945,14 +1051,40 @@ terminal coverage, attribution, replay, invalidated inputs, stale experiment
 lineage and real CLI/file-log readback. Projection tests do not establish live
 remote effects or model-selected research behavior. Delivery is tracked in
 [#5214](https://github.com/loopx-project/loopx/issues/5214), now closed. Its closure
-does not supply missing live/M3 qualification. Remaining research direction is
+does not supply missing live M3 qualification. Remaining research direction is
 tracked by [#4391](https://github.com/loopx-project/loopx/issues/4391) and
 [#3243](https://github.com/loopx-project/loopx/issues/3243); preserve the explicit
 milestone gaps here rather than create a parallel task tree.
 
-M3 is the first behavior-changing slice. It should be a separate PR so the
-obligation and write gate can be reviewed and reverted independently from the
-evidence schema.
+M3 was the first behavior-changing slice. PR #5280 kept the obligation and
+write gate separately reviewable and reversible from the evidence schema.
+
+The M3 development boundary joins current same-agent Todo, experiment and input
+facts in the typed Explore owner. Goal policy is explicitly scoped and disabled
+by default; the existing capability editor and CLI share its configuration
+owner. Quota and refresh reuse one live frontier, with the original duty pinned
+through scalar rollout fields and both receipt adapters. Real CLI tests reject
+unrelated/deferred successors and invalidated writeback, then settle the original
+Turn through its exact successor. File/SQLite tests distinguish canonical Todos
+from stale display rows; packaged UI checks exercise policy preview, activation,
+disable, readback and narrow screens. Native actor/lease and CAS admission remain in force; a fixed IO host
+locks the graph while the typed owner qualifies and persists completion evidence.
+Real File/SQLite and legacy tests cover missing evidence, direct IPC self-approval,
+terminal-verb bypass, retained archive lineage and immutable completion replay.
+Agent-scoped status, Explore and existing Lark Summary fields use the same live
+facts. Typed candidate dismissal permits scoped terminal retirement; a fresh
+canonical blocker and common Todo resume condition defer the gap without closing
+it. Real CLI validates exact observed/dismissed/blocked progress source through
+the original Turn, with independent File/SQLite lease-safe wait/resume evidence.
+Invalidated input/scope/activation produces source-qualified retirement for the
+original duty. Common readback retains its guard and historical debit, closes
+that Turn without spend, and keeps the current frontier and runnable/paused work
+visible. IO assembly stays in existing CLI/refresh composition roots; the shared
+gate consumes supplied capability facts and the typed owner remains singular.
+The local state/replay matrix and 19 standard risk-selected premerge checks pass.
+Two existing scheduler ACK tests fail identically on the unchanged base under the
+same local runtime; this is retained as a baseline limitation, not called green.
+Maintainer-reviewed integration and independent live qualification remain.
 
 ## 17. Rejected Alternatives
 

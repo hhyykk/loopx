@@ -36,17 +36,22 @@ deferred atomicity limit are specified in the versioned
 
 ## Install
 
-Requirements are Node.js 22.19+, `pnpm`, Python 3.11+ with `pip`, and network
-access for the first DSH start when no compatible LoopX CLI is already
-installed. LoopX itself is deliberately not a prerequisite. The initializer
+Requirements are stable Node.js 22.22.3+ (excluding Node.js 23), `pnpm`,
+Python 3.11+ with `pip`, and network access for the first DSH start when no
+compatible LoopX CLI is already installed. LoopX itself is deliberately not a
+prerequisite. The initializer
 honors an explicit `PYTHON_BIN`; otherwise it tries `python3`, then discovers
-`python3.<minor>` executables on the supplied `PATH` in descending numeric order.
-Installation still checks the Python version and pip; reopening the managed
-runtime uses the same discovery and validates the LoopX CLI. No hard-coded
-minor-version list is maintained. When selecting Python for installation, an
-invalid explicit interpreter fails instead of falling back. Managed-runtime
-readback keeps the existing CLI fallback behavior. If the plugin must install
-or upgrade LoopX, it writes an isolated
+`python3.<minor>` executables on the supplied `PATH` in descending numeric
+order, then tries the bare name `python`. The last name is what a python.org
+Windows install registers, so it keeps that host reachable when `python3` is
+absent or is the `WindowsApps` App Execution Alias that never starts Python.
+Unlike the versioned names it is not a `PATH` scan result; it is resolved when
+the candidate runs. Installation still checks the Python version and pip;
+reopening the managed runtime uses the same discovery and validates the LoopX
+CLI. No hard-coded minor-version list is maintained. When selecting Python for
+installation, an invalid explicit interpreter fails instead of falling back.
+Managed-runtime readback keeps the existing CLI fallback behavior. If the
+plugin must install or upgrade LoopX, it writes an isolated
 copy under `$DSH_AGENTS_HOME/runtime/dsh-loopx-plugin` (default
 `~/.agents/runtime/dsh-loopx-plugin`) and never mutates the system Python
 environment. This works with externally managed Python distributions that
@@ -77,9 +82,10 @@ cd packages/dsh-loopx-plugin
 
 Start DSH on loopback (port `0` asks the OS for a free port) and open the
 printed URL. The plugin finishes its idempotent LoopX CLI and skill bootstrap
-before DSH publishes the Web URL. Its typed `loopxBootstrap` service gates the
-Web server and runtime rows until startup has either succeeded or failed
-safely:
+before DSH publishes the Web URL through its native Loader readiness boundary.
+The source candidate gates only LoopX's Host and Driver on `loopxBootstrap`,
+so disabling or uninstalling it keeps the shared Web server and runtime alive.
+The published beta.6 limitation is described under automatic initialization:
 
 ```bash
 dsh --profile web --port 0
@@ -122,7 +128,10 @@ pnpm smoke:docker
 The runtime smoke creates an isolated temporary DSH profile. Its real web
 process proves profile composition, automatic initialization before readiness,
 immediate skill-catalog visibility, boot-manifest discovery, bundle serving,
-Client materialization, and the loopback Connection fence. Separately, a
+Client materialization, and the loopback Connection fence. A
+live-disable probe withdraws the bootstrap provider and all package rows while
+checking that DSH stays available and LoopX's route retires; a fresh process
+also boots with the whole package disabled. Separately, a
 packed supported-DSH Context, Connection, and WebServer with a live Host Session fixture
 cover same-turn binding discovery, lease-time source reconciliation,
 status-only updates, pending-watch cancellation, successful actions, and
@@ -144,16 +153,19 @@ never opens a browser or configures a model provider.
 
 ## Maintainer release and marketplace handoff
 
-A DSH plugin release needs an immutable prebuilt GitHub asset, a qualified
-marketplace install channel, and an update pull request against the upstream
+A DSH plugin release needs an immutable prebuilt GitHub asset and a qualified
+install channel in each marketplace named in its closeout. The
 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-marketplace. Marketplace maintainers retain merge authority; publishing a
-LoopX release does not grant authority over that catalog. Released DSH Hub
-[v1.4.14](https://github.com/dshplugin/dsh-plugin-hub/releases/tag/v1.4.14) supports
-pinned GitHub release packages, so this route does not require publishing the
-LoopX plugin on npm. Its installed-state matcher still needs
-[Hub PR #98](https://github.com/dshplugin/dsh-plugin-hub/pull/98) to be merged
-and released. Qualification must read the online catalog back, select the
+directory and [DSH Plugin Hub](https://github.com/dshplugin/dsh-plugin-hub)
+have distinct published catalogs. Current Hub releases read
+`https://api.dsh-plugin.org/plugins.en.json` and `plugins.zh.json`; updating
+the awesome directory does not update those consumers. Marketplace maintainers
+retain authority over their own catalogs.
+
+Pinned GitHub release installation does not require publishing LoopX on npm.
+Release-URL installed-state matching shipped in
+[Hub 1.5.0](https://github.com/dshplugin/dsh-plugin-hub/releases/tag/v1.5.0).
+Qualification must read the actual marketplace's catalog back, select the
 pinned package, install it, recognize the installed row, update it and remove
 it successfully. The optional npm channel retains its separate account and
 trusted-publisher requirements.
@@ -200,15 +212,19 @@ For every DSH plugin release:
    The workflow requires a merged tag, consumes its GitHub asset without
    rebuilding, and verifies npm bytes and discovery. It neither creates a
    GitHub release nor replaces npm account ownership or the release guide gate.
-5. In a clean fork branch of `awesome-dsh-plugin`, update only
+5. For the awesome directory, in a clean fork branch of `awesome-dsh-plugin`, update only
    `data/plugins/loopx-project__loopx--packages-dsh-loopx-plugin.yml` to the new
    immutable asset URL. Confirm the URL resolves, then run
    `node scripts/generate-readme.mjs --check` and `git diff --check`.
-6. Open an upstream marketplace pull request and link it from the release
-   closeout. Do not describe the release as marketplace-published until that
-   pull request is merged by the upstream maintainers and the installed
-   marketplace resolves the released package. A catalog listing alone does
-   not prove that its installer consumes the pinned release command.
+6. Open the upstream directory pull request and link it from the release
+   closeout. Separately verify the installed Hub's catalog source at the
+   released Hub revision. Read both language feeds and the website's install
+   command; for the LoopX row, check the `ic` and `igc` targets against the
+   immutable release URL. Route stale Hub metadata to its existing
+   [data-correction issue channel](https://github.com/dshplugin/dsh-plugin-hub/issues).
+   Keep that marketplace's adoption open until its actual consumer resolves
+   and installs the released package. A merged directory PR, another catalog's
+   listing, or an upgraded Hub cannot establish that postcondition.
 
 ## Shadow observer (default off)
 
@@ -264,6 +280,92 @@ This is an experimental adapter implementing the RFC's P0 prototype
 components. It does not establish the RFC's P0 exit: C0 fidelity, a qualifying
 C1 run, and measured observer overhead remain separate evidence gates.
 
+## Optional native operation context (SDK prerequisite)
+
+The independently loaded `dsh-loopx-plugin/native-operation-context` subpath
+registers one read-only model tool, `loopx_operation_context`. It is absent from
+the default plugin tree and `cordis.patch.yml`; installing the package does not
+activate it. An explicit SDK Loader patch can load the built module:
+
+```yaml
+- insert:
+    - id: loopx-native-operation-context
+      name: file:///absolute/path/to/dsh-loopx-plugin/lib/native-operation-context.js
+```
+
+The tool accepts `{}` only. It derives the calling live session and open Turn
+from DSH's agent and session-projection services; caller-supplied identities,
+closed Turns, cancelled calls and disposed or shadowed tool registrations fail.
+Only provider, model and reasoning-effort options are returned. Other agent
+options, including credentials, are excluded. Profile options are observations,
+not HTTP wire attestation; `wire_profile_verified` and `execution_allowed` are
+always `false`. This module creates no Core actor, grant, binding, approval or
+account access, and consumes no approval.
+
+The initial runtime qualification uses the Python SDK and bundled DSH
+`0.1.5rc1`: a real native tool call returned the matching SDK session and open
+Turn. This does not qualify other DSH versions or the complete managed operation
+journey. From a source checkout, build and verify registration using an
+interpreter with the selected `deepseek-harness` SDK installed:
+
+```bash
+pnpm --dir packages/dsh-loopx-plugin build
+"$SDK_PYTHON" packages/dsh-loopx-plugin/smoke/dsh-native-context-sdk-smoke.py \
+  --module packages/dsh-loopx-plugin/lib/native-operation-context.js \
+  --provider deepseek-official --model deepseek-flash
+```
+
+This smoke initializes the real SDK with an isolated temporary home and dummy
+credentials, checks the runtime's schema registration, and makes zero model
+requests. It does not execute a Turn or test financial operations. Remove the
+explicit Loader row to disable the module, then restart the owning SDK runtime;
+the default plugin tree remains unchanged. Existing active sessions must be
+closed by their owner rather than treated as revoked by editing a patch file.
+
+The read-only module alone delivers no frontend or Lark operation path.
+
+## Optional owned SDK operation connection
+
+`dsh-loopx-plugin/native-operation` is a separate, explicit Loader module for
+the internal `OwnedDshOperationHost`. It registers `loopx_operation` with an
+absolute, parent-owned Unix socket supplied by the host; it is absent from the
+default exports and patch. Installing the package grants no execution access.
+
+The host retains the original SDK stdio connection across separately admitted
+Turns. Kernel peer PID, native session/Turn/call ID, exact native arguments and
+the observed provider/model/effort must match before dispatch to the existing
+Core operation handler. The existing Turn session file and typed operation
+store own profile binding, revocation, approval, first consumption and outcome;
+there is no second approval store or public actor/proof/consume endpoint.
+Changing the module/package JS, model profile or session requires fresh
+admission and approval. Transport loss never permits an automatic effect retry.
+
+The real SDK/bundled runtime `0.1.5rc1` qualifies two Turns on one retained
+connection with a scripted loopback provider: prepare, reject before approval,
+fixture confirmation, inspect, one permitted consumption, rejected repeat and
+canonical `not_executed` outcome. Synthetic confirmation is not human approval;
+no venue/account effect or paid model call is involved. The read-only real-model
+probe above and this integrated synthetic-provider test prove different stages.
+
+SDK `0.1.5rc1` cannot reload persisted sessions (`session already exists`);
+a new host still refuses that version's resume before runtime launch.
+An isolated candidate uses Python SDK `0.2.1a3`, built with the official wheel
+script from [upstream source `2fbf4359`](https://github.com/deepseek-ai/deepseek-harness/tree/2fbf4359b82fb94c03dcce0b831660d87f12ea5c),
+and an explicit `runtime_bin` pointing to npm `@deepseek-ai/dsh@0.2.1-alpha.3`.
+The SDK's public `resume_session` restores the same persisted identity without
+sending input. The host pins SDK files, the executable/Node and complete npm
+closure into the immutable profile; changes require fresh admission/approval.
+File/SQLite tests close the first process, restore the original session and
+repeat the operation sequence. Missing or unreadable history refuses without
+a provider call, replacement binding or reusable failed client. This candidate
+does not qualify the default plugin's peer range or a published Python release.
+
+Public CLI/delegation activation, frontend/Lark original-card return and actual
+financial execution remain unqualified. The public managed-operation preflight
+remains Codex-only until those entry points are integrated. Disable by omitting this explicit
+module and closing its owned host; do not interpret patch removal as revoking
+an already running process.
+
 ## GoalBar authority and privacy boundary
 
 The GoalBar carrier uses Connection's authenticated `/api/loopx.goalbar`
@@ -290,12 +392,18 @@ does not change LoopX core state by itself.
 
 When DSH loads the plugin, the init row runs the same typed initialization
 routine and publishes the `loopxBootstrap` readiness service only after it
-settles. The plugin's profile patch makes DSH's Web server and runtime depend
-on that service, so the printed URL is a real bootstrap boundary. A safe
-failure is logged without raw subprocess output or local paths, releases the
-Web rows instead of stopping DSH, and leaves `/loopx-init` registered for an
-explicit retry. Automatic startup does not create Agent followups or model
-calls.
+settles. DSH's native Loader wait keeps the printed URL behind initialization;
+the service is a dependency only of LoopX's Host and Driver. A safe failure is
+logged without raw subprocess output or local paths and leaves `/loopx-init`
+registered for an explicit retry. Disabling the package leaves LoopX's
+rows unavailable while DSH remains usable. Removing the package's
+rows releases its routes without stopping the shared Web server or runtime.
+Automatic startup does not create Agent followups or model calls.
+
+The host-isolation repair in this source is pending a new plugin release.
+Published beta.6 still adds the shared Web dependency and can disconnect DSH
+during hot uninstall, including with Hub 1.6.4. For that published package,
+close DSH, remove it with the native plugin CLI, then restart DSH.
 
 The repair command has no arguments. Extra input returns a usage error before any
 model work or CLI probe. A valid invocation queues a bounded start followup on

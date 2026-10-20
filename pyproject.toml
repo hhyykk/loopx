@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopx"
-version = "1.3.1"
+version = "2.0.0"
 description = "A Loop Engineering control plane for long-running agent goals (requires Node.js 22.22.3+)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,14 +24,32 @@ Changelog = "https://github.com/loopx-project/loopx/releases"
 
 [project.optional-dependencies]
 ego-source-reader = [
-  "mcp==1.28.1",
+  "mcp==1.30.0",
+]
+public-source-reader = [
+  "mcp==1.30.0",
+  "resvg-py==0.5.0",
+  "defusedxml==0.7.1",
+  "pillow>=11,<13",
 ]
 deepseek-harness = [
   "deepseek-harness-sdk==0.1.5rc1",
 ]
-test = [
+# Selected unit tests only; integration, lint and full-suite validation use test.
+test-core = [
+  "distlib>=0.3.9,<1; sys_platform == 'win32'",
   "jsonschema>=4.23,<5",
-  "mcp==1.28.1",
+  "pyyaml>=6,<7",
+  "pytest>=9.0.3,<10",
+]
+test = [
+  "distlib>=0.3.9,<1; sys_platform == 'win32'",
+  "docker==7.2.0",
+  "resvg-py==0.5.0",
+  "defusedxml==0.7.1",
+  "pillow>=11,<13",
+  "jsonschema>=4.23,<5",
+  "mcp==1.30.0",
   "pyyaml>=6,<7",
   "types-jsonschema>=4.23,<5",
   "pytest>=9.0.3,<10",
@@ -52,15 +70,19 @@ loopx-openviking-semantic-preference = "loopx.extensions.openviking_semantic_pre
 [tool.setuptools.packages.find]
 include = ["loopx*"]
 
+[tool.setuptools.exclude-package-data]
+"loopx.semantics" = ["project_registry_io_manifest_v1.json"]
+
 [tool.setuptools.package-data]
 "loopx" = ["web/chat/*.html", "web/chat/*.json", "web/chat/assets/*", "web/chat/manifest.webmanifest", "web/chat/pwa/*"]
 "loopx.control_plane" = ["*.json", "*.ts", "presentation/*.ts"]
 "loopx.semantics" = ["*.json"]
 "loopx.control_plane.agents" = ["*.ts"]
 "loopx.control_plane.capabilities" = ["*.ts"]
-"loopx.control_plane.collaboration" = ["*.ts"]
+"loopx.control_plane.collaboration" = ["*.ts", "*.json"]
 "loopx.control_plane.coordination" = ["*.ts", "*.json"]
 "loopx.control_plane.goals" = ["*.ts"]
+"loopx.control_plane.goals.goal_frontier" = ["*.ts"]
 "loopx.control_plane.quota" = ["*.ts"]
 "loopx.control_plane.runtime" = ["*.ts"]
 "loopx.control_plane.scheduler" = ["*.ts"]
@@ -69,6 +91,7 @@ include = ["loopx*"]
 "loopx.control_plane.work_items" = ["*.ts"]
 "*" = ["README.md", "README.zh-CN.md", "docs/*.md", "docs/protocols/*.md"]
 "loopx.capabilities.content_ops" = ["templates/*.json", "experiences/*.json"]
+"loopx.capabilities.pr_review_queue" = ["experiences/*/*/*.json", "experiences/*.md"]
 "loopx.capabilities.manager_context" = ["skills/loopx-manager/SKILL.md"]
 "loopx.extensions.lark" = ["extension.toml", "README.md", "docs/*.md"]
 "loopx.extensions.openviking_periodic_report" = ["extension.toml"]
@@ -78,6 +101,7 @@ include = ["loopx*"]
 "loopx.opencode2_goal_mode" = ["*.mjs", "README.md"]
 "loopx.pi_goal_mode" = ["*.ts", "*.mjs", "README.md"]
 "loopx.kunluncode_goal_mode" = ["README.md"]
+"loopx.zcode_goal_mode" = ["README.md", "*.ts", "contract.json", "images/*.png"]
 
 [tool.setuptools.data-files]
 "share/loopx/skills/loopx-material" = [
@@ -104,6 +128,15 @@ include = ["loopx*"]
 "share/loopx/skills/loopx-project" = [
   "skills/loopx-project/SKILL.md",
   "skills/loopx-project/.loopx-skill-scope",
+]
+"share/loopx/skills/loopx-project/references" = [
+  "skills/loopx-project/references/start-and-connect.md",
+  "skills/loopx-project/references/installation-and-diagnosis.md",
+  "skills/loopx-project/references/autonomous-execution.md",
+  "skills/loopx-project/references/outcome-refinement.md",
+  "skills/loopx-project/references/heartbeat-hosts.md",
+  "skills/loopx-project/references/handoff-and-feedback.md",
+  "skills/loopx-project/references/materials-explore-quality.md",
 ]
 "share/loopx/skills/loopx-project/agents" = [
   "skills/loopx-project/agents/openai.yaml",
@@ -157,13 +190,13 @@ include = ["loopx*"]
 ]
 "share/loopx/skills/loopx-self-repair/scripts" = [
   "skills/loopx-self-repair/scripts/find_pattern.py",
-  "loopx/lexical_retrieval.py",
+  "loopx/capabilities/context_providers/lexical_retrieval.py",
 ]
 
 [tool.pytest.ini_options]
 markers = ["stage2c_e2e: real process Stage 2C correctness and recovery acceptance"]
-# Private snapshots are not source tests; optional provider tests run in ark-turn.yml.
-norecursedirs = [".local", "deprecate", "packages/loopx-ark-turn"]
+# Private snapshots and packaging copies are not source tests; optional provider tests run in ark-turn.yml.
+norecursedirs = [".local", "build", "dist", "deprecate", "packages/loopx-ark-turn"]
 
 [tool.coverage.run]
 source = ["loopx"]
@@ -185,8 +218,6 @@ files = [
   "loopx/control_plane/testing/authority_e2e_fixtures.py",
   "loopx/control_plane/testing/authority_e2e_ladder.py",
   "loopx/control_plane/testing/authority_e2e_row_support.py",
-  "loopx/control_plane/testing/authority_e2e_rows_stage2c.py",
-  "loopx/control_plane/testing/authority_e2e_rows_stage2c2.py",
   "loopx/control_plane/work_items/delivery_batch_scale.py",
   "loopx/control_plane/work_items/delivery_outcome.py",
   "loopx/control_plane/work_items/lifecycle.py",

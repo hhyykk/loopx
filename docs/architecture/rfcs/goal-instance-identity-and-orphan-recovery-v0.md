@@ -47,6 +47,26 @@ Goal authorities. This RFC does not approve automatic cleanup of every
 external provider, automatic candidate selection, or direct mutation of
 orphan state by ordinary bootstrap.
 
+### Post-merge recovery integration (2026-10-16)
+
+[#6396](https://github.com/loopx-project/loopx/pull/6396) retires ordinary legacy
+source writers in the 2.0 tree. It does not mechanically exclude installed old
+binaries, global routes or warm executors, and does not lift this RFC's activation
+hold. Continue [#5206](https://github.com/loopx-project/loopx/issues/5206)'s
+remaining binding-owner inventory, commit fences and external-effect drain;
+reuse delivered codec/source-session/quota owners instead of restarting them.
+
+Coordinate only the exercised local profile with complete-recovery M2/M3 and
+[R5](loopx-overall-roadmap-v0.md#post-6396-delivery-plan). Goal lifetime, provider
+incarnation, execution/session generation and lease epoch remain distinct.
+Freeze replacement continuity versus a new lifetime through the Goal owner,
+then prove that old A cannot write, deliver, debit or settle same-alias B after
+recovery. M4 orphan resolution keeps its preview/backup/journal/retry boundary;
+M5 adds the real product/peer result and original-route return only after the
+profile's M2/M3 fences pass. Component fixtures may precede activation but
+cannot certify it. Ordinary supported creation/collaboration need not wait for
+all service profiles; this checkpoint grants no activation or recovery authority.
+
 ## 2. Problem and motivation
 
 Today one `goal_id` serves as both a display name and a durable identity. A
@@ -150,6 +170,13 @@ transactions and a production I/O census. It reads legacy objects and strict
 `goal_instance_v1`. It does **not** mint, compare or enforce Goal instances.
 Therefore a codec-capable but identity-unaware binary is part of the old-writer
 population; the original object-root-only argument is insufficient.
+
+The census is now computed from current tracked sources by the existing semantic
+premerge smoke. Only reviewed direct-I/O classifications are versioned in
+`loopx/semantics/project_registry_io_classifications_v1.json`; call coordinates
+and codec sites are derived. This preserves the M0 codec-boundary check while
+removing snapshot churn. Unclassified direct I/O and stale classifications still
+fail; see [source validation](../../development/testing-and-quality.md#local-validation-environment--本地验证环境).
 
 The project registry owns configuration and source identity; the global registry
 is a host-local route projection. Canonical coordination already has typed TS

@@ -8,8 +8,8 @@ from the complete tracked tree on each run, never loaded from a report file.
 Vocabulary changes, forks and registry weakening remain checked; ordinary
 carrier edits require no generated snapshot commit. Only tracked sources are
 read, and no private data is printed. The project-registry I/O census is also
-checked through its own tracked-product source policy so moved or unclassified
-sites fail premerge.
+computed through its own tracked-product source policy. Unclassified direct
+I/O and stale reviewed classifications fail premerge; moved sites need no export.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from loopx.semantics.field_use import (  # noqa: E402
     FACTS, ROLES, field_use_summary, lexical_module_count, render_field_uses, scan_field_uses,
 )
 from loopx.semantics.project_registry_io import (  # noqa: E402
-    PROJECT_REGISTRY_IO_MANIFEST, validate_project_registry_io_manifest,
+    validate_project_registry_io_manifest,
 )
 from scripts.generate_semantic_bindings import build_artifacts  # noqa: E402
 from loopx.canary.maintainability_ratchet import evaluate_maintainability_findings  # noqa: E402
@@ -191,8 +191,8 @@ FORMAL_CANDIDATE_DECISIONS = {
 # anchor. A `<=` comparison would let every tightening below the anchor be undone
 # silently; that is the gap the anchor exists to close.
 COVERAGE_ANCHOR = {
-    "vocabularies": 26,
-    "owner_symbols": 51,
+    "vocabularies": 28,
+    "owner_symbols": 54,
     "literal_scan_fields": 1,
     "projections": 1,
     "relations": 9,
@@ -202,6 +202,7 @@ COVERAGE_SUFFIX_ANCHOR = (".py", ".ts")
 LITERAL_SCAN_ROOTS = ["loopx"]
 # Input producers with an executable witness in loopx.semantics.production.
 INPUT_PRODUCER_ANCHOR = {
+    "effective_action": "loopx/control_plane/quota/run_decision.ts::resolveQuotaRunDecision",
     "turn_result_kind": "loopx/control_plane/turn_driver/transaction.py::_result_kind",
     "loop_disposition": "loopx/control_plane/turn_driver/loop_controller.py::decide_loop_disposition",
     # The settlement binding kind is decided inside the TypeScript builder, so
@@ -210,14 +211,13 @@ INPUT_PRODUCER_ANCHOR = {
 }
 PRODUCER_VOCABULARY_ANCHOR = {
     "effective_action", "turn_route", "loop_disposition", "agent_scope_frontier_action", "turn_result_kind",
-    # First cross-runtime vocabulary carrying executed production evidence. One
-    # named boundary, not a claim about the rest of the cross-runtime set.
+    # Executed evidence is bound to named entrypoints, not every cross-runtime producer.
     "settlement_binding_kind",
 }
 RETURN_PRODUCER_ANCHOR = {
     "turn_route": {"loopx/control_plane/turn_driver/driver.py::_typed_route", "loopx/control_plane/turn_driver/loop_controller.py::_envelope_route", "loopx/control_plane/turn_driver/driver.py::build_loopx_turn_plan"},
     "loop_disposition": {"loopx/control_plane/turn_driver/turn_contract_generated.py::project_turn_route"},
-    "effective_action": {"loopx/control_plane/quota/decision_summary.py::quota_effective_action", "loopx/control_plane/quota/decision_summary.py::_task_orchestration_effective_action"},
+    "effective_action": {"loopx/control_plane/quota/run_decision.ts::quotaEffectiveAction", "loopx/control_plane/quota/run_decision.ts::taskOrchestrationEffectiveAction"},
     "turn_result_kind": {"loopx/control_plane/turn_driver/executor.py::_task_validation_receipt"},
 }
 # Reviewed output arguments/paths replace the old any-enum-use heuristic. These
@@ -231,7 +231,7 @@ CALL_PRODUCER_ANCHOR = {
     },
 }
 RETURN_PATH_ANCHOR = {
-    "effective_action": {"loopx/control_plane/quota/decision_summary.py::_task_orchestration_effective_action": [0]},
+    "effective_action": {"loopx/control_plane/quota/run_decision.ts::taskOrchestrationEffectiveAction": [0]},
     "turn_route": {"loopx/control_plane/turn_driver/driver.py::build_loopx_turn_plan": ["route", "kind"]},
     "turn_result_kind": {"loopx/control_plane/turn_driver/executor.py::_task_validation_receipt": ["recovery_kind"]},
 }
@@ -1172,15 +1172,10 @@ def main() -> int:
     coverage = check_coverage_floor(registry)
     sources = load_sources(REPO_ROOT)
     check_retired_lease_input(registry, sources)
-    registry_io_manifest = json.loads(
-        (REPO_ROOT / PROJECT_REGISTRY_IO_MANIFEST).read_text(encoding="utf-8")
-    )
-    registry_io_errors = validate_project_registry_io_manifest(
-        REPO_ROOT, registry_io_manifest,
-    )
+    registry_io_errors = validate_project_registry_io_manifest(REPO_ROOT)
     require(not registry_io_errors, "; ".join(registry_io_errors)
-            + "; regenerate with uv run python scripts/generate_project_registry_io_manifest.py "
-            "and review any direct-I/O classifications")
+            + "; inspect with uv run python scripts/generate_project_registry_io_manifest.py "
+            "and review direct-I/O classifications in project_registry_io_classifications_v1.json")
     inventory, ratchets = check_inventory(registry, sources)
     check_owned_vocabularies(registry, inventory)
     for path, expected in build_artifacts().items():

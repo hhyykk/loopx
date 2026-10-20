@@ -67,7 +67,7 @@ def _obligation() -> dict[str, object]:
     )
 
 
-def _quota_payload(*, include_legacy_receipt: bool = False) -> dict[str, object]:
+def _quota_payload(*, include_legacy_receipt: bool = False, stride_strategy: str = "off") -> dict[str, object]:
     obligation = _obligation()
     item_extra: dict[str, object] = {
         "autonomous_replan_obligation": obligation,
@@ -103,7 +103,8 @@ def _quota_payload(*, include_legacy_receipt: bool = False) -> dict[str, object]
             }
         ],
         item_extra=item_extra,
-        project_asset_extra={"autonomous_replan_obligation": obligation},
+        project_asset_extra={"autonomous_replan_obligation": obligation,
+            **({"execution_profile": {"stride_strategy": stride_strategy, "replan_after_effective_turns": 6}} if stride_strategy != "off" else {})},
     )
     return build_quota_should_run(
         status_payload,
@@ -131,7 +132,7 @@ def test_quota_delivers_coverage_context_and_minimal_replan_action() -> None:
         "delivered_by": "quota_host_projection",
     }
     assert context["coverage_ledger"][0]["surface_id"] == "surface-existing"
-    assert len(action["planning_guidance"]) == 3
+    assert len(action["planning_guidance"]) == 5
     assert {key: value for key, value in action.items() if key != "planning_guidance"} == {
         "schema_version": "replan_action_packet_v0",
         "decision": "replan_required",
@@ -218,7 +219,7 @@ def test_replan_guidance_survives_cli_and_host_compaction_without_new_authority(
               if vision_gap else _quota_payload())
     guidance = source["replan_action_packet"]["planning_guidance"]
     # These are delivery assertions, not a claim that a model follows the advice.
-    assert len(guidance) == 3
+    assert len(guidance) == 5
     assert "Never shrink requested goals" in guidance[0]
     assert "honor user scope, authority, budget and stops" in guidance[0]
     assert "current authoritative evidence for every requirement" in guidance[1]
@@ -228,6 +229,21 @@ def test_replan_guidance_survives_cli_and_host_compaction_without_new_authority(
     assert "continue or replan without waiting for an assigned successor" in guidance[2]
     assert "An empty Todo queue is not a scope limit" in guidance[2]
     assert "do not invent work, exceed authority or consume budget merely to stay active" in guidance[2]
+    assert "requested priorities and optimization direction" in guidance[3]
+    assert "user requirements and hard constraints" in guidance[3]
+    assert "provisional agent-created candidate rules" in guidance[3]
+    assert "Do not relax frozen acceptance, authority, budget or stops" in guidance[3]
+    assert "or rewrite criteria after failure" in guidance[3]
+    assert "Compare expected goal/information gain with full marginal cost" in guidance[4]
+    assert "executed path and current artifact" in guidance[4]
+    assert "probe that distinguishes remaining explanations" in guidance[4]
+    assert "scope negative results to tested conditions and local proxies to their coverage" in guidance[4]
+    assert "Reuse still-applicable evidence" in guidance[4]
+    assert "Correct within the affected work first" in guidance[4]
+    assert "goal, path, dependency or acceptance evidence" in guidance[4]
+    assert "A due review can retain the path" in guidance[4]
+    assert "subsequent work and authoritative outcomes" in guidance[4]
+    assert "neither adoption nor improvement" in guidance[4]
     compact = compact_quota_should_run_cli_payload(source)
     envelope = build_turn_envelope(source)
     for packet in (compact, envelope):
@@ -242,10 +258,33 @@ def test_replan_guidance_survives_cli_and_host_compaction_without_new_authority(
     assert turn_envelope_action_signature_document(envelope) == signature
     signature["replan_action_packet"].pop("planning_guidance")
     assert signature == quota_action_signature_document(baseline)
-    # Preserve an existing budget warning; cap the total decision advice,
-    # including the unmet-acceptance review, at 800 bytes.
+    # Preserve the existing 8 KiB envelope warning, including the already-large
+    # vision fixture. The five advice clauses now cost 1,772 bytes on both
+    # fixtures (363 text bytes added for local correction/followthrough). This is a
+    # bounded advice allocation, not permission to truncate authority or raise
+    # the envelope/transport/compute budget.
     assert envelope["compaction"]["within_budget"] == old_envelope["compaction"]["within_budget"]
     assert (envelope["compaction"]["envelope_json_bytes"]
-            - old_envelope["compaction"]["envelope_json_bytes"]) <= 800
+            - old_envelope["compaction"]["envelope_json_bytes"]) <= 1800
     envelope["replan_action_packet"].pop("planning_guidance")
     assert envelope["replan_action_packet"] == old_envelope["replan_action_packet"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_outer_explore_reader_runs_only_for_enabled_replan_context(monkeypatch, enabled):
+    from loopx.capabilities.explore import turn_context
+
+    calls = []
+    def read_source(**kwargs):
+        calls.append(kwargs)
+        return {"ok": False, "goal_id": GOAL_ID, "agent_id": AGENT_ID}
+
+    monkeypatch.setattr(turn_context, "read_replan_explore_context", read_source)
+    result = _quota_payload(stride_strategy="evidence_conditioned_v1" if enabled else "off")
+    assert result["replan_action_packet"]
+    assert len(calls) == int(enabled)
+    if enabled:
+        assert calls[0]["goal_id"] == GOAL_ID and calls[0]["agent_id"] == AGENT_ID
+        assert result["replan_action_packet"]["stride_control"]["explore_basis"]["availability"] == "unavailable"
+    else:
+        assert "stride_control" not in result["replan_action_packet"]

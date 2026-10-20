@@ -87,7 +87,7 @@ def test_context_high_water_warns_without_losing_scope_reads_or_legal_route():
     assert baseline["compaction"]["within_budget"] is True
     source["interaction_contract"]["agent_context"] = context()
     envelope = build_turn_envelope(source)
-    assert envelope["agent_context"]["detail_ref"]
+    assert envelope["agent_context"] == source["interaction_contract"]["agent_context"]
     assert envelope["boundary"]["write_scope"] == scopes
     metric = envelope["compaction"]
     assert metric["within_budget"] is False

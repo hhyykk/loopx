@@ -35,7 +35,7 @@ def test_history_contract_errors_are_not_empty_results():
             replan_history_from_status(status, "evidence-goal")
 
 
-def test_projection_rejects_invalid_typed_records_and_redacts_prose():
+def test_projection_rejects_invalid_typed_records_and_preserves_scoped_prose():
     for invalid in [None, {}, {"schema_version": "future"}]:
         with pytest.raises(ValueError):
             project_replan_context(goal_id="evidence-goal", agent_id="agent-a",
@@ -46,8 +46,74 @@ def test_projection_rejects_invalid_typed_records_and_redacts_prose():
               _run(agent_id="agent-b", health_check="other Agent detail")],
     )
     assert len(context["evidence"]) == 1
-    assert "private-value" not in json.dumps(context)
+    assert "access_key=private-value" in context["evidence"][0]["summary"]
     assert "other Agent detail" not in json.dumps(context)
+
+
+@pytest.mark.parametrize("source", ["active_state", "registry"])
+@pytest.mark.parametrize("stride_strategy", ["off", "evidence_conditioned_v1"])
+@pytest.mark.parametrize("objective", [
+    "Read /home/runner/work/task.md and meet its acceptance criteria.",
+    "Optimize the accepted result. Write test inputs to /tmp/task-seeds.txt.",
+])
+def test_goal_and_evidence_paths_survive_scoped_replan(
+    tmp_path: Path, source: str, stride_strategy: str, objective: str,
+) -> None:
+    project, runtime = tmp_path / "project", tmp_path / "runtime"
+    project.mkdir()
+    state = project / "ACTIVE_GOAL_STATE.md"
+    state.write_text(f"# Goal\n\n## Objective\n{objective}\n")
+    goal = {"id": "evidence-goal", "repo": str(project),
+            "status": "active-read-only", "domain": "fixture", "objective": objective}
+    if source == "active_state":
+        goal.update(state_file=state.name, objective="Older registered objective")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"common_runtime_root": str(runtime), "goals": [goal]}))
+    index = runtime / "goals/evidence-goal/runs/index.jsonl"
+    index.parent.mkdir(parents=True)
+    index.write_text(json.dumps(_run(health_check="Read /home/runner/private/result.json",
+                                    recommended_action="access_key=synthetic-secret")) + "\n")
+
+    context = project_replan_context(
+        goal_id="evidence-goal", agent_id="agent-a", runs=(),
+        source_status={"registry": str(registry), "runtime_root": str(runtime),
+                       "run_history": {"runs": []}},
+        stride_strategy=stride_strategy,
+    )
+    assert context["core_goal"]["objective"] == objective
+    assert context["core_goal"]["objective_source"] == source
+    assert context["core_goal"]["objective_missing"] is False
+    evidence = json.dumps(context["evidence"])
+    assert "/home/runner/private/result.json" in evidence
+    assert "synthetic-secret" in evidence
+    from loopx.control_plane.runtime.public_safety import public_safe_compact_text
+    assert public_safe_compact_text(objective) is None
+    assert public_safe_compact_text("access_key=synthetic-secret") is None
+
+
+def test_scoped_goal_keeps_original_text_without_public_filtering(tmp_path: Path) -> None:
+    from loopx.control_plane.work_items.replan_context_codec import goal_context_facts
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"goals": [{"id": "evidence-goal",
+        "objective": "Inspect access_key=synthetic-secret before continuing."}]}))
+    facts = goal_context_facts({"registry": str(registry)}, "evidence-goal", None)
+    assert facts["registry_objective"] == "Inspect access_key=synthetic-secret before continuing."
+
+
+def test_scoped_evidence_preserves_complete_multiline_source_and_readback() -> None:
+    observation = ("Read /home/runner/work/results.json.\n" + "observed detail " * 80
+                   + "\nTail constraint: preserve the original acceptance threshold.")
+    action = "Use access_key=synthetic-secret only in the authorized local fixture."
+    runs = [_run(health_check=observation, recommended_action=action)]
+    context = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=runs)
+    evidence = context["evidence"][0]
+    assert observation in evidence["summary"]
+    assert action in evidence["summary"]
+    readback = project_replan_context(goal_id="evidence-goal", agent_id="agent-a",
+                                      runs=runs, evidence_ref=evidence["evidence_ref"])
+    assert readback["evidence"]["health_check"] == observation
+    assert readback["evidence"]["recommended_action"] == action
 
 
 def test_real_history_reads_the_projected_reference_and_rejects_stale_scope(tmp_path: Path):
@@ -105,7 +171,7 @@ def test_old_evidence_survives_display_limit_and_core_goal_uses_registered_state
     context = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=(),
         source_status={"registry": str(registry), "runtime_root": str(runtime), "run_history": {
             "goals": [{"id": "evidence-goal", "latest_runs": newer[-3:]}]}},
-        goal_acceptance_contract={"enabled": True, "scope": {"kind": "selected_work", "todo_ids": ["new-work"]},
+        goal_acceptance_contract={"criteria": [], "scope": {"kind": "selected_work", "todo_ids": ["new-work"]},
                                   "objective": "Validate only the new route"})
     assert context["from_full_index"] is True
     assert context["evidence_count"] == 181
@@ -167,13 +233,16 @@ def test_generated_omitted_read_recovers_full_agent_history_before_limit(tmp_pat
     assert not (runtime / "goals/evidence-goal/rollout-event-log.jsonl").exists()
 
 
-def test_truncated_display_cannot_make_an_old_blocker_new():
+@pytest.mark.parametrize("count", [40, 12000])
+def test_truncated_display_cannot_make_an_old_blocker_new(count):
+    from datetime import datetime, timedelta, timezone
     from loopx.control_plane.work_items.progress_observation import semantic_delta_from_writeback
 
-    rows = [_run(generated_at=f"2026-08-19T01:{i:02}:00Z", progress_observation={
+    start = datetime(2026, 8, 19, 1, tzinfo=timezone.utc)
+    rows = [_run(generated_at=(start + timedelta(seconds=i)).isoformat(), progress_observation={
         "schema_version": "typed_progress_observation_v0", "result_class": "blocked",
         "blocker_id": f"blocker-{i}", "evidence_ids": [f"proof-{i}"],
-    }) for i in range(40)]
+    }) for i in range(count)]
     obligation = {"obligation_id": "replan-a", "triggers": [{"kind": "typed_progress_repeat"}],
                   "progress_baseline": rows[-1]["progress_observation"]}
     obligation["replan_context"] = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=rows, obligation=obligation)
@@ -192,6 +261,116 @@ def test_dense_context_uses_shared_private_snapshot_transport(monkeypatch):
     expected = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=[_run()])
     monkeypatch.setattr(replan_history_codec, "MAX_REQUEST_BYTES", 1)
     assert project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=[_run()]) == expected
+
+
+def _settled_pair():
+    identity = {"schema_version": "quota_settlement_identity_v0", "goal_id": "evidence-goal",
+        "agent_id": "agent-a", "todo_id": "todo-a", "turn_instance_id": "turn-a", "effect_id": "settlement-a"}
+    work = _run(**{key: identity[key] for key in ("todo_id", "turn_instance_id")},
+        settlement_identity=identity, recommended_action="Retain the negative finding and try the next route.",
+        progress_observation={"schema_version": "typed_progress_observation_v0",
+            "result_class": "unchanged", "surface_id": "surface-a", "work_item_id": "todo-a"})
+    accounting = {key: value for key, value in work.items() if key != "progress_observation"}
+    accounting.update(classification="quota_slot_spent", generated_at="2026-08-18T01:00:01Z",
+        quota_spend_commit={"schema_version": "quota_spend_commit_receipt_v0",
+            "effect_id": "settlement-a#quota_spend"})
+    return work, accounting
+
+
+def test_matched_accounting_keeps_new_health_and_all_published_references(tmp_path):
+    work, accounting = _settled_pair()
+    # Obtain references through the original codec shape. Identity facts must not
+    # alter a published row's digest, even after the display can reduce repetition.
+    legacy = [{key: value for key, value in row.items()
+        if key not in ("settlement_identity", "quota_spend_commit", "turn_instance_id")}
+        for row in (work, accounting)]
+    old = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=legacy)
+    reduced = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=[work, accounting])
+    assert len(reduced["evidence"]) == 1
+    assert reduced["coverage_ledger"] == old["coverage_ledger"]
+    assert reduced["evidence_count"] == old["evidence_count"] == 2
+    # Different health is independent evidence, including failures: retain its
+    # complete summary while removing only the already shown continuation.
+    warning = {**accounting, "health_check": "The storage validation failed; repair before continuing."}
+    retained = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=[work, warning])
+    assert len(retained["evidence"]) == 2
+    assert retained["evidence"][0]["summary"] == warning["health_check"]
+    assert retained["evidence"][1]["summary"].endswith(work["recommended_action"])
+    runtime, registry = tmp_path / "runtime", tmp_path / "registry.json"
+    registry.write_text(json.dumps({"common_runtime_root": str(runtime), "goals": [{
+        "id": "evidence-goal", "status": "active-read-only", "domain": "fixture"}]}))
+    index = runtime / "goals/evidence-goal/runs/index.jsonl"
+    index.parent.mkdir(parents=True)
+    source = "".join(json.dumps(row) + "\n" for row in (work, accounting))
+    index.write_text(source)
+    for row in old["evidence"]:
+        result = subprocess.run([sys.executable, "-m", "loopx.cli", "--registry", str(registry),
+            "--runtime-root", str(runtime), "--format", "json", "history", "--goal-id", "evidence-goal",
+            "--agent-id", "agent-a", "--evidence-ref", row["evidence_ref"]], capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(result.stdout)["evidence"]["recommended_action"] == work["recommended_action"]
+    assert index.read_text() == source
+
+
+@pytest.mark.parametrize("change", [
+    {"settlement_identity": None}, {"quota_spend_commit": None}, {"turn_instance_id": "turn-b"},
+    {"quota_spend_commit": {"schema_version": "future", "effect_id": "settlement-a#quota_spend"}},
+    {"quota_spend_commit": {"schema_version": "quota_spend_commit_receipt_v0", "effect_id": "other#quota_spend"}},
+    {"classification": "future_accounting"}, {"recommended_action": "Keep an additional obligation."},
+    {"delivery_outcome": "outcome_failure"},
+])
+def test_unproven_or_different_accounting_preserves_full_context(change):
+    work, accounting = _settled_pair()
+    accounting.update(change)
+    with_identity = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=[work, accounting])
+    legacy = [{key: value for key, value in row.items()
+        if key not in ("settlement_identity", "quota_spend_commit", "turn_instance_id")}
+        for row in (work, accounting)]
+    assert with_identity == project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=legacy)
+
+
+def test_complete_continuation_text_distinguishes_tails_and_snapshot_parity(monkeypatch):
+    from loopx.control_plane.work_items import replan_history_codec
+    work, accounting = _settled_pair()
+    work["recommended_action"] = "Retain the accepted requirement. " * 20 + " Tail A."
+    accounting["recommended_action"] = work["recommended_action"][:-2] + "B."
+    context = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=[work, accounting])
+    assert len(context["evidence"]) == 2
+    summaries = [row["summary"] for row in context["evidence"]]
+    assert summaries[0] != summaries[1]
+    assert any(summary.endswith("Tail A.") for summary in summaries)
+    assert any(summary.endswith("Tail B.") for summary in summaries)
+    monkeypatch.setattr(replan_history_codec, "MAX_REQUEST_BYTES", 1)
+    assert project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=[work, accounting]) == context
+
+
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
+def test_real_quota_cli_preserves_the_replan_obligation_while_reducing_accounting(tmp_path, monkeypatch, provider):
+    from test_replan_successor_guard_reentry import _fixture, _guard, GOAL, AGENT
+
+    call, runtime, index = _fixture(tmp_path, monkeypatch, provider)
+    work, accounting = _settled_pair()
+    for row in (work, accounting):
+        row.update(goal_id=GOAL, agent_id=AGENT)
+        row["settlement_identity"] = {**row["settlement_identity"], "goal_id": GOAL, "agent_id": AGENT}
+    # Keep the fixture's existing required-vision evidence. This changes only
+    # metadata in the disposable read model, never an active authority store.
+    prior = index.read_text()
+    legacy = [{key: value for key, value in row.items()
+        if key not in ("settlement_identity", "quota_spend_commit", "turn_instance_id")}
+        for row in (work, accounting)]
+    index.write_text(prior + "".join(json.dumps(row) + "\n" for row in legacy))
+    before = _guard(call, "turn-accounting-before")["autonomous_replan_obligation"]
+    index.write_text(prior + "".join(json.dumps(row) + "\n" for row in (work, accounting)))
+    source = index.read_bytes()
+    after = _guard(call, "turn-accounting-after")["autonomous_replan_obligation"]
+    assert after["obligation_id"] == before["obligation_id"]
+    assert after["triggers"] == before["triggers"]
+    left, right = before["replan_context"], after["replan_context"]
+    for key in ("core_goal", "coverage_ledger", "uncovered_frontier", "evidence_count"):
+        assert right[key] == left[key]
+    assert len(right["evidence"]) == len(left["evidence"]) - 1
+    assert index.read_bytes() == source
 
 
 def test_unscoped_replan_assignment_ignores_evidence_and_presentation_changes():

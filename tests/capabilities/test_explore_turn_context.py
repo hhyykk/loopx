@@ -23,6 +23,9 @@ from loopx.control_plane.effect_runtime import (
     effect_runtime_result,
     EffectRuntimeRejected,
 )
+from loopx.control_plane.coordination.goal_storage_initialization import (
+    initialize_goal_storage_target,
+)
 from loopx.explore_graph import compact_explore_graph_policy
 from loopx.todos import add_goal_todo
 
@@ -38,10 +41,18 @@ def registry(tmp_path, *, graph=False, planning=False):
                 "goals": [
                     {
                         "id": "research",
+                        "creation_operation_id": "goal-create:research",
                         "status": "active",
                         "repo": str(tmp_path),
                         "state_file": "goal.md",
-                        "coordination": {"registered_agents": ["worker"]},
+                        "coordination": {
+                            "registered_agents": ["worker"],
+                            "storage_target": {
+                                "schema_version": "loopx_new_goal_storage_target_v1",
+                                "provider": "file",
+                                "handoff_mode": "soft_claim",
+                            },
+                        },
                         "explore_graph": {"enabled": graph},
                         "spawn_policy": {
                             "allowed": False,
@@ -52,6 +63,14 @@ def registry(tmp_path, *, graph=False, planning=False):
             }
         )
     )
+    goal = json.loads(path.read_text(encoding="utf-8"))["goals"][0]
+    initialized = initialize_goal_storage_target(
+        tmp_path / "runtime",
+        goal,
+        registry_path=path,
+    )
+    assert initialized["authority_initialized"] is True
+    assert initialized["legacy_fallback_used"] is False
     return path
 
 
@@ -543,6 +562,34 @@ def test_turn_context_audit_count_compatibility(counts, omitted):
     assert len(result["findings"]) == 3
 
 
+def test_turn_context_preserves_wait_conditions_and_total_omissions():
+    from loopx.capabilities.explore.todo_branch_plan import build_explore_todo_branch_plan
+
+    plan = build_explore_todo_branch_plan(
+        goal_id="research", agent_id="worker", width=3,
+        orchestration={"explore_harness": {"enabled": True}},
+        todos=[{
+            "todo_id": f"todo_waiting_{index}", "text": "Use the prepared artifact",
+            "status": "open", "task_class": "advancement_task", "priority": "P0",
+            "resume_when": "todo_done:todo_prepare", "resume_ready": False,
+        } for index in range(12)],
+    )
+    packet = effect_runtime_result("explore.turn_context", {
+        "goal_id": "research", "agent_id": "worker", "route": ["loopx"],
+        "harness_gate": {"enabled": True}, "graph_enabled": False,
+        "projection": {}, "plan": plan,
+    })
+    context = packet["harness"]
+    assert context["selected_branches"] == []
+    assert len(context["rejected_candidates"]) == 3
+    assert context["omitted_rejected_candidates"] == 9
+    for row in context["rejected_candidates"]:
+        assert row["actionable_open"] is False
+        assert row["resume_ready"] is False
+        assert row["resume_when"] == "todo_done:todo_prepare"
+    assert "todo-branch-plan" in context["plan_command"]
+
+
 @pytest.mark.parametrize("kind", ["findings", "edges"])
 def test_turn_context_rejects_negative_evidence_count(kind):
     with pytest.raises(EffectRuntimeRejected, match=f"Explore {kind} count must be nonnegative") as rejected:
@@ -555,3 +602,66 @@ def test_turn_context_rejects_negative_evidence_count(kind):
         })
     assert rejected.value.error_kind == "request_rejected"
     assert rejected.value.diagnostic_code == "invalid_request"
+
+
+def test_many_durable_refs_keep_bounded_audit_and_full_cold_read(tmp_path):
+    path = registry(tmp_path, planning=True)
+    refs = [f"unknown-{i}" for i in range(40)]
+    add_goal_todo(registry_path=path, goal_id="research", role="agent",
+                  text="Inspect unresolved evidence", claimed_by="worker",
+                  explore_result_node_refs=refs)
+    packet = explore_turn_context(registry_path=path, runtime_root=tmp_path / "runtime",
+                                  goal_id="research", agent_id="worker")
+    audit = packet["harness"]["selected_branches"][0]["typed_evidence_audit"]
+    for field in ("requested_node_refs", "unknown_node_refs"):
+        assert audit[field] == refs[:8]
+        assert audit[f"omitted_{field}"] == 32
+    assert "unknown_result_node_ref" in audit["hazards"]
+    # Follow the actual full-audit command carried by the compact packet.
+    command = packet["harness"]["plan_command"]
+    result = subprocess.run([sys.executable, "-m", "loopx.cli", *command[1:]],
+                            capture_output=True, text=True, check=True)
+    full = json.loads(result.stdout)["selected_branches"][0]["typed_evidence_audit"]
+    assert full["requested_node_refs"] == full["unknown_node_refs"] == refs
+    assert full["score_delta"] == 0
+
+def test_optional_finding_digests_bind_full_scoped_evidence_without_changing_default_view(tmp_path):
+    path = registry(tmp_path, graph=True, planning=True)
+    root = tmp_path / "runtime"
+    log = explore_result_log_path(root, "research")
+    append_explore_result_event(log, build_explore_node_event(
+        goal_id="research", agent_id="worker", node_id="route",
+        title="Candidate route", status="open"))
+    append_explore_result_event(log, build_explore_finding_event(
+        goal_id="research", agent_id="worker", node_id="route",
+        finding_id="counterexample", title="Scoped result", status="refuted", summary="Inputs A only."))
+    args = dict(registry_path=path, runtime_root=root, goal_id="research", agent_id="worker")
+    ordinary = explore_turn_context(**args)
+    with pytest.raises(ValueError, match="explicit boolean"):
+        explore_turn_context(**args, include_finding_digests="false")
+    assert explore_turn_context(**args, include_finding_digests=False) == ordinary
+    qualified = explore_turn_context(**args, include_finding_digests=True)
+    first = qualified["graph"]["recent_findings"][0]["source_sha256"]
+    assert len(first) == 64 and "source_sha256" not in ordinary["graph"]["recent_findings"][0]
+    append_explore_result_event(log, build_explore_finding_event(
+        goal_id="research", agent_id="worker", node_id="route", finding_id="counterexample",
+        title="Scoped result", status="refuted", summary="Different input scope; same title/status."))
+    assert explore_turn_context(**args, include_finding_digests=True)["graph"]["recent_findings"][0]["source_sha256"] != first
+
+
+def test_replan_explore_read_reports_unavailable_source_without_empty_evidence(monkeypatch, tmp_path):
+    from loopx.capabilities.explore import turn_context
+
+    calls = []
+    def unavailable(**kwargs):
+        calls.append(kwargs)
+        raise OSError("synthetic unavailable participant")
+
+    monkeypatch.setattr(turn_context, "explore_turn_context", unavailable)
+    assert turn_context.read_replan_explore_context(source_status={}, goal_id="goal-a", agent_id="agent-a") is None
+    assert calls == []
+    result = turn_context.read_replan_explore_context(
+        source_status={"registry": str(tmp_path / "registry.json"), "runtime_root": str(tmp_path / "runtime")},
+        goal_id="goal-a", agent_id="agent-a")
+    assert result == {"ok": False, "goal_id": "goal-a", "agent_id": "agent-a"}
+    assert len(calls) == 1 and calls[0]["include_finding_digests"] is True

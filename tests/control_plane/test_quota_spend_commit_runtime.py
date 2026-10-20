@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from loopx.control_plane.quota.spend_commit import (
+    QuotaRunIndexConflict,
     build_quota_slot_spend_event,
     record_quota_slot_spend_from_preview,
 )
@@ -229,7 +230,9 @@ def test_source_spend_rejects_stale_goal_before_any_write_and_stamps_successor(
     runs_dir = runtime_root / "goals" / GOAL_ID / "runs"
     assert not (runs_dir / "index.jsonl").exists()
     assert not (runs_dir / ".transactions").exists()
-    assert not list(runs_dir.glob("*.json"))
+    # Windows lock-holder metadata is not a committed quota run.
+    assert not [path for path in runs_dir.glob("*.json")
+                if not path.name.endswith(".lock.holder.json")]
     assert not list(runs_dir.glob("*.md"))
     assert not list(tmp_path.rglob("*.ts-effect.lock"))
 
@@ -292,9 +295,9 @@ def test_spend_quota_slot_rejects_reusing_a_stale_status_snapshot(
 
     assert written["appended"] is True
     with pytest.raises(
-        ValueError,
+        QuotaRunIndexConflict,
         match="quota run index compare-and-swap precondition failed",
-    ):
+    ) as conflict:
         spend_quota_slot(
             status,
             goal_id=GOAL_ID,
@@ -302,6 +305,7 @@ def test_spend_quota_slot_rejects_reusing_a_stale_status_snapshot(
             source="controller",
             effect_ref="provider-effect-b#quota_spend",
         )
+    assert conflict.value.reason_code == "index_digest_conflict"
     index_path = Path(written["index_path"])
     assert len(index_path.read_text(encoding="utf-8").splitlines()) == 1
 

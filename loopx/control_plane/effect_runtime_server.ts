@@ -1,7 +1,6 @@
 import { writeSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { flushCompileCache } from "node:module";
-import { readFile, rm, type FileHandle } from "node:fs/promises";
+import { realpath, type FileHandle } from "node:fs/promises";
 
 import type { JsonObject } from "./effect_program.ts";
 import {
@@ -13,6 +12,7 @@ import {
   effectRuntimeErrorPayload,
 } from "./effect_runtime_errors.ts";
 import { atomicWriteJson, withFileMutationLock } from "./effect_runtime_io.ts";
+import { retireRuntime } from "./effect_runtime_compile_cache.ts";
 import { sqliteRuntimeIdentity } from "./coordination/sqlite_runtime.ts";
 import {openPrivateResponseSink, readPrivateJsonSnapshot, writePrivateResponse} from "./effect_runtime_snapshot.ts";
 import {
@@ -28,13 +28,24 @@ const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const MAX_INLINE_RESPONSE_BYTES = 2 * 1024 * 1024;
 // Explicit opt-in: ordinary effects retain the 2 MiB request/response wire.
 const LOCAL_SNAPSHOT_METHODS = new Set([
+  "collaboration.inbox.read",
+  "collaboration.delegation.inventory_page",
+  "benchmark.trajectory.codex-usage",
   "coordination.local_authority.todo_source",
+  "coordination.local_authority.todo_snapshot",
   "todo.context.page",
   "work_item.context.project",
+  "work_item.interaction_reads.project",
+  "work_item.task_graph.goal_topology",
+  "work_item.replan_semantics.project",
+  "quota.settlement.read",
   "goal.checkpoint_read_context.resolve",
   "goal.checkpoint_read_context.commit",
   "goal.checkpoint_read_context.inspect_replay",
   "performance_diagnosis.inspect",
+  "state.recovery.archive.verify",
+  "state.recovery.manifest.verify",
+  "runtime.checkpoint_artifacts",
 ]);
 const DEFAULT_IDLE_MS = 5 * 60 * 1_000;
 // Bounds for LOOPX_EFFECT_RUNTIME_IDLE_MS. The upper bound is the largest
@@ -104,6 +115,7 @@ function parseIdleMs(raw: string | undefined): number {
 }
 
 const infoPath = parseArg("--info");
+let publishedInfoPath: string | undefined;
 const fingerprint = parseArg("--fingerprint");
 const token = requiredString(process.env.LOOPX_EFFECT_RUNTIME_TOKEN, "runtime token");
 const idleMs = parseIdleMs(process.env.LOOPX_EFFECT_RUNTIME_IDLE_MS);
@@ -115,6 +127,7 @@ let resolvePublication: () => void;
 const publicationReady = new Promise<void>((resolve) => { resolvePublication = resolve; });
 const handlers = createEffectRuntimeHandlers({
   fingerprint,
+  get infoPath() { return publishedInfoPath; },
   requestShutdown: () => {
     shutdownRequested = true;
   },
@@ -269,28 +282,21 @@ server.on("close", () => {
     if (pendingRequests > 0) {
       await new Promise<void>((resolve) => { resolveDrain = resolve; });
     }
-    // Retiring the locator lets a fixture remove the private namespace. Flush
-    // compiled code first, so Node's exit does not recreate a cleaned cache.
-    // This optional optimization never decides whether shutdown is permitted.
-    flushCompileCache();
-    await withFileMutationLock(infoPath, async () => {
-      let published: Record<string, unknown>;
-      try {
-        published = JSON.parse(await readFile(infoPath, "utf8"));
-      } catch {
-        return;
-      }
-      // A timed-out client may have published a replacement server. The old
-      // server must never erase that server's locator when it finally exits.
-      if (published.token === token && published.pid === process.pid &&
-          published.fingerprint === fingerprint) {
-        await rm(infoPath, { force: true });
-      }
-    });
+    await retireRuntime({ infoPath, token, pid: process.pid, fingerprint });
   })().finally(() => process.exit(0));
 });
 
+function failListenerStartup(error: Error): never {
+  const { code } = effectRuntimeErrorPayload(error);
+  const diagnosticCode = code === "io_permission_denied"
+    ? "runtime_host_permission_denied" : code;
+  failStartup(diagnosticCode,
+    `TypeScript Effect runtime could not start its loopback listener (${diagnosticCode})`);
+}
+
+server.once("error", failListenerStartup);
 server.listen(0, "127.0.0.1", async () => {
+  server.removeListener("error", failListenerStartup);
   try {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("invalid address");
@@ -306,6 +312,10 @@ server.listen(0, "127.0.0.1", async () => {
         // serving a goal is not necessarily the one the caller resolves from PATH.
         runtime_identity: sqliteRuntimeIdentity(),
       });
+      // Freeze the native publication namespace while it exists. Test cleanup
+      // may observe it after the fixture directory was removed; a copied
+      // locator's contents cannot rewrite this authenticated boot observation.
+      publishedInfoPath = await realpath(infoPath);
     });
     publicationComplete = true;
     resolvePublication();

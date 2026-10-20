@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startViteDashboardServer } from "../dashboard-browser-smoke-support.mjs";
-import { resolveTestPython } from "../../scripts/test-python.mjs";
+import { testPythonCommand } from "../../scripts/test-python.mjs";
 
 const require = createRequire(import.meta.url);
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -145,11 +145,11 @@ function goalCapability({
   };
 }
 
-export function goalCapabilityCatalog(multiSubagentConfiguration) {
+export function goalCapabilityCatalog(multiSubagentConfiguration, rewardMemoryConfiguration) {
   return [
     goalCapability({
       capabilityId: "todo_replan_cadence",
-      displayName: "Goal review cadence",
+      displayName: "Goal review and stride",
       editorScopes: ["machine", "goal"],
       defaultConfiguration: { count_unit: "effective_turns", count: 5 },
       fields: [
@@ -172,9 +172,12 @@ export function goalCapabilityCatalog(multiSubagentConfiguration) {
     goalCapability({
       capabilityId: "explore_harness",
       displayName: "Explore Harness",
+      defaultConfiguration: { mode: "off", profile: "generic", composition_mode: "disabled", composition_scope_id: null },
       fields: [
-        { key: "enabled", label: "Enabled", description: "", input_kind: "boolean", required: false },
+        { key: "mode", label: "Exploration mode", description: "Evidence only, or evidence with planning. Spawn authority is separate.", input_kind: "select", required: false, options: ["off", "evidence", "planning"] },
         { key: "profile", label: "Planner profile", description: "", input_kind: "select", required: false, options: ["generic"] },
+        { key: "composition_mode", label: "Composition policy", description: "Replan accepts an exact experiment successor or typed result.", input_kind: "select", required: false, options: ["disabled", "explicit_only"] },
+        { key: "composition_scope_id", label: "Research coverage scope", description: "An opaque coverage scope.", input_kind: "text", required: false, nullable: true },
       ],
     }),
     goalCapability({ capabilityId: "lark_kanban_heartbeat_sync", displayName: "Lark Kanban heartbeat sync" }),
@@ -192,12 +195,31 @@ export function goalCapabilityCatalog(multiSubagentConfiguration) {
     }),
     multiSubagentCapability({ current: multiSubagentConfiguration }),
     goalCapability({ availability: "retired", capabilityId: "local_authority_shadow", displayName: "Retired authority observation", fields: [], readOnlyReason: "Clear retired observation config explicitly; bootstrap runtime shadow separately." }),
-    goalCapability({
+    {...goalCapability({
       availability: "experimental_opt_in",
       capabilityId: "reward_memory",
       displayName: "Reward Memory experiment",
-      fields: [],
+      fields: rewardMemoryConfiguration ? [
+        {key:"agent_id",label:"Agent",description:"",input_kind:"text",required:false},
+        {key:"enabled",label:"Enabled",description:"",input_kind:"boolean",required:false},
+        {key:"config_path",label:"Private config",description:"",input_kind:"text",required:false},
+        {key:"enabled_agents",label:"Shared Agents",description:"",input_kind:"string_list",required:false},
+      ] : [],
       readOnlyReason: "Requires a reviewed local-private provider binding.",
+    }), ...(rewardMemoryConfiguration ? {current:rewardMemoryConfiguration} : {})},
+    goalCapability({
+      availability: "supported_explicit_opt_in",
+      capabilityId: "decision_context",
+      displayName: "Decision evidence recall",
+      fields: [],
+      readOnlyReason: "Use an explicit private profile for temporary recall.",
+    }),
+    goalCapability({
+      availability: "supported_explicit_opt_in",
+      capabilityId: "content_ops",
+      displayName: "Content references",
+      fields: [],
+      readOnlyReason: "Read-only source catalog.",
     }),
   ];
 }
@@ -276,8 +298,7 @@ function teamPlanApplyReceipt(proposal) {
 export async function startServer() {
   if (packaged) {
     // An explicit installed interpreter must resolve its own package, not the checkout.
-    const isolation = process.env.LOOPX_PYTHON_BIN ? ["-I"] : [];
-    const server = spawn(resolveTestPython(), [...isolation, "-c", `
+    const backendCommand = testPythonCommand(`
 from pathlib import Path
 from loopx.chat_server import ChatHTTPServer, ChatRequestHandler, default_chat_assets_dir
 from loopx.presentation.chat_bundle import validate_bundle
@@ -288,7 +309,8 @@ server.assets_dir = assets
 server.verbose = False
 print("loopx-packaged-smoke-ready", flush=True)
 server.serve_forever()
-`], {
+`);
+    const server = spawn(backendCommand.command, backendCommand.args, {
       cwd: repoRoot,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -394,9 +416,9 @@ function filterStatusFixtureToScope(fixture, matchesScope) {
   }
 }
 
-export async function installApi(page, { goalSubagentConfigurationEnabled = true, initialActionProposals = [], managerChannelBinding = null, notificationProjection = null, progressiveWorkspace = false, runtimeAgents = null, userActionAttention = false, presentationApi = false } = {}) {
+export async function installApi(page, { fixturePort = port, goalSubagentConfigurationEnabled = true, initialActionProposals = [], managerChannelBinding = null, notificationProjection = null, progressiveWorkspace = false, runtimeAgents = null, userActionAttention = false, presentationApi = false } = {}) {
   let turnCounter = 0;
-  const runtime = page.__loopxRuntime ??= { actionProposals: new Map(), goalSubagentConfigurations: new Map(), larkConnections: [], messages: new Map(), sessions: new Map(), turnMessages: new Map() };
+  const runtime = page.__loopxRuntime ??= { actionProposals: new Map(), goalSubagentConfigurations: new Map(), goalExploreConfigurations: new Map(), larkConnections: [], messages: new Map(), sessions: new Map(), turnMessages: new Map() };
   const actionProposals = runtime.actionProposals;
   const sessions = runtime.sessions;
   const messages = runtime.messages;
@@ -442,7 +464,14 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
     failNextGoalSubagentResponse: false,
     failNextLifecyclePreview: false,
     failNextActionPreview: false,
+    // When set, the next action preview answers with this typed gate (409), as
+    // the real service does for a refusal that writes nothing.
+    nextActionPreviewGate: null,
     failNextStatusRequest: false,
+    /** When set, every status read answers this HTTP status until cleared: a source that cannot be projected. */
+    statusFailure: null,
+    /** When set, replaces the capabilities adapters list: the runtimes this host reports. */
+    runtimeAgentsOverride: null,
     freezeGoalSubagentStatusProjection: false,
     goalSubagentConfigurationEnabled,
     goalActivationStates: new Map([
@@ -455,6 +484,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
     goalSubagentWrites: [],
     interrupts: [],
     goalConfigurationRequests: [],
+    goalMemoryConfigurations: new Map(),
     machineConfigurationRequests: [],
     machineInspectionStatus: "configured",
     failNextMachineInspection: false,
@@ -491,13 +521,20 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
     // Applied User action outcomes, so the needs-you projection reads back like canonical status.
     userActionOutcomes: new Map(),
     hostThreadActivity: {},
+    /** Scenario hook applied to every status payload after the shared fixture rules. */
+    transformStatus: null,
+    directoryContract: null,
     answerForMessage: null,
     loopxModeRequests: [],
     get larkConnections() { return runtime.larkConnections; },
     get goalSubagentConfigurations() { return runtime.goalSubagentConfigurations; },
   };
-  await page.route(`http://127.0.0.1:${port}/status.json*`, async (route) => {
+  await page.route(`http://127.0.0.1:${fixturePort}/status.json*`, async (route) => {
     state.statusRequestCount += 1;
+    if (state.statusFailure) {
+      await route.fulfill({ contentType: "application/json", json: { ok: false, error: "LoopX status could not be projected for the workspace." }, status: state.statusFailure });
+      return;
+    }
     const requestUrl = new URL(route.request().url());
     const requestedGoalId = requestUrl.searchParams.get("goal_id");
     if (progressiveWorkspace && requestUrl.searchParams.get("view") === "workspace-directory") {
@@ -512,6 +549,8 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
         goals: [...state.goalActivationStates.entries()].map(([id, activation_state]) => ({
           activation_state, display_name: registeredNames.get(id) ?? id, id, registry_member: true,
         })),
+        // The real service states its source facts here too (a missing registry is a warning).
+        contract: state.directoryContract ?? { ok: true, summary: { errors: 0, warnings: 0, checks: 0 }, errors: [], warnings: [], checks: [] },
       }, status: 200 });
       return;
     }
@@ -558,6 +597,13 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
       });
     }
     for (const fixtureGoal of fixture.run_history.goals) {
+      if (state.registeredAgentsByGoal?.[fixtureGoal.id]) {
+        fixtureGoal.coordination = {...fixtureGoal.coordination, registered_agents: state.registeredAgentsByGoal[fixtureGoal.id]};
+      }
+      // This is the backend's provider admission projection; browser fixtures never infer hosts from names.
+      if (state.zcodeEligibleAgentsByGoal?.[fixtureGoal.id]) {
+        fixtureGoal.zcode_goal_eligible_agent_ids = state.zcodeEligibleAgentsByGoal[fixtureGoal.id];
+      }
       if (state.goalSubagentConfigurationEnabled) {
         fixtureGoal.spawn_policy = projectedSubagentConfiguration(fixtureGoal.id, fixtureGoal.spawn_policy);
       } else {
@@ -762,6 +808,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
       const goal = fixture.run_history.goals.find((item) => item.id === goalId);
       if (goal) goal.host_thread_activity = activity;
     }
+    state.transformStatus?.(fixture);
     fixture.run_history.goals = fixture.run_history.goals.filter(goal => !state.deletedGoalIds.has(goal.id));
     const goalActivationScope = new URL(route.request().url()).searchParams.get("goal_activation");
     const isActiveScope = goalActivationScope === "active";
@@ -888,14 +935,14 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
   await page.route("**/periodic-report-workspace-projection?*", async (route) => {
     await route.fulfill({ contentType: "application/json", json: { ok: true, projection: periodicReportProjection }, status: 200 });
   });
-  await page.route(`http://127.0.0.1:${port}/api/ssh-source/ensure`, async (route) => {
+  await page.route(`http://127.0.0.1:${fixturePort}/api/ssh-source/ensure`, async (route) => {
     await route.fulfill({
       contentType: "application/json",
       json: { ok: true, status_url: "http://127.0.0.1:8876/status.json", tunnel_required: true, remote_started: true },
       status: 200,
     });
   });
-  await page.route(`http://127.0.0.1:${port}/ssh-hosts`, async (route) => {
+  await page.route(`http://127.0.0.1:${fixturePort}/ssh-hosts`, async (route) => {
     await route.fulfill({
       contentType: "application/json",
       json: {
@@ -927,9 +974,27 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
       status: 200,
     });
   });
+  // Real status fixtures advertise this same-origin reader too. Keep the
+  // default empty extension inventory inside the fixture rather than reading
+  // an unrelated installed service. Research scenarios replace this route
+  // with their published surfaces or explicitly isolated native owner.
+  await page.route("**/extension-presentation-surfaces", route => route.fulfill({json: {
+    ok: true, presentation_surfaces: {
+      schema_version: "extension_presentation_surfaces_v0", count: 0,
+      ready_count: 0, review_due_count: 0, empty_count: 0, invalid_count: 0, items: [],
+    },
+  }}));
+  const sidebarOrders = new Map();
   await page.route("**/api/chat/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.pathname === "/api/chat/sidebar-goal-order") {
+      const body = request.method() === "POST" ? request.postDataJSON() : null;
+      const source = body?.source ?? url.searchParams.get("source");
+      if (body && (!body.only_if_absent || !sidebarOrders.has(source))) sidebarOrders.set(source, body.order);
+      await route.fulfill({ json: { ok: true, order: sidebarOrders.get(source) ?? null } });
+      return;
+    }
     if (url.pathname === "/api/chat/todo/detail") {
       const goalId = url.searchParams.get("goal_id");
       const todoId = url.searchParams.get("todo_id");
@@ -955,6 +1020,10 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
       });
       for (const item of items) state.todoRequestTexts.set(JSON.stringify([url.searchParams.get("goal_id"), item.todo_id]), item.text);
       await route.fulfill({ json: { ok: true, total, items, next_cursor: offset + 40 < total ? String(offset + 40) : null } });
+      return;
+    }
+    if (url.pathname === "/api/chat/explore-results") {
+      await route.fulfill({json: {ok: true, goal_id: url.searchParams.get("goal_id"), items: [], total: 0, next_cursor: null}});
       return;
     }
     if (url.pathname === "/api/chat/goal-results") {
@@ -1040,7 +1109,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
           },
           {
             namespace: "todo_replan_cadence",
-            title: "Goal review cadence",
+            title: "Goal review and stride",
             description: "Live review threshold without added turns, quota, or authority.",
             schema_versions: ["todo_replan_cadence_machine_defaults_v0", "todo_replan_cadence_machine_defaults_v1"],
             configuration_template: cadenceConfiguration,
@@ -1294,7 +1363,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
           schema_version: "capability_configuration_catalog_v0",
           capabilities: [...machineConfigurationBase.capability_catalog.capabilities.filter(
             (capability) => !capability.available_scopes.includes("goal"),
-          ), ...goalCapabilityCatalog(multiSubagentConfiguration).map((capability) => capability.capability_id === "periodic_report" ? periodicReportCapability({
+          ), ...goalCapabilityCatalog(multiSubagentConfiguration, state.goalMemoryConfigurations.get(goalId)).map((capability) => capability.capability_id === "periodic_report" ? periodicReportCapability({
               machineCurrent: periodicConfiguration,
               effectiveConfiguration: {
                 schema_version: "capability_configuration_resolution_v0",
@@ -1306,7 +1375,8 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
                 machine_default_present: true,
                 effective_revision: "sha256:periodic-effective",
               },
-            }) : capability)],
+            }) : capability.capability_id === "explore_harness" && runtime.goalExploreConfigurations.has(goalId)
+              ? { ...capability, current: runtime.goalExploreConfigurations.get(goalId) } : capability)],
         },
       }, status: 200 });
       return;
@@ -1327,6 +1397,17 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
     if (url.pathname === "/api/chat/goal-configuration/apply" && request.method() === "POST") {
       const body = request.postDataJSON();
       state.goalConfigurationRequests.push({ phase: "apply", ...body });
+      if (body.capability_id === "explore_harness") {
+        runtime.goalExploreConfigurations.set(body.goal_id, body.configuration);
+        await route.fulfill({ contentType: "application/json", json: {
+          ok: true, schema_version: "goal_configuration_transaction_v0", status: "applied",
+          goal_id: body.goal_id, capability_id: body.capability_id,
+          plan_revision: body.expected_plan_revision, applied_revision: "sha256:goal-explore-applied",
+          readback_verified: true, changed_fields: ["explore_harness"], goal_configuration: body.configuration,
+          capability_catalog: { schema_version: "capability_configuration_catalog_v0", capabilities: [] },
+        }, status: 200 });
+        return;
+      }
       if (body.capability_id === "multi_subagent") {
         runtime.goalSubagentConfigurations.set(body.goal_id, body.configuration.enabled ? {
           mode: "multi_subagent",
@@ -1389,14 +1470,23 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
       }, status: 200 });
       return;
     }
+    if (url.pathname === "/api/chat/projects" && request.method() === "GET") {
+      await route.fulfill({json: {ok: true, projects: []}});
+      return;
+    }
+    if (url.pathname === "/api/chat/lark/private-conversations" && request.method() === "GET") {
+      await route.fulfill({json: {ok: true, revision: 0, connections: [], stop_recoveries: []}});
+      return;
+    }
     if (url.pathname === "/api/chat/lark/apps") {
+      const apps = [
+        { active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true, reply_ready: true },
+        { active: true, app_ref: "mew-research", brand: "feishu", label: "LoopX Research", ready: true, reply_ready: true },
+      ].filter(app => !url.searchParams.has("app_ref") || app.app_ref === url.searchParams.get("app_ref"));
       await route.fulfill({ contentType: "application/json", json: {
-        ok: true,
-        schema_version: "loopx_lark_apps_v0",
-        apps: [
-          { active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true, reply_ready: true },
-          { active: true, app_ref: "mew-research", brand: "feishu", label: "LoopX Research", ready: true, reply_ready: true },
-        ],
+        ok: true, schema_version: "loopx_lark_apps_v0",
+        apps: apps.map(app => url.searchParams.get("verify") === "false"
+          ? {...app, ready: false, reply_ready: false, health_error_code: "lark_app_unverified"} : app),
       }, status: 200 });
       return;
     }
@@ -1422,7 +1512,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
         const existing = runtime.larkConnections.find((item) => item.connection_id === body.connection_id && item.goal_id === body.goal_id);
         if (!existing || body.app_ref || body.chat_id || body.agent_bindings) throw new Error("Editing must select the stored connection without replacing its identity");
         if (body.execute) {
-          Object.assign(existing, { turn_trigger: body.turn_trigger ?? existing.turn_trigger, agent_id: body.agent_id, ingress_mode: body.ingress_mode, capture_scope: body.capture_scope });
+          Object.assign(existing, { read_goal_scope: body.read_goal_scope ?? existing.read_goal_scope, turn_trigger: body.turn_trigger ?? existing.turn_trigger, agent_id: body.agent_id, ingress_mode: body.ingress_mode, capture_scope: body.capture_scope });
           state.larkWrites.push({ ...body });
         }
         await route.fulfill({ contentType: "application/json", json: { ok: true, status: body.execute ? "connected" : "preview_ready" }, status: 200 });
@@ -1441,6 +1531,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
             agent_id: body.conversation_kind === "manager" ? "loopx-manager" : binding.agent_id ?? null,
             conversation_kind: body.conversation_kind ?? "goal",
             turn_trigger: body.turn_trigger ?? "addressed",
+            read_goal_scope: body.read_goal_scope ?? "all_registered",
             connection_id: connectionId,
             app_label: binding.app_ref === "mew-research" ? "LoopX Research" : "LoopX Mew", app_ref: binding.app_ref, chat_name: body.chat_name, enabled: true,
             capture_scope: body.capture_scope,
@@ -1550,7 +1641,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
         ...(state.goalSubagentConfigurationEnabled ? { goal_subagent_configuration: "preview_locked" } : {}),
         goal_id: null, streaming: true, resume: true, interrupt: true, typed_actions: true,
         action_kinds: ["goal.create", "goal.lifecycle", "agent.bind", "heartbeat.bind", "monitor.create", "run.correct"],
-        adapters: [
+        adapters: state.runtimeAgentsOverride ?? [
           { agent_id: "codex", display_name: "Codex", adapter_kind: "codex_app_server", available: true, streaming: true, resume: true, interrupt: true },
           { agent_id: "claude-code", display_name: "Claude Code", adapter_kind: "claude_code_cli", available: true, streaming: true, resume: true, interrupt: true },
           { agent_id: "offline-agent", display_name: "Offline Agent", adapter_kind: "acp", available: false, streaming: false, resume: false, interrupt: false },
@@ -1644,7 +1735,13 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
         await route.fulfill({json: paused});
         return;
       }
-      if (body.operation === "read") {
+      if (body.operation === "adopt") {
+        if (body.operation_id !== "accepted-analysis" || body.consumer_operation_id !== "accepted-synthesis") {
+          return route.fulfill({status: 409, json: {error: "Fixture adoption target unavailable"}});
+        }
+        current.fixtureAdoptionState = "current";
+      }
+      if (body.operation === "read" || body.operation === "adopt") {
         if (current.fixtureTeamReadDelayMs) await new Promise(resolveWait => setTimeout(resolveWait, current.fixtureTeamReadDelayMs));
         if (current.fixtureCorrectionEpisode && body.operation_id === "original-analysis") {
           await route.fulfill({json: {ok: true, operation_id: body.operation_id, request_id: "request-original",
@@ -1679,7 +1776,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
               consumer_request_id: "request-synthesis", consumer_agent_id: "synthesizer", consumer_todo_id: "todo_synthesis",
               source_artifacts: [{ref: "report.json", sha256: "d".repeat(64)}],
               consumer_artifacts: [{ref: "synthesis.json", sha256: "e".repeat(64)},
-                ...(current.fixturePlanTodoId ? [{ref: "report.md", sha256: "8".repeat(64)}] : [])], state: current.fixtureAdoptionState}]} : {}),
+                {ref: "report.md", sha256: "8".repeat(64)}], state: current.fixtureAdoptionState}]} : {}),
             artifacts: [{ref: "report.json", sha256: "d".repeat(64),
               text: '{"cash_flow":75,"note":"<script>window.artifactExecuted=true</script>"}'},
               {ref: "report.md", sha256: "9".repeat(64), text: "# Cash allocation\n\n| Measure | Value |\n|---|---:|\n| Free cash | 75 |\n\n[Source](https://example.org/report)\n<script>window.artifactExecuted=true</script>"}]}});
@@ -1840,6 +1937,17 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
         });
         return;
       }
+      if (state.nextActionPreviewGate) {
+        const gate = state.nextActionPreviewGate;
+        state.nextActionPreviewGate = null;
+        state.actionPreviews.push({ ...body, gated: gate.kind });
+        await route.fulfill({
+          contentType: "application/json",
+          json: { ok: false, schema_version: "loopx_chat_action_preview_gate_v1", error: "This preview needs an explicit public-safe selection.", error_code: "action_preview_gate", gate, write_attempted: false },
+          status: 409,
+        });
+        return;
+      }
       if (body.action_kind === "goal.lifecycle" && state.failNextLifecyclePreview) {
         state.failNextLifecyclePreview = false;
         await route.fulfill({
@@ -1885,7 +1993,12 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
     if (apply) {
       state.actionApplies.push(apply[1]);
       if (actionKinds.get(apply[1]) === "heartbeat.bind" && !state.allowNextHeartbeatApply) {
-        await route.fulfill({ contentType: "application/json", json: { ok: false, schema_version: "loopx_chat_action_gate_v1", error: "Host activation required", error_code: "protected_action", gate: { kind: "host_activation_required", summary: "需要 Codex App 宿主创建 Heartbeat 自动化。", next_action: "确认宿主自动化后重新验证。" }, write_attempted: false }, status: 409 });
+        const gate = { kind: "host_activation_required", summary: "需要 Codex App 宿主创建 Heartbeat 自动化。", next_action: "确认宿主自动化后重新验证。" };
+        // ChatRequestHandler persists mark_gated before returning 409. Keeping
+        // preview_ready here let canonical polling erase the host gate.
+        const proposal = { ...actionProposals.get(apply[1]), status: "gated", gate, failure: null, updated_at: "2026-08-13T01:00:01Z" };
+        actionProposals.set(apply[1], proposal);
+        await route.fulfill({ contentType: "application/json", json: { ok: false, schema_version: "loopx_chat_action_gate_v1", error: "Host activation required", error_code: "protected_action", gate, proposal, write_attempted: false }, status: 409 });
         return;
       }
       if (actionKinds.get(apply[1]) === "heartbeat.bind") state.allowNextHeartbeatApply = false;

@@ -30,7 +30,7 @@ agents:
       codex_sandbox: danger-full-access
       turn_timeout_sec: null
       scheduler_timeout_sec: 5080
-      replan_after_turns: 3
+      replan_after_turns: 6
 ```
 
 For an explicitly selected **heartbeat-only** context experiment, add
@@ -44,6 +44,13 @@ and worker environment override are absent, preserving the pre-opt-in shape. Inv
 fail before execution. Set it back to `false` for the next run to roll back;
 do not change a running trial's treatment. Captures contain private Goal context.
 Transport tests do not establish lower token cost or better model decisions.
+
+Checkpoint capture is independent of this display experiment. A `fresh_replan`
+declaration may establish a private capture/handoff socket while
+`turn_envelope` remains false: the worker keeps the ordinary dispatcher and quota
+input, and only an explicit true setting selects the short view. This replaces
+the earlier implicit activation by checkpoint handoff. Do not relabel older
+receipts or trajectories as feature-off; qualify their actual input separately.
 
 | Mode | Execution/continuation | LoopX skills and state |
 | --- | --- | --- |
@@ -78,6 +85,63 @@ normalized candidate result on stdin. Missing validation fails before execution.
 The runner supplies no HEAD-moved/clean-worktree/exit-only substitute and never
 calls hidden benchmark verification to provide intermediate feedback. Independent
 validator protection remains the environment owner's responsibility.
+
+## Offline and git-less task images
+
+Task containers are often slim images without a git binary or any route to
+package registries. The LoopX install inside a trial stays offline when the
+host prepares two inputs before staging:
+
+- Build the Chat bundle once on the host with `python3 scripts/chat_bundle.py
+  ensure`. Source staging validates the prepared `loopx/web/chat` delivery
+  against its manifest and carries it into the archive, so in-container
+  installation never needs `npm ci` or a registry. Without a prepared bundle,
+  the in-container build records the staged source revision through
+  `LOOPX_RESOLVED_SOURCE_GIT_COMMIT`, which the Harbor adapter supplies from
+  the commit it verified during staging; a missing git binary takes the same
+  fallback as a failed `rev-parse`.
+- Models served through gateway aliases that the pinned Codex binary does not
+  ship in its built-in catalog get a reduced tool surface (with some binaries
+  only the bare `exec` tool), and the `web_search` setting has no effect.
+  Stage a `model-catalog.json` next to the offline Codex binary
+  (`CODEX_OFFLINE_DIR`); the installer copies it into the container and the
+  trial home references it via `model_catalog_json`. The `web_search` agent
+  kwarg then takes effect in the shared runtime (default remains `disabled`),
+  and the requested model is unchanged.
+
+  A catalog entry is **not** capability-only. Real entries can select a tool
+  mode and carry `model_messages` that become prompt content; a valid
+  `code_mode_only` entry makes the real client send `tools: []`, which is
+  strictly worse than no catalog. The renderer therefore rejects entries whose
+  `tool_mode` is set, and rejects catalogs with no entry for the requested
+  model. Because configuration cannot prove delivered tools, qualify every
+  pinned binary/catalog pair once at the first-request boundary — a local
+  stub captures the request and stops inference with a deliberate 400, so no
+  credentials or model spend are involved — and keep the receipt with the
+  study:
+
+  ```bash
+  python3 -m benchmark.runtime.toolface --codex-bin "$CODEX_OFFLINE_DIR/codex" \
+      --model <gateway-alias> --model-catalog "$CODEX_OFFLINE_DIR/model-catalog.json" \
+      --web-search live --expect web_search --expect apply_patch \
+      --receipt toolface-receipt.json
+  ```
+
+  Do not hand-write a "minimal" entry: the entry schema is internal to the
+  client and changes between versions. The pinned `codex-cli 0.151.0` refuses
+  to start without `display_name`, `model_messages`,
+  `supported_reasoning_levels`, `truncation_policy` and further
+  non-capability fields, while newer builds reject different omissions first
+  (a 0.162 alpha fails on a missing `display_name` alone) — all before any
+  HTTP request. Derive the entry instead: take a complete entry your pinned
+  binary already accepts (from its shipped catalog, or a gateway-published
+  catalog for an official model), copy it verbatim, and change only `slug`
+  to the gateway alias. The capability fields that shape the toolface
+  (`supports_search_tool`, `web_search_tool_type`, `apply_patch_tool_type`,
+  `shell_type`) are inherited from the donor entry; leave `tool_mode` unset
+  as above. Then qualify the pinned binary/catalog pair and keep the receipt
+  — a client that cannot parse the entry now fails the qualification fast
+  with its own stderr, instead of a silent timeout.
 
 ## Task entry and planning ablation
 
@@ -120,8 +184,17 @@ validates actual Todo readback. With `fresh`, each planning/execution invocation
 starts a new conversation. LoopX Goal planning uses a separate exec conversation
 because native Goal execution owns its app-server thread lifecycle. The runner
 does not claim exact equivalence to interactive `$loopx` startup.
-The default `planning_timeout_sec` is 300; planning and preparation consume the
-same `scheduler_timeout_sec` phase budget as execution. Planning sessions are
+Harbor and SForge have no independent planning timeout. Planning and execution
+share the absolute phase deadline, including native resumes. The shared worker
+uses `LOOPX_PHASE_DEADLINE_EPOCH`; Harbor derives it from the remaining
+`scheduler_timeout_sec` budget using the task environment's clock. Remove old
+non-null `planning_timeout_sec` settings, `--planning-timeout` arguments and
+`LOOPX_PLANNING_TIMEOUT_SEC` environment values: they are rejected instead of
+silently changing their meaning. A legacy `planning_timeout_sec: null` remains
+accepted. SForge still strips inherited stage-limit environment values and
+preserves its existing null receipt field for compatibility.
+Planning and preparation consume the same `scheduler_timeout_sec` phase budget
+as execution. Planning sessions are
 included in native session/token aggregation. No planning checkpoint is counted
 as a completed advancement Todo or settled work Turn.
 
@@ -146,7 +219,6 @@ effort, tools, feedback and total budget fixed, and use separate trials:
 kwargs:
   execution_mode: heartbeat
   task_entry: loopx-planned
-  planning_timeout_sec: 300
   iteration_context: fresh
   turn_timeout_sec: null
   scheduler_timeout_sec: 5080
@@ -168,7 +240,9 @@ Also set `CODEX_OFFLINE_DIR` (Codex, code-mode sidecar, rg),
 artifacts. The host import must come from that checkout, whose tracked files
 must match HEAD. Commit the candidate before real validation. Baselines stage only
 the runner/native transport, without installing LoopX skills or initializing
-its state. LoopX modes use the formal installer and doctor readback.
+its state. Best-only plain workers also stage the configured portable Python for
+the delivery hook, without installing LoopX. LoopX modes use the formal installer
+and doctor readback.
 
 Supply `OPENAI_BASE_URL`, `OPENAI_API_KEY` and optionally `CODEX_WIRE_API`
 (default `responses`), or stage standard Codex authentication using
@@ -259,24 +333,42 @@ ordinary scheduler's quota, claim, blocker or settlement checks. Retain receipts
 and native sessions when comparing planning cost; no active attempt is changed
 by selecting this option for a new run.
 
+New planned-entry prompts expose the Host's existing time limits alongside the
+unchanged product planning packet. SForge supplies the absolute phase deadline
+and observed remaining time, shared by planning and execution, including the
+worker's existing startup/settlement reserve and the work window before it. Harbor's separate
+planning invocation limit is labeled as a stage cap; it must not be mistaken for
+the whole task budget. The observation ages as planning proceeds and does not
+refill time, change startup/settlement reserves, or grant execution authority.
+This changes planning context for new planned-entry runs. Task identity, Todo
+readback and runtime timeout enforcement retain their existing owners; seeded
+entry and execution wakes are unchanged. Record the runner revision when comparing
+plans. Delivery of the time information does not prove that a model uses it or
+improves task outcomes.
+
 
 ### Default effective-Turn cadence
 
 Harbor LoopX modes (`heartbeat`, `turn`, `loopx-goal`) default to
-`replan_after_turns: 3`; native EdgeBench `heartbeat-resume` and
-`heartbeat-explore` default to `--replan-after-turns 3`. This passes the existing Goal option
+`replan_after_turns: 6`; native EdgeBench `heartbeat-resume` and
+`heartbeat-explore` default to `--replan-after-turns 6`. This passes the existing Goal option
 `--execution-replan-after-turns` and verifies the persisted
 `replan_after_effective_turns` value before execution. The shared TypeScript
 control plane still owns which settled work Turns count; adapters do not count
 records or completed Todos themselves.
 
-Omitting both cadence options now selects three effective work Turns instead
-of three completed Todos. Idle wakes, tool calls and the planning checkpoint do
+Omitting both cadence options selects six effective work Turns, matching the
+product default. The previous benchmark default was three effective work Turns;
+the previous product default was five. Explicit settings retain their values.
+Idle wakes, tool calls and the planning checkpoint do
 not count as effective work Turns; this is a deterministic threshold rather than
 a per-wake probability, and other replan triggers can act sooner.
-To retain the old cadence in a new trial, pass `replan_after_todos: 3` in Harbor
-or `--replan-after-todos 3` in EdgeBench. Explicit Turn/Todo settings are mutually
-exclusive and accept counts from one through five. Resolved runtime and worker
+To retain the previous benchmark default in a new trial, pass
+`replan_after_turns: 3` in Harbor or `--replan-after-turns 3` in EdgeBench.
+For completed-Todo cadence, use `replan_after_todos` / `--replan-after-todos`.
+Explicit Turn/Todo settings are mutually
+exclusive; effective-Turn counts accept one through six and completed-Todo counts
+accept one through five. Resolved runtime and worker
 receipts name the selected unit even when no flag was supplied. Non-LoopX
 profiles retain their existing behavior. No active attempt, task, scoring, feedback,
 spawn permission, or total-budget change is implied.

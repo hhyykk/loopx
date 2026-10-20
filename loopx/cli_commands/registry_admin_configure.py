@@ -3,6 +3,14 @@ from __future__ import annotations
 import argparse
 
 from ..execution_profile import TURN_GRANULARITY_CHOICES
+from ..control_plane.goals.goal_vision_policy import (
+    DEFAULT_EFFECTIVE_TURN_REPLAN_THRESHOLD,
+    MAX_EFFECTIVE_TURN_REPLAN_THRESHOLD,
+)
+from ..control_plane.work_items.progress_review_policy import (
+    PROGRESS_REVIEW_MODES,
+    PROGRESS_REVIEW_SIGNALS,
+)
 from ..orchestration import EXPLORE_HARNESS_PROFILES
 from .registry_admin_peer import (
     register_peer_runtime_arguments,
@@ -31,7 +39,8 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
         choices=TURN_GRANULARITY_CHOICES,
         help=(
             "Set sticky goal turn granularity. fine plans small checkpoints within "
-            "a coherent work slice; review defaults to 5 settled work Turns in both modes."
+            "a coherent work slice; review defaults to "
+            f"{DEFAULT_EFFECTIVE_TURN_REPLAN_THRESHOLD} settled work Turns in both modes."
         ),
     )
     configure_goal_parser.add_argument(
@@ -54,12 +63,34 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
         ),
     )
     configure_goal_parser.add_argument(
-        "--execution-replan-after-turns", type=int, choices=range(1, 6),
-        help="Review direction after this many settled work Turns, independently of Todo completion (product default: 5).",
+        "--execution-replan-after-turns", type=int,
+        choices=range(1, MAX_EFFECTIVE_TURN_REPLAN_THRESHOLD + 1),
+        help=(
+            "Review direction after this many settled work Turns, independently of "
+            f"Todo completion (product default: {DEFAULT_EFFECTIVE_TURN_REPLAN_THRESHOLD})."
+        ),
     )
     configure_goal_parser.add_argument(
         "--clear-execution-replan-after-turns", action="store_true",
         help="Remove the Goal effective-Turn override and restore device/default inheritance.",
+    )
+    from argparse import BooleanOptionalAction
+    configure_goal_parser.add_argument(
+        "--execution-planning-horizon-goal", action=BooleanOptionalAction, default=None,
+        help="Include the full same-source Goal in preselection planning horizons. Default off; no selection or execution authority change.",
+    )
+    configure_goal_parser.add_argument(
+        "--clear-execution-planning-horizon-goal", action="store_true",
+        help="Remove the Goal horizon override and restore review-configuration inheritance.",
+    )
+    from ..control_plane.work_items.stride_policy_codec import stride_strategy_options
+    configure_goal_parser.add_argument(
+        "--execution-stride-strategy", choices=stride_strategy_options(),
+        help="Choose a versioned Agent stride strategy. Off preserves ordinary review; no automatic execution or authority change.",
+    )
+    configure_goal_parser.add_argument(
+        "--clear-execution-stride-strategy", action="store_true",
+        help="Remove the strategy from the Goal review override (off). Clear the review cadence too to restore device defaults.",
     )
     configure_goal_parser.add_argument(
         "--quota-compute",
@@ -122,7 +153,7 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
     )
     configure_goal_parser.add_argument(
         "--progress-review-mode",
-        choices=["off", "shadow", "assist"],
+        choices=PROGRESS_REVIEW_MODES,
         help=(
             "Optional scoped progress-review sentinel: shadow records typed drift "
             "receipts; assist lets consecutive drift receipts raise the existing "
@@ -131,7 +162,7 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
     )
     configure_goal_parser.add_argument(
         "--progress-review-signal",
-        choices=["noul", "choice"],
+        choices=PROGRESS_REVIEW_SIGNALS,
         help="Which receipt judgment pair counts as drift for this goal.",
     )
     configure_goal_parser.add_argument(
@@ -265,6 +296,14 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
         "--clear-explore-harness-profile",
         action="store_true",
         help="Remove the goal-pinned explore profile while preserving the opt-in bit.",
+    )
+    configure_goal_parser.add_argument(
+        "--explore-composition-mode", choices=["disabled", "explicit_only"],
+        help="Opt in to typed composition obligations for this Goal; disabled preserves existing planning behavior.",
+    )
+    configure_goal_parser.add_argument(
+        "--explore-composition-scope-id",
+        help="Opaque research coverage scope required by explicit_only composition; grants no execution authority.",
     )
     configure_goal_parser.add_argument(
         "--registered-agent",
@@ -490,9 +529,16 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
         ),
     )
     configure_goal_parser.add_argument(
+        "--reward-memory-agent-id",
+        help=(
+            "Configure or disable only this registered Agent's independent binding. "
+            "Preserves shared and sibling bindings; do not combine with --reward-memory-agent."
+        ),
+    )
+    configure_goal_parser.add_argument(
         "--clear-reward-memory-config",
         action="store_true",
-        help="Disable the Reward Memory experiment and clear its agent allowlist.",
+        help="Disable only --reward-memory-agent-id when supplied; otherwise clear all Reward Memory bindings.",
     )
     configure_goal_parser.add_argument(
         "--execute",

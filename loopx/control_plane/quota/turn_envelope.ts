@@ -1,5 +1,6 @@
 import { EffectiveAction } from "./effective_action.generated.ts";
 import { createHash } from "node:crypto";
+import { ENVELOPED_SHA256_PATTERN } from "../content_digest.ts";
 
 import {
   interpretQuotaShouldRunPacket,
@@ -9,7 +10,7 @@ import { EffectRuntimeRequestError } from "../effect_runtime_errors.ts";
 import { projectTurnStartUnavailableContext } from "../capability_hooks.ts";
 import { requireJsonObject } from "../runtime_decode.ts";
 import { projectPendingCapabilityIntent } from "../work_items/pending_capability_intent.ts";
-import { measureTurnEnvelope, turnEnvelopeBudgetBytes, TURN_ENVELOPE_SECTION_TARGETS } from "./turn_envelope_budget.ts";
+import { measureTurnEnvelope, TURN_ENVELOPE_SECTION_TARGETS } from "./turn_envelope_budget.ts";
 export { TURN_ENVELOPE_BUDGET_BYTES } from "./turn_envelope_budget.ts";
 
 export const TURN_ENVELOPE_SCHEMA_VERSION = "loopx_turn_envelope_v0";
@@ -67,10 +68,6 @@ const CONTRACT_CAPSULE_FIELDS: Readonly<Record<string, readonly string[]>> = {
     "schema_version", "keep_active", "pause_allowed", "pause_policy",
     "automation_action",
   ],
-  vision_continuation_audit: [
-    "schema_version", "required", "decision", "selected_todo_is_goal_completion",
-    "closeout_allowed_without_evidence", "trigger_kinds", "recommended_action",
-  ],
   handoff_readiness: [
     "ready", "codex_ready", "handoff_status", "post_handoff_run_seen",
   ],
@@ -85,7 +82,6 @@ const CONTRACT_CAPSULE_TEXT_LIMITS: Readonly<Record<string, Readonly<Record<stri
   execution_obligation: { reason: 240 },
   agent_scope_frontier: { recommended_action: 320, spend_policy: 220 },
   automation_liveness: { pause_policy: 260 },
-  vision_continuation_audit: { recommended_action: 48 },
 };
 
 function object(value: unknown): JsonObject {
@@ -237,7 +233,7 @@ function replanActionPacket(payload: JsonObject): JsonObject | null {
   if (Object.keys(source).length === 0) return null;
   const compact = compactFields(source, [
     "schema_version", "decision", "obligation_id", "uncovered_frontier",
-    "required_outcome", "allowed_terminal", "bounded_frontier", "settlement_only", "successor_todo_id",
+    "required_outcome", "allowed_terminal", "bounded_frontier", "settlement_only", "successor_todo_id", "stride_control",
   ]);
   // The typed replan owner supplies bounded instructions; do not truncate their
   // authority/stop qualifiers through generic diagnostic compaction.
@@ -314,16 +310,18 @@ function boundary(payload: JsonObject): JsonObject {
         .map((field) => [field, adapter[field]]),
     );
   }
-  for (const field of ["write_scope", "available_capabilities", "requires_parent_approval"]) {
-    const values = textList(source[field], 16, 180);
-    if (values.length > 0) result[field] = values;
+  // These are resolved restrictions, not display summaries. Preserve literal
+  // paths, every clause and explicit empty lists; budget warnings cannot trim
+  // an approval requirement or turn a path into a different glob.
+  for (const field of ["write_scope", "available_capabilities", "requires_parent_approval", "guards"]) {
+    if (Array.isArray(source[field])) result[field] = structuredClone(source[field]);
   }
   // Carry the already resolved approval from quota; dropping it leaves only
   // the bootstrap approval requirement and strands authorized execution.
   const approved = object(source.checkpointed_boundary_authority);
   const approvedScopes = Array.isArray(approved.active_write_scope)
     ? approved.active_write_scope.filter((scope): scope is string =>
-      typeof scope === "string" && scope.length > 0 && scope.length <= 180).slice(0, 16)
+      typeof scope === "string" && scope.length > 0)
     : [];
   if (approved.schema_version === "checkpointed_boundary_authority_v0"
       && Number.isInteger(approved.active_count) && Number(approved.active_count) > 0
@@ -334,7 +332,6 @@ function boundary(payload: JsonObject): JsonObject {
       active_write_scope: approvedScopes,
     };
   }
-  const guards = textList(source.guards, 8, 280);
   // Effective automation is already resolved for this Goal/Agent. Keep the
   // shared participation facts, not private config, diagnostics or recall.
   const memory = object(object(source.capabilities).reward_memory);
@@ -346,9 +343,7 @@ function boundary(payload: JsonObject): JsonObject {
       automatic_ingest: memory.automatic_ingest === true,
     }};
   }
-  if (guards.length > 0) result.guards = guards;
-  const stopCondition = text(source.stop_condition, 320);
-  if (stopCondition) result.stop_condition = stopCondition;
+  if (typeof source.stop_condition === "string") result.stop_condition = source.stop_condition;
   for (const field of ["execution_profile", "orchestration"]) {
     const value = object(source[field]);
     if (Object.keys(value).length > 0) result[field] = value;
@@ -523,6 +518,20 @@ function contractCapsule(
   }
   const unavailableContext = projectTurnStartUnavailableContext(payload.turn_start_capability_hook_dispatch);
   if (unavailableContext) capsule.unavailable_context = unavailableContext;
+  // These existing source fields govern evidence and continuation, rather
+  // than summarize display text. Preserve every clause, order, empty value
+  // and current judge without copying the detailed acceptance-gap ledger.
+  const visionAudit = object(payload.vision_continuation_audit);
+  const visionContract: JsonObject = {};
+  for (const field of [
+    "schema_version", "required", "agent_id", "decision", "trigger_count", "trigger_kinds",
+    "selected_todo_is_goal_completion", "closeout_allowed_without_evidence",
+    "required_before_closeout", "recommended_action", "vision_gap_judge",
+    "authoritative_evidence_kinds", "not_satisfied_by",
+  ]) {
+    if (Object.hasOwn(visionAudit, field)) visionContract[field] = structuredClone(visionAudit[field]);
+  }
+  if (Object.keys(visionContract).length > 0) capsule.vision_continuation_audit = visionContract;
   // Preserve the bounded source diagnosis; the generic capsule list path is
   // for scalar lists and must not stringify structured component checks.
   const diagnostics = object(payload.vision_continuation_audit).outcome_checkpoint_diagnostics;
@@ -644,6 +653,8 @@ function actionProjection(payload: JsonObject, protocolActionFields: JsonObject)
   }
   const settlementPlan = object(cliChannel.settlement_plan);
   const hasSettlementPlan = Object.keys(settlementPlan).length > 0;
+  const recovery = object(payload.unsettled_host_turn_recovery);
+  const receiptBoundSettlementOnly = recovery.scope === "current_turn" && recovery.repair === "quota_spend";
   let preserveBoundReplanCommands = replanSettlementOnly;
   if (replanPacket && !replanSettlementOnly) {
     const writebackContract = object(object(payload.replan_action_packet).writeback_contract);
@@ -681,7 +692,7 @@ function actionProjection(payload: JsonObject, protocolActionFields: JsonObject)
     // a closeout command into display text can erase its binding or execute flag.
     writeback.next_cli_actions = hasSettlementPlan
       ? nextCliActions.map(command => scalarString(command, "settlement command"))
-      : preserveBoundReplanCommands
+      : preserveBoundReplanCommands || receiptBoundSettlementOnly
       ? nextCliActions.slice(0, 5).map(command => scalarString(command, "bound replan closeout command"))
       : textList(nextCliActions, 5, 420);
   }
@@ -711,7 +722,7 @@ function actionProjection(payload: JsonObject, protocolActionFields: JsonObject)
     payload, action, user, schedulerValue, protocolActionFields,
   );
   const context = object(interaction.agent_context);
-  if (Object.keys(context).length > 0) projection.agent_context = context;
+  if (Object.keys(context).length > 0) projection.agent_context = structuredClone(context);
   const workContext = object(object(interaction.agent_channel).work_context);
   const selectedTodoContextIsAlreadyInAction = workContext.complete === true
     && workContext.selected_todo_ref === "selected_todo"
@@ -765,22 +776,9 @@ function turnActionProjection(payload: JsonObject, protocolActionFields: JsonObj
     action.planning_horizon = compactHorizon;
     projection.action = action;
   }
-  const context = object(projection.agent_context);
-  // Guidance must not crowd out the actionable contract. Preserve a signed
-  // content reference to the existing full-decision route under budget pressure.
-  // Leave room for the CLI's indented JSON and envelope metadata too: a compact
-  // payload can fit the wire-byte ceiling while its emitted form exceeds the
-  // public TurnEnvelope character budget.
-  if (Object.keys(context).length > 0
-    && Buffer.byteLength(JSON.stringify(projection), "utf8") > turnEnvelopeBudgetBytes(projection) - 2_200) {
-    projection.agent_context = {
-      schema_version: context.schema_version, phase: context.phase, scope: context.scope,
-      target: "coordinator", authority: "guidance_only", delivery: "projected",
-      content_hash: canonicalHash(context),
-      detail_ref: "full_decision.interaction_contract.agent_context",
-      instruction: "Use the envelope detail_ref command to read capability context before planning.",
-    };
-  }
+  // The context owner already bounds these contributions. Replacing them with
+  // a reference makes a small contribution require the entire saved decision.
+  // Keep the content; the existing envelope budget still reports its cost.
   return projection;
 }
 
@@ -923,10 +921,48 @@ export function buildTurnEnvelope(value: unknown): JsonObject {
   return envelope;
 }
 
+// The native Turn journal owns identity. A saved observation is evidence only;
+// it cannot manufacture a quota receipt or authorize a later action.
+function bindTurnDecisionCapture(request: JsonObject): JsonObject {
+  const payload = requireJsonObject(request.payload, "captured decision");
+  const envelope = requireJsonObject(request.envelope, "captured decision envelope");
+  const path = scalarString(request.captured_decision_path, "capture path");
+  const turnId = scalarString(request.turn_instance_id, "capture Turn identity");
+  const turnKey = scalarString(request.turn_key, "capture Turn key");
+  const signature = object(envelope.action_signature);
+  if (!path.trim() || path.includes("\0") || !turnId.trim() ||
+      !ENVELOPED_SHA256_PATTERN.test(turnKey) || payload.ok !== true ||
+      payload.goal_id !== envelope.goal_id ||
+      object(payload.agent_identity).agent_id !== envelope.agent_id ||
+      signature.source_decision_hash !== canonicalHash(payload)) {
+    throw new EffectRuntimeRequestError("Turn decision capture does not match the original observation");
+  }
+  const detail = object(envelope.detail_ref);
+  const original = object(detail.captured_decision);
+  if (Object.keys(original).length && (original.path !== path ||
+      original.turn_instance_id !== turnId || original.turn_key !== turnKey ||
+      original.goal_id !== envelope.goal_id || original.agent_id !== envelope.agent_id)) {
+    throw new EffectRuntimeRequestError("Turn decision capture identity does not match the journal");
+  }
+  const capture = object(coldPath(payload, String(envelope.agent_id), "", path).captured_decision);
+  const bound = {...envelope, detail_ref: {...detail,
+    full_decision: `cat -- ${shellQuote(path)}`,
+    captured_decision: {...capture, turn_instance_id: turnId, turn_key: turnKey,
+      instruction: "Read this original observation for omitted context. Validate its Goal/Agent and source hash; " +
+        "Turn identity comes from this journal-bound reference, not a fabricated quota receipt. " +
+        "It grants no fresh authority: later actions require current admission and mutation checks. " +
+        "Missing or invalid evidence requires recovery, never blind guard replay.",
+    },
+  }};
+  measureTurnEnvelope(bound, payload);
+  return bound;
+}
+
 export function evaluateTurnEnvelope(value: unknown): JsonObject {
   const request = requireJsonObject(value, "turn envelope request");
   const operation = request.operation;
   if (operation === "build") return buildTurnEnvelope(request);
+  if (operation === "bind_capture") return bindTurnDecisionCapture(request);
   if (operation === "envelope_signature") {
     return turnEnvelopeActionSignatureDocument(request.envelope);
   }

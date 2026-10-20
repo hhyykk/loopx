@@ -58,6 +58,15 @@ not only an apology or a one-off explanation.
 7. **Write back the lesson.** Update active goal state, docs, contributor
    tasks, or this skill so the same failure mode is visible next time.
 
+When work repeatedly enters a receipt-owned retry, first check the caller's
+typed outcome against the selected Todo. Rejecting a candidate with new,
+validated evidence can advance an evaluation Todo while leaving the broader
+stage open; it is not automatically an execution blocker. Pure reuse or setup
+does not qualify as progress. Use `blocked` only when the Todo's actual next
+step cannot execute, preserve genuine retry clocks, and replan finite answered
+questions through the existing Todo/vision. Never erase receipts or fabricate
+progress to escape a wait. See [settlement classification](../../docs/quota-allocation.md#allocation-contract).
+
 ## Upstream Issue Escalation
 
 A public GitHub issue is an optional final escalation, not a default side
@@ -132,6 +141,15 @@ replan, or terminal closeout must return to the strict semantic checkpoint.
 - Do not solve contradictory payloads by guessing. If `recommended_action`,
   `goal_boundary.write_scope`, todos, and interaction contract disagree, treat
   that as a projection bug or state authoring bug first.
+- Separate priority advice from authority. Use the planning horizon and current
+  user direction to choose useful in-scope work; do not treat P0/P1 order as a
+  permission gate or relabel every task to escape it. Before explaining a
+  refusal as recovery protection, check whether a settlement identity is
+  actually bound. Priority-only rejection of an eligible explicit choice is a
+  control-plane defect. Preserve real gates and record the changed route in
+  existing Todo/vision state. A committed Turn may finish with progress while
+  its Todo stays open; settle and release before switching, rather than treating
+  the binding as an obligation to finish that entire Todo first.
 - Do not let fallback work hide the primary blocker. When a higher-priority
   path is gated but safe fallback is valid, report both the concrete gate and
   the fallback progress.

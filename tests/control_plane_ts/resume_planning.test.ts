@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { JsonObject } from "../../loopx/control_plane/effect_program.ts";
 import { projectTodoResumePlanning, RESUME_PLANNING_REQUEST } from "../../loopx/control_plane/todos/resume_planning.ts";
+import {evaluateTodoResumeConditions} from "../../loopx/control_plane/todos/resume_condition.ts";
 
 function fact(id: string, overrides: JsonObject = {}): JsonObject {
   return {
@@ -27,6 +28,32 @@ function request(overrides: JsonObject = {}): JsonObject {
   };
 }
 
+test("only the actual pending Monitor generation can cover an in-scope successor", () => {
+  const waiter = {todo_id: "todo_waiting", role: "agent", status: "open", task_class: "advancement_task",
+    text: "Validate after the watched artifact changes.", resume_when: "monitor_changed:todo_source",
+    resume_monitor_generation: 0};
+  const source = {todo_id: "todo_source", role: "agent", status: "open", task_class: "continuous_monitor"};
+  const evaluate = (items: JsonObject[]) => (evaluateTodoResumeConditions({
+    schema_version: "todo_resume_evaluation_request_v0", items: [waiter], source_items: items,
+  }).conditions as JsonObject[])[0].condition as JsonObject;
+  const condition = evaluate([source]);
+  const waiting = fact(waiter.todo_id, {status: "open", claim: "agent-a", resume: waiter.resume_when,
+    target_id: source.todo_id, target_status: "open", target_class: "continuous_monitor",
+    payload: {...waiter, resume_ready: false, resume_condition: condition}});
+  const project = (row: JsonObject) => {
+    const input = request();
+    (input.sources as JsonObject).resume_blocked_items = [row];
+    return projectTodoResumePlanning(input).blocked_successor_items as JsonObject[];
+  };
+  assert.equal(project(waiting)[0].todo_id, waiter.todo_id);
+  for (const changed of [evaluate([]), evaluate([{...source, material_change_generation: 1}]),
+    {...condition, baseline_generation: undefined}, {...condition, target_status: undefined}]) {
+    assert.equal(project({...waiting, payload: {...waiter, resume_ready: false, resume_condition: changed}}).length, 0);
+  }
+  assert.equal(project({...waiting, claim: "another-agent"}).length, 0);
+  assert.equal(project({...waiting, excluded: ["agent-a"]}).length, 0);
+});
+
 test("capacity evaluation and claim lanes use one snapshot without mutating it", () => {
   const input = request({ available_capabilities: ["compiler"] });
   (input.sources as JsonObject).items = [fact("todo_capacity", { claim: "agent-a" }),
@@ -42,6 +69,43 @@ test("capacity evaluation and claim lanes use one snapshot without mutating it",
   input.available_capabilities = [];
   const unavailable = projectTodoResumePlanning(input).deferred_lanes as JsonObject;
   assert.equal(unavailable.current_agent_deferred_resume_count, 0);
+});
+
+test("readiness counts retain unseen work and revalidate capacity instead of reusing stale totals", () => {
+  const input = request({has_deferred_count: true, deferred_count: 12,
+    deferred_work_counts: {ready: 12, blocked: 0, unknown: 0, complete: true,
+      ready_by_agent: {"agent-a": 12}}});
+  (input.sources as JsonObject).items = [fact("todo_capacity", {claim: "agent-a"})];
+  const counts = () => (projectTodoResumePlanning(input).deferred_lanes as JsonObject).deferred_work_counts;
+  assert.deepEqual(counts(), input.deferred_work_counts);
+  input.available_capabilities = [];
+  assert.deepEqual(counts(), {ready: 0, blocked: 1, unknown: 11, complete: false, ready_by_agent: {}});
+  input.available_capabilities = ["compiler"];
+  assert.deepEqual(counts(), {ready: 1, blocked: 0, unknown: 11, complete: false, ready_by_agent: {"agent-a": 1}});
+});
+
+test("malformed source counts cannot fabricate complete readiness", () => {
+  for (const fields of [{ready: -1}, {blocked: 0.5}, {unknown: null},
+    {ready_by_agent: {"agent-a": 2}}, {complete: "true"},
+    {ready: 2**53, ready_by_agent: {"agent-a": 2**53}}, {blocked: 2**53},
+    {unknown: 2**53, complete: false}]) {
+    const input = request({deferred_work_counts: {ready: 1, blocked: 0, unknown: 0,
+      complete: true, ready_by_agent: {"agent-a": 1}, ...fields}});
+    assert.throws(() => projectTodoResumePlanning(input), /counts/);
+  }
+});
+
+test("historical duplicate readiness or claim conflicts stay unknown across capacity reads", () => {
+  for (const conflicting of [{ready: false}, {claim: "agent-b"}, {status: "open"}]) {
+    for (const capabilities of [null, ["compiler"]]) {
+      const ready = fact("todo_conflict", {ready: true, ready_truthy: true, claim: "agent-a"});
+      const input = request({has_deferred_count: true, deferred_count: 1, available_capabilities: capabilities});
+      (input.sources as JsonObject).deferred_resume_candidates = [ready];
+      (input.sources as JsonObject).items = [{...ready, ...conflicting}];
+      const counts = (projectTodoResumePlanning(input).deferred_lanes as JsonObject).deferred_work_counts;
+      assert.deepEqual(counts, {ready: 0, blocked: 0, unknown: 1, complete: false, ready_by_agent: {}});
+    }
+  }
 });
 
 test("capability reevaluation retains ready candidates outside the deferred display bound", () => {

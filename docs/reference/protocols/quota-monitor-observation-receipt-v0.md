@@ -19,19 +19,20 @@ advancement work remains active.
   `continuous_monitor` visible to the same Agent. Admission checks the Todo
   authority as well as the bounded decision projection, so a due monitor is
   not rejected merely because it falls outside the compact list.
-- Under a scoped User gate, an auxiliary observation is admitted only when the
+- Under a scoped User gate, a primary or auxiliary observation is admitted only when the
   existing typed dependency owner proves every addressed live gate independent
   of that exact Monitor. Overlapping, global, conflicting or unknown scopes
   fail closed. The CLI projection and effect admission use the same rule; the
   effect rechecks the current complete Todo snapshot, so a cached command cannot
-  bypass a newly blocking gate. New auxiliary provider plans also require a
+  bypass a newly blocking gate. A due Monitor work-lane projection alone cannot
+  override that dependency decision. New Monitor provider plans also require a
   commit-head dependency guard: canonical providers evaluate the same typed rule
   on the head used by the existing projection revision CAS; legacy observations
   evaluate it inside the existing Todo mutation lock. A blocking gate committed
   first prevents observation writeback, including changes after preflight.
   This dependency result grants no approval or lease. Exact committed receipts
   remain historical replay. Frozen plans predating the guard retain their
-  intended-effect identity, while any still-uncommitted auxiliary provider
+  intended-effect identity, while any still-uncommitted Monitor provider
   dispatch is upgraded to the current guard without rewriting its WAL. A receipt
   proves a historical outcome, never permission for a new mutation. Guarded canonical
   requests use `loopx_coordination_monitor_poll_request_v3`: an older receiver
@@ -48,6 +49,17 @@ advancement work remains active.
   replay that observation; changed content conflicts only with the same monitor
   identity; another due monitor receives an independent no-spend receipt.
   Shipped turn-only receipts remain replayable for their original monitor.
+- A target-only, turn-scoped executed retry retains the resolved Todo identity of an existing
+  poll transaction when that same active Monitor is no longer due. Current
+  target selection and the existing receipt path locate the operation; only the
+  typed transaction owner may verify its scope, fingerprint and frozen admission.
+  The transport rechecks that Todo-scoped operation's presence under the same
+  quota admission as the native receipt read. A prior no-effect abort cannot turn
+  this recovery route into a new poll. Committed replay and provider-committed
+  pending recovery grant no admission to a new not-due observation. Caller target, hash, intent and lease proof
+  remain unchanged. Explicit Todo retries and historical target-only wire shapes
+  retain their existing paths; current replacement selection is not evidence of
+  an archived Monitor's original identity.
 - A receipt-bound monitor remains strict: another monitor cannot be substituted
   for the Turn's settlement Todo. Multiple auxiliary receipts never change the
   already-bound settlement identity.
@@ -206,8 +218,19 @@ lease proof. Before downgrading to a version without this protocol, finish v1
 pending settlements; older binaries cannot interpret them. Never disable a
 writer fence to recover by writing an older Markdown projection.
 
-The bounded real-source rehearsal clones read-only source state and adds only
-synthetic records in disposable runtimes. It requires an isolated PostgreSQL URL:
+The bounded source rehearsal reads a stable Markdown snapshot, including
+unreferenced archives, and adds synthetic records only in disposable runtimes.
+Use a baseline that supports the same authority format and Monitor reactivation;
+all four arms must preserve the full source records and reach identical heads.
+The disposable cases use `soft_claim` for observation and `hard_lease` for
+execution. These fixture transitions do not qualify policy migration, whole-Goal
+recovery, or the contents of a selected canonical store. It requires an isolated
+PostgreSQL URL:
+
+有界演练读取稳定的 Markdown 快照，保留无依赖关系的完整归档；仅在临时运行目录添加
+合成记录。基线须支持相同的权威存储格式及 Monitor 重启语义，四组最终状态必须一致。
+观察使用 `soft_claim`，执行使用 `hard_lease`；样本内切换不证明实际策略迁移、完整
+Goal 恢复或已选 canonical 存储的内容验收。
 
 ```bash
 LOOPX_TEST_POSTGRES_URL="$DISPOSABLE_POSTGRES_URL" \
@@ -300,14 +323,15 @@ using a complete read-only snapshot with disposable File/SQLite/PostgreSQL arms.
   的观察回执。准入同时检查 Todo 权威源与有界决策投影，不能仅因到期 monitor
   位于精简列表之外就拒绝它。
 - 存在 scoped User gate 时，仅当既有 typed 依赖 owner 证明所有面向该 Agent
-  的有效 gate 都与该精确 Monitor 独立，才允许辅助观察。重叠、全局、冲突或未知
+  的有效 gate 都与该精确 Monitor 独立，才允许主监控或辅助观察。重叠、全局、冲突或未知
   scope 均失败关闭。CLI 投影与 effect 准入复用同一规则；effect 按当前完整 Todo
-  快照重新核验，旧命令不能绕过新出现的阻塞 gate。新的辅助 provider plan 还
+  快照重新核验，旧命令不能绕过新出现的阻塞 gate。到期 Monitor 的 work-lane
+  投影本身不能覆盖该依赖结论。新的 Monitor provider plan 还
   强制提交时的依赖 guard：canonical provider 在既有 projection revision CAS
   所使用的同一个 head 上执行 typed 规则；legacy 观察在既有 Todo 写锁内核验。
   阻塞 gate 先提交时，包括 preflight 后的变更，不得写入观察。依赖结论不授予
   批准或租约。已提交回执仍按历史结果精确重放；引入 guard 前的冻结 plan 保留
-  原 effect 身份，仍未提交的辅助 provider dispatch 则升级到当前 guard，不改写
+  原 effect 身份，仍未提交的 Monitor provider dispatch 则升级到当前 guard，不改写
   其 WAL。回执证明历史结果，不授权新 mutation。带 guard 的 canonical 请求使用
   `loopx_coordination_monitor_poll_request_v3`；旧 receiver 拒绝该 schema，不能静默
   忽略必要的 gate 校验。不带 guard 的既有 caller 保持原请求与回执身份。
@@ -319,6 +343,14 @@ using a complete read-only snapshot with disposable File/SQLite/PostgreSQL arms.
   `target_key` 摘要建立身份。精确重试只重放该观察；同一 monitor 下内容变化
   只与该 monitor 冲突；另一个到期 monitor 获得独立的不计费回执。已发布的
   Turn-only 旧回执仍可对原 monitor 重放。
+- 仅用 target 的 turn-scoped 执行重试，在同一个 active Monitor 已不再到期时保留已有 poll
+  事务解析出的 Todo 身份。当前 target 选择和既有回执路径只定位原操作；作用域、
+  指纹与冻结准入仍由 typed 事务 owner 校验。transport 在 native 回执读取的同一
+  quota admission 内重查 Todo-scoped 操作仍存在；之前的 no-effect abort 不能把
+  恢复路由转成新 poll。重放已提交操作或恢复 provider 已提交的 pending 操作，
+  不提供新的未到期观察准入。调用者的 target、hash、intent
+  和租约证明保持原样。显式 Todo 重试及历史 target-only wire 保留原路径；当前
+  replacement 选择不能证明已归档 Monitor 的原身份。
 - 若 heartbeat 本身绑定的是 monitor，仍保持严格身份，不能把另一个 monitor
   替换为本 Turn 的结算 Todo；多个辅助回执也绝不改变既有结算身份。
 - 辅助观察无变化后，原 advancement Todo 继续保持选中；若观察发生重大变化，

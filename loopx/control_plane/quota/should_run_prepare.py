@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..goals.goal_frontier.fallback_source import FallbackTodoSource
 
 from ...materials import goal_state_path
 
@@ -21,6 +24,7 @@ from ..agents.agent_lane_recommendation import (
     scope_status_item_to_agent_lane as _scope_status_item_to_agent_lane,
 )
 from ..agents.agent_scope import (
+    _agent_scope_deferred_resume_candidates,
     _agent_scoped_user_todo_override,
     _scoped_user_gate_fallback,
 )
@@ -34,7 +38,8 @@ from ..goals.goal_frontier import (
 )
 from ..quota.blocked_transition_notice import build_blocked_transition_notice
 from ..quota.error_codes import HeartbeatReceiptIdentityConflictError
-from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
+from ..effect_runtime import EffectRuntimeRejected
+from ..work_items.replan_semantics_codec import project_replan_semantics
 from ..agents.capability_memory import resolve_agent_capabilities
 from ..quota.goal_boundary import (
     goal_boundary as _goal_boundary,
@@ -96,7 +101,7 @@ from ..todos.quota_summary import (
     select_quota_todo_summary,
     select_task_orchestration_authority_items,
 )
-from ..todos.summary_item import compact_todo_summary_item
+from ..todos.summary_item import compact_todo_summary_item, compact_todo_summary_items
 from ..todos.user_gate import (
     open_todo_count as _open_todo_count,
 )
@@ -135,6 +140,7 @@ class _QuotaDecisionPreparation:
     effective_available_capabilities: Any
     runtime_available_capabilities: Any
     receipt_bound_todo_id: str | None
+    receipt_bound_successor_replan: bool
     requested_action_todo_id: str | None
     requested_action_candidate: dict[str, Any] | None
     action_selection_qualification: dict[str, Any] | None
@@ -189,26 +195,30 @@ def _preserve_receipt_bound_replan_obligation(
     agent_id: str | None = None,
     replay_phase: ReceiptBoundReplayPhase | None = None,
     transition_candidates: list[dict[str, Any]] | None = None,
+    stride_strategy: str = "off",
 ) -> dict[str, Any] | None:
     preserved_replan_id = normalize_todo_replan_obligation_id(
         receipt_bound_replan_obligation_id
     )
-    if not preserved_replan_id:
+    if not preserved_replan_id and not guard_scoped:
         return dict(replan_obligation) if replan_obligation is not None else None
     try:
-        result = effect_runtime_result("work_item.replan_semantics.project", {
+        result = project_replan_semantics({
             "operation": "receipt_bound_obligation",
             "current_obligation": dict(replan_obligation) if replan_obligation is not None else None,
             "selected_obligation_id": preserved_replan_id, "guard_scoped": guard_scoped,
             "agent_id": agent_id,
             "replay_phase": replay_phase.value if replay_phase is not None else None,
             "transition_candidates": transition_candidates or [],
+            "stride_strategy": stride_strategy,
         })
     except EffectRuntimeRejected as exc:
         if exc.diagnostic_code == "heartbeat_receipt_identity_conflict":
             raise HeartbeatReceiptIdentityConflictError(str(exc)) from None
         raise
     obligation = result.get("obligation") if isinstance(result, Mapping) else None
+    if obligation is None and preserved_replan_id is None and guard_scoped:
+        return None
     if not isinstance(obligation, Mapping) or obligation.get("obligation_id") != preserved_replan_id:
         raise RuntimeError("TypeScript receipt-bound replan obligation shape mismatch")
     return dict(obligation)
@@ -277,7 +287,7 @@ def _blocked_priority_fallback(
         text = str(item.get("text") or "").strip()
         if not text:
             continue
-        blocked_items.append(compact_todo_summary_item(item, text=text))
+        blocked_items.append(item)
         # A scheduled future monitor window is a deferral, not a blocker, so it
         # never earns an owner notice. An advancement item that is blocked, or
         # that waits on an unsatisfied resume condition, does: the owner is
@@ -296,6 +306,7 @@ def _blocked_priority_fallback(
 
     if not blocked_items:
         return None
+    blocked_items = compact_todo_summary_items(blocked_items, strip_text=True)
     selected_text = str(selected.get("text") or "").strip()
     selected_item = compact_todo_summary_item(selected, text=selected_text) if selected_text else dict(selected)
     return {
@@ -496,6 +507,35 @@ def _with_auxiliary_gate_scope(
     return {**work_lane, "auxiliary_monitor_poll": {**auxiliary, "gate_scope": selected_scope}}
 
 
+def _pending_receipt_resume_is_ready(
+    pending: bool, goal_health_ok: bool, state: str,
+    summary: dict[str, Any] | None, identity: dict[str, Any] | None,
+    todo_id: str | None,
+) -> bool:
+    # The receipt is a resume duty, not authority to release a new/future wait.
+    return pending and goal_health_ok and state == "eligible" and any(
+        normalize_todo_id(candidate.get("todo_id")) == todo_id
+        for candidate in _agent_scope_deferred_resume_candidates(
+            summary,
+            agent_id=normalize_todo_claimed_by((identity or {}).get("agent_id")),
+        )
+    )
+
+
+def _receipt_delivery_continuity(
+    payload: dict[str, Any], goal_id: str, agent_id: str | None,
+    todos: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    anchor = (
+        _latest_accountable_agent_delivery(payload, goal_id=goal_id, agent_id=agent_id)
+        if agent_id else None
+    )
+    todo_id = normalize_todo_id((anchor or {}).get("todo_id"))
+    todo = next((candidate for candidate in todos
+                 if normalize_todo_id(candidate.get("todo_id")) == todo_id), None)
+    return anchor, todo
+
+
 def _prepare_quota_should_run_item(
     status_payload: dict[str, Any],
     *,
@@ -518,6 +558,10 @@ def _prepare_quota_should_run_item(
     receipt_bound_replay_phase: ReceiptBoundReplayPhase | None,
     receipt_bound_replan_obligation_id: str | None,
     receipt_bound_replan_guard_scoped: bool = False,
+    receipt_bound_successor_replan: bool = False,
+    authoritative_fallback_todo_items: FallbackTodoSource = None,
+    replan_explore_reader: Callable[[str, str | None], Mapping[str, Any] | None] | None = None,
+    receipt_bound_guard_recorded_at: str | None = None,
 ) -> _QuotaDecisionPreparation:
     quota = item.get("quota") if isinstance(item.get("quota"), dict) else {}
     state = str(quota.get("state") or "unknown")
@@ -608,25 +652,8 @@ def _prepare_quota_should_run_item(
         recovery_allowed = False
         reason = str(quota["reason"])
     boundary_agent_id = normalize_todo_claimed_by((agent_identity or {}).get("agent_id"))
-    delivery_continuity_anchor = (
-        _latest_accountable_agent_delivery(
-            status_payload,
-            goal_id=safe_goal_id,
-            agent_id=boundary_agent_id,
-        )
-        if boundary_agent_id
-        else None
-    )
-    continuity_todo_id = normalize_todo_id(
-        (delivery_continuity_anchor or {}).get("todo_id")
-    )
-    delivery_continuity_todo = next(
-        (
-            candidate
-            for candidate in agent_todo_source_items
-            if normalize_todo_id(candidate.get("todo_id")) == continuity_todo_id
-        ),
-        None,
+    delivery_continuity_anchor, delivery_continuity_todo = _receipt_delivery_continuity(
+        status_payload, safe_goal_id, boundary_agent_id, agent_todo_source_items,
     )
     reward_memory_experiment_status = _resolve_reward_memory_experiment_from_status(
         status_payload,
@@ -737,6 +764,10 @@ def _prepare_quota_should_run_item(
     )
     inbox_priority_due = inbox_reply_due or inbox_material_review_due
     receipt_bound_agent_next_action = None
+    receipt_bound_successor_replan = _pending_receipt_resume_is_ready(
+        receipt_bound_successor_replan, goal_health_ok, state,
+        agent_todo_summary, agent_identity, receipt_bound_todo_id,
+    )
     if (
         receipt_bound_todo_id
         and not inbox_priority_due
@@ -790,7 +821,7 @@ def _prepare_quota_should_run_item(
                 )
                 or work_lane_contract
             )
-        else:
+        elif not receipt_bound_successor_replan:
             # The old Turn still owns its committed settlement identity, but a
             # deferred Todo is not an executable candidate.  A successor may be
             # selected only by a fresh Turn; do not leak it through work-lane
@@ -818,6 +849,7 @@ def _prepare_quota_should_run_item(
         else []
     )
     goal_frontier_context = build_goal_frontier_projection_context_from_status(
+        replan_explore_reader=replan_explore_reader,
         goal_id=safe_goal_id,
         agent_id=agent_frontier_id,
         status_payload=status_payload,
@@ -830,12 +862,15 @@ def _prepare_quota_should_run_item(
             project_asset.get("agent_todos") if project_asset else None,
             include_terminal=True,
         ),
+        fallback_todo_source_items=authoritative_fallback_todo_items,
+        available_capabilities=effective_available_capabilities,
         work_lane_contract=work_lane_contract,
         neutral_replan_ack_classifications=AUTONOMOUS_REPLAN_ACK_NEUTRAL_CLASSIFICATIONS,
         registered_agent_ids=registered_agent_ids,
         goal_status=str(registry_goal.get("status") or ""),
         agent_profile=_quota_agent_profile(agent_identity),
         receipt_bound_replan_obligation_id=receipt_bound_replan_obligation_id,
+        receipt_bound_guard_recorded_at=receipt_bound_guard_recorded_at,
     )
     replan_obligation = (
         None
@@ -847,6 +882,7 @@ def _prepare_quota_should_run_item(
             agent_id=agent_frontier_id,
             replay_phase=receipt_bound_replay_phase,
             transition_candidates=goal_frontier_context.get("replan_transition_candidates"),
+            stride_strategy=goal_frontier_context["stride_strategy"],
         )
     )
     replan_scope = goal_frontier_context.get("replan_scope") or {}
@@ -905,6 +941,7 @@ def _prepare_quota_should_run_item(
         effective_available_capabilities=effective_available_capabilities,
         runtime_available_capabilities=availability["runtime_available"],
         receipt_bound_todo_id=receipt_bound_todo_id,
+        receipt_bound_successor_replan=receipt_bound_successor_replan,
         requested_action_todo_id=requested_action_todo_id,
         requested_action_candidate=requested_action_candidate,
         action_selection_qualification=None,

@@ -6,10 +6,16 @@ import {
   requireStringArray, requireStringLiteral, optionalNonEmptyString,
 } from "../runtime_decode.ts";
 import { projectTodoResumePlanning } from "../todos/resume_planning.ts";
+import { monitorIsActive } from "../todos/summary_lanes.ts";
+import { authorityUnicodeCompare } from "../coordination/authority_store_codec.ts";
+
+export const PROGRESS_RESULT_CLASSES = [
+  "advanced", "unchanged", "blocked", "exploration_exhausted", "no_followup",
+] as const;
 
 interface Progress {
   fingerprint: string;
-  result: "advanced" | "unchanged" | "blocked" | "exploration_exhausted" | "no_followup";
+  result: typeof PROGRESS_RESULT_CLASSES[number];
   payload: JsonObject;
 }
 interface Monitor {
@@ -47,7 +53,8 @@ interface Todos {
   resume: JsonObject | null;
 }
 interface Request {
-  operation: "all" | "progress" | "periodic" | "monitor_streak";
+  operation: "all" | "progress" | "periodic" | "monitor_streak" | "frontier_monitor_streak";
+  observedAt: number | null;
   agent: string | null;
   monitorAgent: string | null;
   runs: readonly Run[];
@@ -72,6 +79,8 @@ type Trigger = { run_count: number; threshold: number; agent_id: string | null }
       monitor_target_id: string; latest_generated_at: string }
   | { kind: "monitor_no_change_streak"; schema_version: string; section: "agent_todos";
       monitor_target_id: string; text: string }
+  | { kind: "monitor_no_change_streak"; section: "agent_todo_summary.monitor_open_items";
+      todo_id: string | null; monitor_target_id: string; text: string }
 );
 
 function text(value: unknown, label: string): string {
@@ -102,15 +111,23 @@ function decodeProgress(value: unknown): Progress | null {
   return {
     payload, fingerprint: requireNonEmptyString(payload.fingerprint, "fingerprint"),
     result: requireStringLiteral(payload.result_class,
-      ["advanced", "unchanged", "blocked", "exploration_exhausted", "no_followup"], "result_class"),
+      PROGRESS_RESULT_CLASSES, "result_class"),
   };
 }
 function decode(value: unknown): Request {
   const raw = requireJsonObject(value, "replan history");
   requireStringLiteral(raw.schema_version, ["replan_history_request_v0"], "replan history schema");
   const todo = requireJsonObject(raw.todos, "todos");
+  const operation = requireStringLiteral(raw.operation,
+    ["all", "progress", "periodic", "monitor_streak", "frontier_monitor_streak"], "operation");
+  // Historical requests have no current observation. Keep their replay
+  // behavior; the live frontier projection requires its runtime clock.
+  const observedAt = raw.observed_at === undefined ? null : time(raw.observed_at, "observed_at");
+  if (operation === "frontier_monitor_streak" && observedAt === null) {
+    throw new EffectRuntimeRequestError("frontier monitor streak requires observed_at");
+  }
   return {
-    operation: requireStringLiteral(raw.operation, ["all", "progress", "periodic", "monitor_streak"], "operation"),
+    operation, observedAt,
     agent: optionalNonEmptyString(raw.agent_id, "agent_id"),
     monitorAgent: optionalNonEmptyString(raw.monitor_agent_id, "monitor_agent_id"),
     neutral: new Set(requireStringArray(raw.neutral_classifications, "neutral_classifications")),
@@ -159,13 +176,17 @@ function decode(value: unknown): Request {
 
 /** Scope before ACK: a peer's acknowledgement cannot discharge this lane. */
 function historyWindow(request: Request): Run[] {
+  // These canonical writeback classes carry no accepted replan work. Older
+  // callers may omit them from their neutral inventory; neither their repeated
+  // observations nor their timestamps can create a replacement review duty.
+  const neutral = new Set([...request.neutral, "replan_noop", "repair_noop"]);
   const agent = request.agent ?? (request.operation === "all"
-    ? request.runs.find(run => !request.neutral.has(run.classification) && run.agent)?.agent : null);
+    ? request.runs.find(run => !neutral.has(run.classification) && run.agent)?.agent : null);
   const result: Run[] = [];
   for (const run of request.runs) {
     if (agent && run.agent && run.agent !== agent) continue;
     if (run.ack) break;
-    if (request.neutral.has(run.classification)) continue;
+    if (neutral.has(run.classification)) continue;
     result.push(run);
   }
   return result;
@@ -214,9 +235,11 @@ function progressTrigger(runs: readonly Run[], request: Request): Trigger | null
 }
 function periodicTrigger(runs: readonly Run[], request: Request, qualified?: ReadonlySet<string>): Trigger | null {
   const durable: Run[] = [];
-  // Monitor liveness receipts are durable, but only a material transition is
-  // work for the periodic direction review. Monitor-specific triggers still
-  // inspect every poll in the unfiltered history window.
+  // Monitor liveness and unsuccessful replan records are durable observations,
+  // not work for another periodic review. Counting a no-op would let a review
+  // rotate its own obligation merely by writing another record. Filter before
+  // Turn de-duplication so an actual work row from that Turn remains eligible;
+  // monitor-specific triggers still inspect the unfiltered history window.
   for (const run of distinctTurns(runs.filter(row => (!qualified ||
       (row.agent && row.turn && qualified.has(JSON.stringify([row.agent, row.turn])))) && row.classification &&
       (row.classification !== "quota_monitor_poll" || row.monitor.material === true)))) {
@@ -289,10 +312,18 @@ function monitorTrigger(runs: readonly Run[], request: Request): Trigger | null 
   };
 }
 function monitorStreak(request: Request): Trigger | null {
-  const stalled = request.todos.monitors.filter(row => row.count >= request.streak)
-    .sort((a, b) => b.count - a.count)[0];
-  if (!stalled || request.todos.advancements.some(row => row.status === "open" &&
+  const frontier = request.operation === "frontier_monitor_streak";
+  const stalled = request.todos.monitors.filter(row => row.count >= request.streak &&
+    (request.observedAt === null || monitorIsActive({expiresAt: row.expiry}, request.observedAt)))
+    .sort((a, b) => b.count - a.count || (frontier ? authorityUnicodeCompare(a.target, b.target) : 0))[0];
+  if (!stalled || !frontier && request.todos.advancements.some(row => row.status === "open" &&
       row.taskClass === "advancement_task" && (!row.claim || row.claim === stalled.publicClaim))) return null;
+  if (frontier) return {
+    kind: "monitor_no_change_streak", section: "agent_todo_summary.monitor_open_items",
+    text: `monitor ${stalled.target} recorded ${stalled.count} consecutive unchanged polls without selectable advancement`,
+    todo_id: stalled.id, monitor_target_id: stalled.target, run_count: stalled.count,
+    threshold: request.streak, agent_id: request.agent,
+  };
   return {
     kind: "monitor_no_change_streak", schema_version: request.monitorSchema, section: "agent_todos",
     text: `monitor ${stalled.target} recorded ${stalled.count} consecutive unchanged polls without runnable advancement`,
@@ -309,7 +340,7 @@ export function projectReplanHistory(value: unknown, qualified?: ReadonlySet<str
     case "all": trigger = progressTrigger(runs, request) ?? monitorTrigger(runs, request) ?? periodicTrigger(runs, request, qualified); break;
     case "progress": trigger = progressTrigger(runs, request); break;
     case "periodic": trigger = periodicTrigger(runs, request, qualified); break;
-    case "monitor_streak": trigger = monitorStreak(request); break;
+    case "monitor_streak": case "frontier_monitor_streak": trigger = monitorStreak(request); break;
   }
   return { schema_version: "replan_history_result_v0", trigger };
 }

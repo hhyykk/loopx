@@ -89,6 +89,14 @@ def extract_turn_authority(request: Mapping[str, Any]) -> dict[str, Any]:
         "write_scope": list(write_scope) if isinstance(write_scope, list) else [],
         "workspace_guard": _mapping(boundary.get("workspace_guard")),
     }
+    # Keep the established scope/workspace aliases once, and transport every
+    # remaining signed restriction rather than rebuilding policy in this IO adapter.
+    remaining_boundary = {
+        key: value for key, value in boundary.items()
+        if key not in {"write_scope", "workspace_guard"}
+    }
+    if remaining_boundary:
+        authority["boundary"] = remaining_boundary
     if isinstance(envelope.get("work_context"), Mapping):
         authority["work_context"] = dict(envelope["work_context"])
     selected = selected_turn_todo(envelope)
@@ -102,6 +110,18 @@ def extract_turn_authority(request: Mapping[str, Any]) -> dict[str, Any]:
     unavailable = _mapping(_mapping(envelope.get("contract_capsule")).get("unavailable_context"))
     if unavailable:
         authority["unavailable_context"] = unavailable
+    context = _mapping(envelope.get("agent_context"))
+    if context:
+        authority["agent_context"] = context
+    replan = _mapping(envelope.get("replan_action_packet"))
+    if replan:
+        authority["replan_action_packet"] = replan
+    if context.get("detail_ref") or replan:
+        # Replan evidence and historical capability references need the saved
+        # observation's route and hash. Native Turn capture validation owns its
+        # binding; this adapter neither reads the file nor re-enters admission.
+        authority["detail_ref"] = _mapping(envelope.get("detail_ref"))
+        authority["action_signature"] = signature
     return authority
 
 
@@ -131,13 +151,38 @@ def render_prompt(authority: Mapping[str, Any]) -> str:
         "continue under its existing authority; this grants no new permissions.\n"
         if authority.get("unavailable_context") else ""
     )
+    planning_context_instruction = (
+        "Read agent_context before planning; its guidance and facts grant no permissions. "
+        "Only an agent_context.detail_ref requires capability detail: use detail_ref.full_decision "
+        "only for the saved original observation identified by detail_ref.captured_decision, "
+        "checking its Goal/Agent/Turn and source hash. Never re-enter quota admission for a detail read. "
+        "Missing or invalid original evidence holds dependent planning until recovery; "
+        "independent work retains its existing authority.\n"
+        if authority.get("agent_context") else ""
+    )
+    replan_instruction = (
+        "Use replan_action_packet to choose one permitted semantic outcome. "
+        "Before choosing it, read autonomous_replan_obligation.replan_context "
+        "through detail_ref.full_decision from the saved original observation "
+        "identified by detail_ref.captured_decision; check Goal/Agent/Turn and "
+        "action_signature.source_decision_hash. Never re-enter quota admission "
+        "for a detail read. Missing or invalid original evidence holds dependent "
+        "replanning; independent work retains its existing authority. "
+        "Do not execute its writeback commands; the outer Turn executor owns "
+        "state, quota and scheduler effects. Guidance grants no permissions.\n"
+        if authority.get("replan_action_packet") else ""
+    )
     return (
         "You are executing one bounded LoopX-governed work segment.\n"
         "The JSON below is the complete host authority for this Turn. Execute "
         "primary_action only after reading work_context and any remaining required_reads. "
         "Do not repeat reads already fulfilled in work_context. Write only inside write_scope, "
-        "and obey workspace_guard. Do not infer authority from other prose.\n\n"
+        "and obey workspace_guard and all supplied boundary restrictions and stop conditions. "
+        "Checkpointed approval covers only its active_write_scope; other approval gates remain. "
+        "Do not infer authority from other prose.\n\n"
         f"{context_instruction}"
+        f"{planning_context_instruction}"
+        f"{replan_instruction}"
         f"Turn authority JSON:\n{authority_json}\n\n"
         "When finished, return only one JSON object (no Markdown fence) with "
         "these public-safe fields:\n"
@@ -147,7 +192,19 @@ def render_prompt(authority: Mapping[str, Any]) -> str:
         "- summary: what changed or why stopped (<=400 chars)\n"
         "- recommended_action: the bounded follow-up recommendation (<=1200 chars)\n"
         "- next_action: the concrete next step (<=1200 chars)\n"
-        "- vision_unchanged_reason: why the goal path is unchanged (<=240 chars)\n"
+        "- vision_unchanged_reason: why a material result's goal path is unchanged "
+        "(<=240 chars)\n"
+        "For material result kinds (validated_progress, repair_required, and "
+        "replan_required), describe the path outcome. For a material goal-path "
+        "change, set path_delta_mode to material_replan, "
+        "result_kind to replan_required, and agent_vision_json to a JSON-encoded "
+        "bounded goal_vision_replan_contract_v0 packet whose path_delta is "
+        "goal_path_delta_v0 with outcome replan; leave vision_unchanged_reason "
+        "empty. For unchanged paths, set path_delta_mode to unchanged, omit "
+        "agent_vision_json, and provide vision_unchanged_reason. These fields "
+        "describe the result only; they grant no authority. For stop results "
+        "(wait, user_action_required, iteration_failed), omit both "
+        "path_delta_mode and agent_vision_json.\n"
         "Use repair_required when the task is sound but a recoverable defect "
         "blocks it, replan_required when this route is exhausted, and "
         "wait/user_action_required when no material write is safe, and "
@@ -280,15 +337,24 @@ def build_result(
 
     if kind in MATERIAL_KINDS:
         _complete_material_fields(result, kind)
-    # This adapter has no goal-vision packet, so the executor treats the path
-    # delta as unchanged and requires a bounded reason for material results.
-    result["vision_unchanged_reason"] = _bounded(
-        candidate.get("vision_unchanged_reason")
-        or (
+    for field in ("path_delta_mode", "agent_vision_json"):
+        if field in candidate:
+            # Preserve the structured executor input verbatim. The executor
+            # owns type, size, JSON and semantic validation.
+            result[field] = candidate[field]
+
+    has_path_delta = "path_delta_mode" in candidate or "agent_vision_json" in candidate
+    unchanged_reason = candidate.get("vision_unchanged_reason")
+    if unchanged_reason:
+        result["vision_unchanged_reason"] = _bounded(
+            unchanged_reason, limit=TEXT_LIMITS["vision_unchanged_reason"]
+        )
+    elif not has_path_delta:
+        # Keep the legacy material-without-packet behavior for older hosts.
+        result["vision_unchanged_reason"] = _bounded(
             "host reported material work without a goal vision replan packet"
             if kind in MATERIAL_KINDS
-            else "host reported no material change"
-        ),
-        limit=TEXT_LIMITS["vision_unchanged_reason"],
-    )
+            else "host reported no material change",
+            limit=TEXT_LIMITS["vision_unchanged_reason"],
+        )
     return result

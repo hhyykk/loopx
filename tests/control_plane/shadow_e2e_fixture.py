@@ -1,15 +1,12 @@
-"""Disposable public CLI fixtures and scheduling-only process crash seams."""
+"""Disposable public CLI fixtures for retained shadow management tests."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-import select
 import subprocess
 import sys
 from dataclasses import dataclass
-
-from loopx.control_plane.testing.authority_e2e_rows_stage2c2 import CRASH_WORKER
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -20,6 +17,8 @@ class ShadowWorkspace:
     runtime: Path
     state: Path
     goal: str = "goal-e2e"
+    command: tuple[str, ...] = (sys.executable, "-m", "loopx.cli")
+    cwd: Path = REPO
 
     def arguments(self, *args: str) -> list[str]:
         return [
@@ -36,8 +35,8 @@ class ShadowWorkspace:
 
     def cli(self, *args: str, success: bool = True) -> dict:
         result = subprocess.run(
-            [sys.executable, "-m", "loopx.cli", *self.arguments(*args)],
-            cwd=REPO,
+            [*self.command, *self.arguments(*args)],
+            cwd=self.cwd,
             capture_output=True,
             text=True,
             timeout=45,
@@ -49,55 +48,6 @@ class ShadowWorkspace:
 
     def add(self, text: str) -> dict:
         return self.cli("todo", "add", "--role", "agent", "--text", text)
-
-    def drain(self, **limits: str) -> dict:
-        args = [
-            item
-            for key, value in limits.items()
-            for item in ("--" + key.replace("_", "-"), value)
-        ]
-        return self.cli("authority-shadow", "drain", *args, success=False)
-
-    def crash(self, window: str, *args: str) -> dict:
-        child = subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                CRASH_WORKER,
-                window,
-                str(self.state),
-                *self.arguments(*args),
-            ],
-            cwd=REPO,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        assert child.stdout is not None
-        try:
-            readable, _, _ = select.select([child.stdout], [], [], 30)
-            assert readable, "public CLI did not reach the requested persistence window"
-            line = child.stdout.readline()
-            if not line.startswith("BARRIER "):
-                child.kill()
-                stdout, stderr = child.communicate(timeout=10)
-                raise AssertionError(f"No process barrier: {line}{stdout}\n{stderr}")
-            payload = json.loads(line.removeprefix("BARRIER "))
-            if payload.get("native_pid"):
-                assert child.stdin is not None
-                child.stdin.write("terminate_native\n")
-                child.stdin.flush()
-                readable, _, _ = select.select([child.stdout], [], [], 10)
-                assert readable and child.stdout.readline().strip() == "REAPED", "native owner must be reaped"
-            child.kill()
-            child.communicate(timeout=10)
-            assert child.returncode == -9
-            return payload
-        finally:
-            if child.poll() is None:
-                child.kill()
-                child.communicate(timeout=10)
 
 
 def workspace(path: Path, *, bootstrap: bool = True) -> ShadowWorkspace:

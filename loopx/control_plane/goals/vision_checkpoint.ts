@@ -11,6 +11,8 @@ import {
   type DeliveryOutcome,
 } from "../work_items/delivery_outcome.ts";
 
+import {normalizeStrideDecision, STRIDE_DECISION_SCHEMA, RECORDED_STRIDE_SCHEMA, STRIDE_PROBE_LIMITS, STRIDE_AXIS_NAMES, STRIDE_PLAN_LIMIT, STRIDE_REASON_LIMIT, STRIDE_REVIEW_LIMIT} from "../work_items/stride_policy.ts";
+
 export const VISION_REFRESH_REQUEST_SCHEMA = "loopx_vision_refresh_request_v0";
 export const VISION_REFRESH_PREPARED_SCHEMA_VERSION =
   "vision_refresh_prepared_v0";
@@ -95,7 +97,12 @@ export function visionAuthoringContract(): JsonObject {
         evidence_refs: ["evidence:verified-result"],
       },
     },
-    authoring_hint: "Replace example claims/refs with evidence; obey the live contract and total limit.",
+    authoring_hint: "Replace example claims/refs with evidence; obey the live contract and total limit. " +
+      "For todo_delta, use retain:todo_<id> for existing work; supported verbs are activate, create, reopen, resume and retain. " +
+      "Replace todo_<id> with a verified Todo ID after normal authoring/readback. Entries record plans, not Todo mutations, claims or execution authority. " +
+      "For ordinary CLI writeback, pass the packet with --agent-vision-json <file>. " +
+      "checkpoint-context is only for recovery after the original committed Turn writeback; " +
+      "follow its returned same-Turn recovery action, not a fresh-turn preflight.",
     total_text_limit: GOAL_VISION_TOTAL_LIMIT,
     unchanged_reason_limit: VISION_UNCHANGED_REASON_LIMIT,
     path_delta: {
@@ -169,7 +176,7 @@ const LOCAL_PATH_SHAPE = new RegExp("(?<![:/A-Za-z0-9])(?:/(?:Users|home|Volumes
 export const CREDENTIAL_WORD_PATTERNS: RegExp[] = [/\bBearer\b/i, /\bpassword\b/i, /\bsecret\b/i];
 export const PRIVATE_TEXT_PATTERNS: RegExp[] = [
   /\/Users\//,
-  /\/ext_data\//,
+  /\/ext[_]data\//, // Preserve the matcher without matching its own policy source.
   /lark[o]ffice/i, // Equivalent matcher avoids matching its own policy source.
   /docs\.internal/i,
   /\bt-20\d{12}-[a-z0-9]+\b/,
@@ -198,6 +205,7 @@ interface VisionRefreshPrepareRequest {
   existing_agent_vision: JsonObject | null;
   merge_patch: boolean;
   require_path_delta_for_durable_change: boolean;
+  allow_terminal_stride_path: boolean;
 }
 
 interface VisionRefreshFinalizeRequest {
@@ -551,6 +559,8 @@ function decodePrepareRequest(request: JsonObject): VisionRefreshPrepareRequest 
       request.require_path_delta_for_durable_change,
       "require_path_delta_for_durable_change",
     ),
+    allow_terminal_stride_path: request.allow_terminal_stride_path === undefined ? false
+      : requiredBoolean(request.allow_terminal_stride_path, "allow_terminal_stride_path"),
   };
 }
 
@@ -562,6 +572,13 @@ function prepareVisionRefresh(request: VisionRefreshPrepareRequest): JsonObject 
     if (typeof container !== "object" || container === null || Array.isArray(container)) continue;
     for (const [field, value] of Object.entries(container)) {
       if (prefix === "agent_vision" && field === "path_delta") continue;
+      if (prefix === "agent_vision" && field === "stride_decision") continue;
+      if (field === STRIDE_DECISION_SCHEMA || field === RECORDED_STRIDE_SCHEMA ||
+          (prefix === "agent_vision.vision_patch" && field === "stride_decision") ||
+          (typeof value === "object" && value !== null && !Array.isArray(value) &&
+           [STRIDE_DECISION_SCHEMA, RECORDED_STRIDE_SCHEMA].includes(String((value as JsonObject).schema_version)))) {
+        throw new EffectRuntimeRequestError(`${prefix}.${field} must be supplied as agent_vision.stride_decision`);
+      }
       if (field === GOAL_PATH_DELTA_SCHEMA_VERSION ||
           (prefix === "agent_vision.vision_patch" && field === "path_delta") ||
           (typeof value === "object" && value !== null && !Array.isArray(value) &&
@@ -628,6 +645,15 @@ function prepareVisionRefresh(request: VisionRefreshPrepareRequest): JsonObject 
 
   const [pathDelta, pathDeltaUsage] = normalizeGoalPathDelta(updatePacket.path_delta);
   Object.assign(fieldUsage, pathDeltaUsage);
+  const [strideDecision, strideUsage] = normalizeStrideDecision(updatePacket.stride_decision, boundedPublicText);
+  const allowedStridePaths = request.allow_terminal_stride_path
+    ? ["continue", "no_change", "replan", "stop"]
+    : ["continue", "no_change", "replan"];
+  if (strideDecision && (!pathDelta || !allowedStridePaths.includes(String(pathDelta.outcome)) ||
+      !Array.isArray(pathDelta.evidence_refs) || !pathDelta.evidence_refs.length)) {
+    throw new EffectRuntimeRequestError("stride_decision requires an evidence-linked path decision");
+  }
+  Object.assign(fieldUsage, strideUsage);
   const [fallbackDeclarations, fallbackUsage] = normalizeFallbackDeclarations(
     updatePacket.fallback_declarations,
   ) ?? [null, {}];
@@ -669,6 +695,18 @@ function prepareVisionRefresh(request: VisionRefreshPrepareRequest): JsonObject 
   for (const [field, [, itemLimit]] of Object.entries(GOAL_PATH_DELTA_LIST_LIMITS)) {
     fieldLimits[`path_delta.${field}[]`] = itemLimit;
   }
+  if (strideDecision) {
+    for (const [field, limit] of Object.entries(STRIDE_PROBE_LIMITS)) {
+      if (Object.hasOwn(strideDecision.next_probe as JsonObject, field)) fieldLimits[`stride_decision.next_probe.${field}`] = limit;
+    }
+    if (strideDecision.axis_reasons) for (const axis of STRIDE_AXIS_NAMES) fieldLimits[`stride_decision.axis_reasons.${axis}`] = STRIDE_REASON_LIMIT;
+    if (strideDecision.schema_version === STRIDE_DECISION_SCHEMA) for (const axis of STRIDE_AXIS_NAMES) {
+      fieldLimits[`stride_decision.axes.${axis}.plan`] = STRIDE_PLAN_LIMIT;
+      fieldLimits[`stride_decision.axes.${axis}.reason`] = STRIDE_REASON_LIMIT;
+    }
+    if (strideDecision.previous_review) fieldLimits["stride_decision.previous_review.lesson"] = STRIDE_REVIEW_LIMIT;
+    if (strideDecision.explore_review) fieldLimits["stride_decision.explore_review.reason"] = STRIDE_REVIEW_LIMIT;
+  }
   fieldLimits["fallback_declarations"] = VISION_FALLBACK_DECLARATION_ENTRY_LIMIT;
   fieldLimits["fallback_declarations[]"] = VISION_FALLBACK_DECLARATION_ID_LIMIT;
 
@@ -690,6 +728,7 @@ function prepareVisionRefresh(request: VisionRefreshPrepareRequest): JsonObject 
     validation,
   };
   if (pathDelta !== null) agentVision.path_delta = pathDelta;
+  if (strideDecision !== null) agentVision.stride_decision = strideDecision;
   if (fallbackDeclarations !== null) {
     agentVision.fallback_declarations = fallbackDeclarations;
   }

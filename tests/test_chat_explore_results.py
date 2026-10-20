@@ -12,10 +12,14 @@ from loopx.capabilities.explore.result_log import (
     explore_result_log_path,
 )
 from loopx.chat_server import ChatHTTPServer, ChatRequestHandler
+from loopx.control_plane.todos.contract import (
+    encode_metadata_value,
+    format_todo_metadata_line,
+)
 
 
 @pytest.mark.parametrize("canonical", [False, True])
-def test_evidence_readback_pagination_scope_failure_and_recovery(tmp_path, monkeypatch, canonical):
+def test_ninth_link_readback_pagination_scope_failure_and_recovery(tmp_path, monkeypatch, canonical):
     registry = tmp_path / "registry.json"
     runtime = tmp_path / "runtime"
     (tmp_path / "active.md").write_text("# Synthetic Goal\n")
@@ -36,25 +40,36 @@ def test_evidence_readback_pagination_scope_failure_and_recovery(tmp_path, monke
             summary="Counterexample at input revision A " + "c" * 1700 + "; do not transfer beyond the tested scope.",
             evidence_refs=["artifact:counterexample"], agent_id="worker",
         ))
-    from loopx.todos import add_goal_todo, list_goal_todos
-    from loopx.control_plane.todos.contract import encode_metadata_value
+    from loopx.todos import list_goal_todos
     state = tmp_path / "active.md"
-    state.write_text("# Synthetic Goal\n\n## Agent Todo\n")
-    linked = add_goal_todo(
-        registry_path=registry, goal_id="evidence-goal", role="agent",
-        text="Test a uniform bound", agent_id="worker", claimed_by="worker",
-        explore_result_node_refs=["question"],
-    )["todo_id"]
-    add_goal_todo(
-        registry_path=registry, goal_id="evidence-goal", role="agent",
-        text="Unrelated task", agent_id="worker", claimed_by="worker",
+    linked = "todo_linked0001"
+    linked_metadata = format_todo_metadata_line(
+        todo_id=linked,
+        status="open",
+        claimed_by="worker",
+        explore_result_node_refs=[*[f"prior-{i}" for i in range(8)], "question"],
+    )
+    unrelated_metadata = format_todo_metadata_line(
+        todo_id="todo_unrelated0001",
+        status="open",
+        claimed_by="worker",
         explore_result_node_refs=["elsewhere"],
     )
-    state.write_text(state.read_text() + (
-        "\n## Completed Work Archive\n- [x] Retain the counterexample\n"
+    state.write_text(
+        "# Synthetic Goal\n\n"
+        "## Agent Todo\n\n"
+        "- [ ] Test a uniform bound\n"
+        f"{linked_metadata}\n"
+        "- [ ] Unrelated task\n"
+        f"{unrelated_metadata}\n\n"
+        "## Completed Work Archive\n"
+        "- [x] Retain the counterexample\n"
         "  <!-- loopx:todo todo_id=todo_archived role=agent status=done "
-        "claimed_by=worker explore_result_node_refs=" + encode_metadata_value("question") + " -->\n"
-    ))
+        "claimed_by=worker explore_result_node_refs="
+        + encode_metadata_value("question")
+        + " -->\n",
+        encoding="utf-8",
+    )
     if canonical:
         from pathlib import Path
         monkeypatch.syspath_prepend(str(Path(__file__).parent / "control_plane"))

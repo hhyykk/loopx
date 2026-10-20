@@ -1,8 +1,7 @@
 # Runner defaults and controlled ablations
 
 New LoopX executions default to **loopx-planned** task entry and replanning
-after **3 settled effective work Turns**, deliberately earlier than the product
-default of five. This applies to
+after **6 settled effective work Turns**, matching the product default. This applies to
 Harbor heartbeat, Turn and LoopX Goal modes, and EdgeBench heartbeat-resume and
 heartbeat-explore profiles. Planned entry replaces the seeded-todo default; pass
 `task_entry: seeded-todo` / `--task-entry seeded-todo` to retain the previous
@@ -21,16 +20,22 @@ use matched repetitions to test its effect.
 | --- | --- | --- |
 | Task entry | LoopX modes: loopx-planned | Record planned or seeded for every arm |
 | Explore | Off in heartbeat-resume; on in heartbeat-explore | Keep resume as the reference |
-| Turn envelope | Off | Enable only in its ablation |
-| Replan cadence | 3 settled effective work Turns | Use explicit completed-Todo cadence or another Turn count for ablation |
+| Turn envelope | Off; a checkpoint handoff enables capture on fresh_replan execute wakes and receipts record `turn_envelope_source: checkpoint_handoff` | Enable only in its ablation; read the effective receipt, not the opt-in flag |
+| Native-Goal continuation | Off: a native Goal that declares completion ends the worker; a Goal still active at the budget edge is recorded as `native_goal_outcome: budget_exhausted` with exit 0 | `native_goal_continue: true` / `--native-goal-continue` starts continuation Goals until 300 s before the budget edge (native-goal profile only) |
+| Replan cadence | 6 settled effective work Turns | Use explicit completed-Todo cadence or another Turn count for ablation |
 | Iteration context | Harbor: fresh; EdgeBench heartbeat: resume | Freeze the provider and context within a comparison |
+| Evaluator feedback | EdgeBench: best-only (strict new-best snapshot notifications) | Native and blind remain explicit controls; freeze feedback mode for every comparison |
 | Model and effort | Caller-selected | Pin both; never infer them from a profile name |
 | Time and sampling | EdgeBench task defaults in [task settings](../edgebench/README.md#trial-timeouts); explicit flags override | Pin resolved seconds in the study manifest |
 
 `replan_after_turns` counts settled effective work turns through the shared
-control-plane contract, not tool calls or idle heartbeat wakes. The threshold is 3 by
+control-plane contract, not tool calls or idle heartbeat wakes. The threshold is 6 by
 default, independent of task entry and TurnEnvelope. This is a deterministic
 threshold, not a random per-wake probability; other replan triggers may act sooner.
+An accepted replan resets the same Agent's periodic and repeated-progress history
+windows. A failed or unaccepted replan does not; current acceptance gaps remain
+independent triggers. Six reduces periodic interruptions relative to the previous
+default of three, but does not promise lower total replan time or better scores.
 Task timeouts bound attempts, not a requirement to consume every second.
 
 ## Recommended small study
@@ -40,15 +45,15 @@ These are recommendations, not automatically launched experiments.
 
 | Arm | EdgeBench flags relative to the reference | Question |
 | --- | --- | --- |
-| Reference | `--worker heartbeat-resume --task-entry loopx-planned --replan-after-turns 3` | Planned entry with effective-turn replanning |
+| Reference | `--worker heartbeat-resume --task-entry loopx-planned --replan-after-turns 6` | Planned entry with effective-turn replanning |
 | Seeded | Replace only `--task-entry` with `seeded-todo` | Does initial task decomposition help? |
 | Explore | Replace only `--worker` with `heartbeat-explore` | Are recorded evidence and subsequent route choices useful? |
 | Short envelope | Add `--turn-envelope` | Does progressive context loading reduce overhead without losing decisions? |
-| Todo cadence | Replace `--replan-after-turns 3` with `--replan-after-todos 3` | Does effective-turn cadence avoid postponing replans on long Todos? |
+| Todo cadence | Replace `--replan-after-turns 6` with `--replan-after-todos 3` | How do units and thresholds change interruptions? This is a combined ablation. |
 | No LoopX | `--worker official`; omit LoopX-specific flags | What is the net effect of the whole LoopX treatment? |
 
 The no-LoopX comparison changes several mechanisms; do not attribute its delta
-to one component. Native versus blind feedback is a separate factor: repeat
+to one component. Native, blind and best-only feedback are a separate factor: repeat
 selected matched arms within each feedback setting rather than mixing them.
 Prioritize entry and cadence first; enable the other arms after verifying that
 planning, settlement and evaluation work. For Explore, inspect whether evidence
@@ -63,9 +68,9 @@ python -m benchmark.edgebench.run \
   --task portfolio_risk_calibration --tasks-dir "$TASKS_DIR" \
   --log-dir "$RUNS_DIR" --run-id "$NEW_ATTEMPT_ID" \
   --worker heartbeat-resume --task-entry loopx-planned \
-  --replan-after-turns 3 --feedback blind \
+  --replan-after-turns 6 --feedback best-only \
   --model "$MODEL" --effort xhigh --timeout 43200 --eval-interval 300 \
-  --judge-url "$JUDGE_URL"
+  --judge-url "$JUDGE_URL" --api-proxy-url "$API_PROXY_URL"
 ```
 
 Use a fresh attempt id for each arm; set the runtime's documented source pins,
@@ -77,14 +82,26 @@ recorded service setting, not inherited from another task.
 
 Harbor uses the same task-entry owner. In the agent kwargs, set
 `execution_mode: heartbeat`, `task_entry: loopx-planned`,
-`replan_after_turns: 3`, `iteration_context: resume` and `turn_envelope: false`
-for an equivalent mechanism reference. For Todo cadence, remove
+`replan_after_turns: 6`, `iteration_context: resume` and `turn_envelope: false`
+for an equivalent mechanism reference. For the previous benchmark default, set
+`replan_after_turns: 3`.
+For Todo cadence, remove
 `replan_after_turns` and set `replan_after_todos: 3`; the two cadence fields are
 mutually exclusive. The named Explore profile in this matrix is EdgeBench-specific; do not assume
 an equivalent Harbor kwargs switch. Keep the dataset, provider and validation
 configuration unchanged.
 
 ## Readback and interpretation
+
+TurnEnvelope projections reuse the validated checkpoint declaration. An explicit
+opt-in records `turn_envelope_source=explicit`; a known `fresh_replan` declaration
+for heartbeat records `checkpoint_handoff`. Omitting `trigger` means after-wake
+capture and does not imply TurnEnvelope. A programmatic guest path without
+declaration bytes records capture configuration only: it cannot prove a trigger.
+For the Harbor adapter, pass the same validated `checkpoint_request` bytes with
+their `checkpoint_request_path` when projecting that known configuration. SForge
+forwards the exact bytes it stages. The worker's individual wake receipt remains
+authoritative for an actual handoff socket, including declaration loss or failure.
 
 Inspect resolved runtime/profile receipts, installed source revisions and the
 first planning/seed checkpoint before scoring a treatment. Pin task, evaluator,
@@ -97,6 +114,6 @@ cannot isolate an individual fix.
 Old attempts are immutable references. A rerun after multiple fixes measures
 the combined revision change unless each fix has a matched control. Roll back
 the entry default through explicit seeded entry and the cadence default through
-`--replan-after-todos 3` / `replan_after_todos: 3` in a new attempt. Do not rewrite
+`--replan-after-turns 3` / `replan_after_turns: 3` in a new attempt. Do not rewrite
 old receipts or change an active worker. None of these settings grants model,
 submission, credential or launch authority.

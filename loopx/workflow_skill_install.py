@@ -27,6 +27,7 @@ from .skill_install_readback import (
     write_skill_install_readback,
 )
 from .slash_command_install import materialize_loopx_entry_skill
+from .workflow_skills.ego_delivery import reconcile_ego_browser_skill
 
 
 WORKFLOW_SKILL_INSTALL_SCHEMA_VERSION = "loopx_workflow_skill_install_v0"
@@ -174,10 +175,16 @@ def _install_one_skill(source: Path, target: Path) -> str:
         with tempfile.TemporaryDirectory(prefix="loopx-repair-skill-") as staging:
             bundle = Path(staging) / source.name
             shutil.copytree(source, bundle)
-            shutil.copy2(Path(__file__).with_name("lexical_retrieval.py"),
+            shutil.copy2((Path(__file__).parent / "capabilities" / "context_providers"
+                          / "lexical_retrieval.py"),
                          bundle / "scripts/lexical_retrieval.py")
             return _install_one_skill(bundle, target)
     ignored = (SKILL_VERSION_MARKER_FILENAME,)
+    stale_backups = sorted(target.parent.glob(f".{target.name}.previous.*"))
+    if stale_backups:
+        raise RuntimeError(
+            f"workflow skill backup requires inspection: {stale_backups[0]}"
+        )
     if target.is_dir() and hash_skill_tree(
         source, ignored_relative_paths=ignored
     ) == hash_skill_tree(target, ignored_relative_paths=ignored):
@@ -192,7 +199,9 @@ def _install_one_skill(source: Path, target: Path) -> str:
         if target.exists():
             backup = target.with_name(f".{target.name}.previous.{os.getpid()}")
             if backup.exists():
-                shutil.rmtree(backup)
+                raise RuntimeError(
+                    f"workflow skill backup requires inspection: {backup}"
+                )
             target.replace(backup)
         temporary.replace(target)
     except BaseException:
@@ -202,8 +211,8 @@ def _install_one_skill(source: Path, target: Path) -> str:
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
-        if backup and backup.exists():
-            shutil.rmtree(backup)
+    if backup and backup.exists():
+        shutil.rmtree(backup)
     return "updated" if backup else "created"
 
 
@@ -289,6 +298,20 @@ def workflow_skill_install(
         expected_loopx_version_override=__version__,
     )
     if uninstall:
+        ego = reconcile_ego_browser_skill(
+            skills_dir=target_root, execute=execute, uninstall=True,
+        )
+        if not ego.get("ok"):
+            return {
+                "ok": False,
+                "schema_version": WORKFLOW_SKILL_INSTALL_SCHEMA_VERSION,
+                "operation": "uninstall" if execute else "uninstall_preview",
+                "skills_dir": str(target_root),
+                "source": _public_source(source),
+                "before": before,
+                "ego_browser": ego,
+                "reason": ego["reason"],
+            }
         result = (
             _uninstall_managed_skills(target_root)
             if execute
@@ -300,13 +323,14 @@ def workflow_skill_install(
             }
         )
         return {
-            "ok": result["ok"],
+            "ok": bool(result["ok"]) and bool(ego.get("ok")),
             "schema_version": WORKFLOW_SKILL_INSTALL_SCHEMA_VERSION,
             "operation": "uninstall" if execute else "uninstall_preview",
             "skills_dir": str(target_root),
             "source": _public_source(source),
             "before": before,
             "result": result,
+            "ego_browser": ego,
         }
 
     if not source.get("available"):
@@ -326,6 +350,18 @@ def workflow_skill_install(
         cli_bin=cli_bin,
         host_surface=host_surface,
     )
+    ego_preview = reconcile_ego_browser_skill(skills_dir=target_root)
+    if not ego_preview.get("ok"):
+        return {
+            "ok": False,
+            "schema_version": WORKFLOW_SKILL_INSTALL_SCHEMA_VERSION,
+            "operation": "install" if execute else "inspect",
+            "skills_dir": str(target_root),
+            "source": _public_source(source),
+            "before": before,
+            "ego_browser": ego_preview,
+            "reason": ego_preview["reason"],
+        }
 
     if not execute:
         install_command = [
@@ -345,9 +381,11 @@ def workflow_skill_install(
             "source": _public_source(source),
             "before": before,
             "entry": entry_preview,
+            "ego_browser": ego_preview,
             "host_surface": host_surface,
             "install_required": (
                 not before.get("ready")
+                or ego_preview.get("status") == "would_refresh"
                 or entry_preview.get("status") != "unchanged"
                 or entry_preview.get("metadata_status") in {
                     "would_create", "updated", "upgraded_legacy_managed",
@@ -406,6 +444,7 @@ def workflow_skill_install(
         )
 
     reconciliation = retire_duplicate_managed_skills(target_root, execute=True)
+    ego = reconcile_ego_browser_skill(skills_dir=target_root, execute=True)
     after = inspect_skill_install_readback(
         skills_dir=target_root,
         required_skill_ids=ARK_MANAGED_AGENT_REQUIRED_SKILL_IDS,
@@ -414,7 +453,7 @@ def workflow_skill_install(
         expected_loopx_version_override=__version__,
     )
     return {
-        "ok": bool(after.get("ready")),
+        "ok": bool(after.get("ready")) and bool(ego.get("ok")),
         "schema_version": WORKFLOW_SKILL_INSTALL_SCHEMA_VERSION,
         "operation": "install",
         "skills_dir": str(target_root),
@@ -424,6 +463,7 @@ def workflow_skill_install(
         "entry": entry,
         "after": after,
         "skill_reconciliation": reconciliation,
+        "ego_browser": ego,
         "rollback_command": shlex.join(
             [
                 "loopx",
@@ -464,6 +504,9 @@ def render_workflow_skill_install_markdown(payload: Mapping[str, Any]) -> str:
         lines.append(f"- install: `{payload['install_command']}`")
     if payload.get("rollback_command"):
         lines.append(f"- rollback: `{payload['rollback_command']}`")
+    ego = payload.get("ego_browser") or {}
+    if ego:
+        lines.append(f"- ego_browser: `{ego.get('status')}` — {ego.get('reason')}")
     result = payload.get("result") or {}
     if result:
         lines.extend(

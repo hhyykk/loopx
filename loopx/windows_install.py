@@ -34,8 +34,14 @@ REQUIRED_DEEP_CHECKS = {
 
 
 def _resolve_python(requested: str) -> Path:
+    # This fresh interpreter does not inherit the CLI's UTF-8 stream settings.
     result = subprocess.run(
-        [requested, "-c", "import sys; print(sys.executable); raise SystemExit(sys.version_info < (3, 11))"],
+        [
+            requested,
+            "-c",
+            "import sys; sys.stdout.reconfigure(encoding='utf-8'); "
+            "print(sys.executable); raise SystemExit(sys.version_info < (3, 11))",
+        ],
         check=False,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
@@ -337,11 +343,14 @@ def _copy_path(source: Path, target: Path) -> None:
 
 
 def _skill_mutation_paths(skills_dir: Path) -> list[Path]:
+    from .workflow_skills.ego_delivery import ego_skill_mutation_paths
+
     codex_home = skills_dir.parent
     paths = {
         *(skills_dir / skill_id for skill_id in PACKAGED_HOST_SKILL_IDS),
         skills_dir / "loopx",
         skills_dir / SKILL_INSTALL_READBACK_FILENAME,
+        *ego_skill_mutation_paths(skills_dir),
     }
     slash_plan = install_slash_commands(
         execute=False,
@@ -376,14 +385,50 @@ def _snapshot_paths(
     return snapshots
 
 
-def _restore_paths(snapshots: Sequence[tuple[Path, Path | None]]) -> None:
-    for path, backup in reversed(snapshots):
-        _remove_path(path)
-        if backup is not None:
-            _copy_path(backup, path)
+def _restore_paths(
+    snapshots: Sequence[tuple[Path, Path | None]],
+    *,
+    skill_paths: Sequence[Path] = (),
+) -> list[Path]:
+    skill_entries = set(skill_paths)
+    retained: list[Path] = []
+    try:
+        for path, backup in reversed(snapshots):
+            # A skill may be absent after deletion but before its copy starts.
+            if path.is_symlink() or path.is_dir() or (
+                path in skill_entries and path.exists()
+            ):
+                # A failed installation may have left user edits in a skill.
+                # Keep that state outside the temporary snapshot cleanup; its
+                # contents cannot be distinguished from installer writes here.
+                recovery_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{path.name}.install-recovery.",
+                        dir=path.parent,
+                    )
+                )
+                recovery = recovery_dir / path.name
+                path.replace(recovery)
+                retained.append(recovery)
+            else:
+                _remove_path(path)
+            if backup is not None:
+                _copy_path(backup, path)
+    except Exception as exc:
+        if retained:
+            raise RuntimeError(
+                f"{exc}; interrupted skill state retained at: "
+                + ", ".join(str(path) for path in retained)
+            ) from exc
+        raise
+    return retained
 
 
-def _install_skills(release_root: Path, skills_dir: Path, installed_at: str) -> list[str]:
+def _install_skills(
+    release_root: Path, skills_dir: Path, installed_at: str
+) -> list[str]:
+    from .workflow_skills.ego_delivery import reconcile_ego_browser_skill
+
     skills_dir.mkdir(parents=True, exist_ok=True)
     installed_ids: list[str] = []
     for skill_id in PACKAGED_HOST_SKILL_IDS:
@@ -412,6 +457,10 @@ def _install_skills(release_root: Path, skills_dir: Path, installed_at: str) -> 
         source_root=release_root,
         installed_at=installed_at,
     )
+    ego = reconcile_ego_browser_skill(skills_dir=skills_dir, execute=True)
+    print(f"Ego skill: {ego['status']}: {ego['reason']}", file=sys.stderr)
+    if not ego["ok"]:
+        raise RuntimeError(ego["reason"])
     return installed_ids
 
 
@@ -484,8 +533,8 @@ def install_windows(
             "installed_at": installed_at,
         }
         mutation_paths = [launcher, pointer, launcher_pointer]
-        if install_skills:
-            mutation_paths.extend(_skill_mutation_paths(skills_dir))
+        skill_paths = _skill_mutation_paths(skills_dir) if install_skills else []
+        mutation_paths.extend(skill_paths)
         with tempfile.TemporaryDirectory(
             prefix=".install-rollback.", dir=install_root
         ) as rollback_dir:
@@ -504,8 +553,9 @@ def install_windows(
                 _atomic_json(launcher_pointer, pointer_payload)
             except Exception as exc:
                 rollback_error: Exception | None = None
+                retained: list[Path] = []
                 try:
-                    _restore_paths(snapshots)
+                    retained = _restore_paths(snapshots, skill_paths=skill_paths)
                 except Exception as restore_exc:  # pragma: no cover - filesystem failure
                     rollback_error = restore_exc
                 # Keep the candidate: physical data may already have upgraded.
@@ -514,6 +564,12 @@ def install_windows(
                     raise RuntimeError(
                         "Windows installation failed and rollback was incomplete: "
                         f"{rollback_error}"
+                    ) from exc
+                if retained:
+                    raise RuntimeError(
+                        f"{exc}; filesystem snapshots restored. "
+                        "Interrupted skill state retained at: "
+                        + ", ".join(str(path) for path in retained)
                     ) from exc
                 raise
 

@@ -135,6 +135,27 @@ test("planning packet gates optional lenses without leaking its inventory", () =
   assert.equal("agent_todo_planning_inventory" in (result ?? {}), true);
 });
 
+test("a sole unclaimed candidate requires selection without an alternative", () => {
+  const primary = {
+    ...candidate("todo_unclaimed001", "Consider an available slice.", "P1"),
+    claimed_by: undefined,
+  };
+  for (const unavailable of [[], [{
+    ...candidate("todo_waiting001", "Wait for the original dependency.", "P0"),
+    status: "deferred",
+    availability_reason: "resume_condition_pending",
+  }]]) {
+    const result = projectQuotaActionPortfolio(request(primary, [], unavailable));
+    const policy = result?.selection_policy as Record<string, unknown>;
+    assert.equal(policy?.requires_explicit_turn_binding, true);
+    assert.equal(policy.recommendation_role, "default_not_binding");
+    assert.equal(policy.direct_delivery_before_selection, false);
+    const suggestions = result?.suggested_actions as Record<string, unknown>[];
+    assert.equal(suggestions.length, 1);
+    assert.equal(suggestions[0].claim_required_before_work, true);
+  }
+});
+
 test("planning packet rejects malformed projection gates", () => {
   const primary = candidate("todo_primary001", "Run the only slice.", "P0");
   assert.throws(
@@ -312,7 +333,7 @@ test("future or blocked higher priority work keeps the portfolio visible", () =>
   );
 });
 
-test("a single primary needs no redundant portfolio", () => {
+test("a single claimed primary needs no redundant portfolio", () => {
   const primary = candidate("todo_primary001", "Run the only slice.", "P0");
   assert.equal(projectQuotaActionPortfolio(request(primary, [])), null);
 });
@@ -435,6 +456,33 @@ test("only runnable replan-only deferral permits one inline guard reentry", () =
     {normal_delivery_allowed: true},
   ]) {
     assert.equal(qualifyActionSelection({...request, ...patch}).inline_reentry_allowed, undefined);
+  }
+});
+
+test("only the current exact scoped fallback may bind through an operator gate", () => {
+  const selected = candidate("todo_independent001", "Validate the independent result.", "P1");
+  const request = {
+    schema_version: ACTION_SELECTION_QUALIFICATION_REQUEST_SCHEMA_VERSION,
+    requested_todo_id: selected.todo_id, candidate: selected,
+    should_run: false, normal_delivery_allowed: false,
+    delivery_preemptions: ["delivery_not_allowed"],
+    scoped_fallback_todo_id: selected.todo_id, quota_state: "operator_gate", goal_health_ok: true,
+  };
+  const allowed = qualifyActionSelection(request);
+  assert.equal(allowed.state, "qualified");
+  assert.equal((allowed.selected_todo as Record<string, unknown>).todo_id, selected.todo_id);
+  for (const patch of [
+    {scoped_fallback_todo_id: null}, {scoped_fallback_todo_id: "todo_gated001"},
+    {goal_health_ok: false}, {quota_state: "paused"}, {quota_state: "throttled"},
+    {quota_state: "unknown"}, {delivery_preemptions: []},
+    ...["heartbeat_receipt", "autonomous_replan", "blocking_work_lane", "control_repair",
+      "ready_deferred_successor_priority_preemption"].map(reason => ({
+        delivery_preemptions: [reason, "delivery_not_allowed"],
+      })),
+  ]) {
+    const denied = qualifyActionSelection({...request, ...patch});
+    assert.equal(denied.state, "deferred", JSON.stringify(patch));
+    assert.equal(denied.selected_todo, undefined);
   }
 });
 

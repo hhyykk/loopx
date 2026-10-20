@@ -29,9 +29,10 @@ budgeting, dreaming, or product-specific replan logic.
 
 ## Default review cadence
 
-Goals without an explicit Goal or device cadence use five settled effective work
-Turns per Agent. This replaces the implicit five-completed-Todo default; existing
-explicit Todo values keep their unit. Benchmark runners pin three effective Turns.
+Goals without an explicit Goal or device cadence use six settled effective work
+Turns per Agent, matching the benchmark runner default. The previous defaults
+were five and three Turns respectively. Existing explicit Turn and Todo values
+keep their unit and count; upgrading does not rewrite these overrides.
 The existing TypeScript replan history owner counts verified settlement receipts;
 no TurnEnvelope opt-in is needed. Quota and writeback resolve the same live
 configuration. See [Goal review cadence](../../quota-allocation.md#goal-review-cadence)
@@ -93,6 +94,34 @@ replan 持久记录已接受的 `new_runnable_successor` 后，新一轮 quota �
 被显式选择。仅当前 Agent 最新已接受的 ACK 提供偏好；后续任务必须仍归属该
 Agent、匹配确切来源义务并通过准入。方案被替换或任务失效时恢复普通选择；
 显式选择、已绑定回执及现有 Gate 保持优先。纯文字 Vision 不能标识要推荐的任务。
+
+## Completed Todo lifecycle reentry
+
+An admitted lifecycle review retains its original Turn identity when its exact
+completed Todos are legally closed with `todo complete --no-follow-up`. The
+canonical completion identities and same-agent terminal-reentry facts must
+reconstruct the admitted obligation; ambiguous or changed sources fail closed.
+Lifecycle reentry updates `updated_at`, preserving the original completion time,
+identity and validation evidence. Terminal rows closed before admission are
+excluded. Recovery restores original
+completion order before the bounded trigger selection; it does not order sources
+by their later closeout times. Whole-second Todo timestamps allow a same-second
+closeout candidate only when the original obligation digest still matches.
+The shared typed replan owner projects settlement only, with a fresh
+evidence-linked Vision/path writeback still required before one quota debit.
+No original validator is rerun, no successor is executed in that Turn, and a
+new frontier remains the next Turn's responsibility. Lifecycle obligation
+identities now include Todo and completion identities; older ambiguous receipts
+are not rewritten or automatically admitted by this recovery.
+
+已准入的生命周期复核中，确切 Todo 合法执行 `--no-follow-up` 后，原轮身份保持
+不变。恢复须由同一 Agent 的规范终态及原完成身份重建原义务；来源不明确或
+变化时仍拒绝。恢复只允许收尾，仍须提交带证据的 Vision/path 回写后扣额一次；
+接续收尾更新 `updated_at`，保留原完成时间、身份及验证证据。准入前已收尾的
+历史记录须排除，来源按原完成顺序恢复后再截取触发项，不能按
+后来收尾的时间排序。Todo 时间戳精度为秒，同秒候选仍须匹配原义务摘要。
+不重跑原验证、不在本轮执行后续任务，也不抹除下一轮的新验收缺口。该类义务
+身份增加 Todo 与完成身份，旧的模糊回执不会被改写或自动放行。
 
 ## CLI Budget
 
@@ -235,10 +264,112 @@ the same `agent_id` as the refresh run. This keeps `research-executor`,
 `evaluator-promoter`, and other roles from overwriting or satisfying each
 other's active vision.
 
+### Decision followthrough in replan context
+
+Identify planned work in `agent_vision.todo_delta` with a supported action prefix:
+for example, `retain:todo_<id>` for an existing Todo. The supported verbs are
+`activate`, `create`, `reopen`, `resume` and `retain`; replace `todo_<id>` with the
+verified ID after ordinary Todo authoring/readback. These entries record intent;
+they do not create, claim or authorize work. Historical descriptive entries remain
+readable but create no work links; the literal prefix `action:` is not supported.
+
+在 `agent_vision.todo_delta` 中使用具体动作关联计划工作，例如用
+`retain:todo_<id>` 保留已有 Todo；支持 `activate`、`create`、`reopen`、`resume`
+和 `retain`。先完成普通 Todo 写入/读回，再替换真实 ID。这些条目只记录计划，
+不创建、认领或授权任务。历史描述文本仍可读取，但不会形成工作关联；
+`action:` 不是可用动作前缀。
+
+With `evidence_conditioned_v1` enabled, when the captured history contains a prior
+accepted evidence-linked Vision path,
+`replan_context.decision_followthrough` returns that path with the later recorded
+progress references. It uses the existing Goal/Agent/Turn binding and immutable
+history source order; timestamps do not decide causality. The full local index
+supplies append positions. Compact newest-first carriers and the named
+`newest_first_runs` builder reverse those positions without reordering ordinary
+evidence. Arbitrary iterables with unknown order supply no causal positions and
+therefore no decision-followthrough claim. An explicit current
+Goal instance excludes retired-instance sources. The normal history read resolves
+its evidence references; private transport facts are not returned. The derived
+`replan-decision-*` reference binds the normalized path and its original
+`replan-evidence-*` history reference. Changed paths cannot resolve an old
+decision reference; existing history reference identities are unchanged.
+
+Details are bounded to six distinct progress fingerprints with the full recorded
+count, omitted count, source completeness and missing-order count. These are
+recorded observations, not settled-effective-Turn counts or independent trials.
+`execution_and_goal_gain=unknown` stays explicit: a changed progress identifier,
+accepted replan or serialized observation proves neither a new mechanism nor its
+execution, candidate adoption, scientific improvement or Goal completion. A
+missing, rejected or malformed basis adds no followthrough projection. No
+selection, trigger, quota, acceptance, lease or scheduler rule changes.
+
+When declared Todo work has later ordinary writebacks without the optional
+typed-progress attachment, followthrough also returns `ordinary_work`: up to six
+immutable `evidence` references with their `generated_at` and `todo_id`, plus
+`recorded_count` and `omitted_count`. Each displayed Todo's
+`ordinary_evidence_refs` links only its own delivered records. Accounting-only,
+earlier, foreign-lane and retired-instance rows are excluded; append order also
+retains delayed corrections without treating their clock as causal order.
+Resolve the references through the existing scoped history read before
+reviewing the outcome. Ordinary evidence has no `coverage_ref`, does not increase
+`recorded_progress_count`, and certifies no execution or gain. Its absence retains
+the legacy packet shape, not a claim that no work happened. Feature-off output,
+historical identities and full-source writeback qualification are unchanged.
+
+`decision_followthrough.work_result_use` also reconstructs unresolved declared-work
+evidence across reviews from the existing append order. Another review or a bare
+citation cannot consume it: a recorded decision must cite its immutable history
+reference, declare subsequent Todo work, and be followed by a material writeback
+on that Todo. `recorded_followthrough` exposes that source relation, not certified
+execution, candidate applicability or utility. Complete/omitted counts accompany
+the six-row windows; replay does not resurrect consumed evidence. A replaced
+plan invalidates its unexecuted proposal, not the unresolved source. This is a
+read model, not a pending-duty ledger, new write gate or forced continuation.
+The Agent still checks the provider's exact candidate/input/result revision.
+
+The relation uses the existing delivery outcome owner: only `outcome_gap`,
+`outcome_progress` and `primary_goal_outcome` records create pending work results
+or satisfy subsequent followthrough. `surface_only`, missing and unsupported
+historical outcomes remain readable in ordinary history but neither consume a
+cited result nor create a new unresolved result. An optional progress attachment
+does not override that classification. Negative results and concrete blockers
+remain eligible material evidence; this does not certify execution or gain,
+rewrite source history, or alter settlement, waiting or continuation authority.
+
+结果接续复用既有 delivery outcome 分类：只有 `outcome_gap`、`outcome_progress`
+和 `primary_goal_outcome` 才形成待复盘工作结果或后续接续关系。纯整理
+`surface_only`、缺失或未知历史分类仍可从普通历史读取，但不会把旧结果标为已接续，
+也不会产生新的待复盘结果；可选 progress 附件不能覆盖这一分类。有效负结果和明确
+阻塞仍保留。这只是来源关系，不认证实际执行或收益，不改写历史、结算或继续运行权限。
+
+启用 `evidence_conditioned_v1` 且历史中已有被接受、绑定证据的 Vision 路线时，replan context 返回上次决定与之后的
+进度引用，按合格来源的顺序关联，而非根据时间戳或文案猜测因果。完整本地索引提供
+追加位置；已知最新在前的紧凑载体与 `newest_first_runs` 入口转换位置，保留普通
+证据原顺序。顺序未知的 iterable 不提供因果位置，也不生成决定接续投影。显式当前 Goal
+实例排除已退休实例。详情最多六项，保留总数、遗漏数、源完整性与顺序缺失数；
+正常 history 入口可读取引用，私有 transport facts 不公开。这些是记录中的观测，
+不等于有效结算 Turn、独立试验或执行/收益证明；后者明确保持 unknown。缺失、
+拒绝或损坏的依据不产生投影；选择、触发、结算及权限规则不变。
+
+已声明 Todo 的后续普通回写即使没有可选 typed-progress，也经 `ordinary_work`
+返回最多六条不可变引用、时间和 Todo 身份，并保留总数与省略数。各 Todo 的
+`ordinary_evidence_refs` 只指向自己的已投递记录；排除记账、决定前、其他 Agent
+及旧 Goal 实例的记录，迟到纠正仍按来源追加顺序保留。通过既有 history 入口读取
+原文后再评估结果；普通证据不伪造 `coverage_ref`，不增加 typed-progress 计数，
+也不证明执行或收益。没有普通证据时保留旧包形状，不据此断言没有工作。off 输出、
+历史身份和完整来源的写回资格不变。
+
+`work_result_use` 从既有追加历史重建跨复盘尚待跟进的声明工作证据。又做一次复盘
+或只引用一次都不会消耗结果：决定须引用其不可变 history 身份、声明后续 Todo，
+并出现该 Todo 的实际材料回写，才返回 `recorded_followthrough` 关联。它不认证执行、
+候选适用性或收益；Agent 仍应核对提供方的候选/输入/结果版本。两个六项窗口保留
+完整/省略计数，重放不复活已关联证据，替换未执行计划不删除原结果。它不是新待办
+账本、写入门槛或强制续跑规则。
+
 ### Replan planning guidance
 
-The shared `replan_action_packet.planning_guidance` carries two short Agent
-instructions through full/compact quota and the host Turn envelope:
+The shared `replan_action_packet.planning_guidance` carries five existing Agent
+instructions and an optional sixth stride instruction through full/compact quota and the host Turn envelope:
 
 - Preserve the requested end state under current user direction. A bounded
   slice retains outstanding requirements; easier tests cannot redefine
@@ -249,20 +380,401 @@ instructions through full/compact quota and the host Turn envelope:
   Missing, stale or indirect evidence leaves completion unproven. An empty Todo
   list, a passing subset or a settled replan is insufficient; blocked, exhausted
   and superseded outcomes remain distinct from achievement.
+- Before `no_followup`, review unmet acceptance against the original authorized
+  goal and evidence. Continue or replan if a reasonable in-scope step remains,
+  even without an assigned successor. An empty queue does not limit scope;
+  otherwise explain why no step remains without inventing work, exceeding
+  authority or consuming budget just to remain active.
+- Preserve requested priorities and optimization direction. Distinguish user
+  requirements and hard constraints from provisional agent-created candidate
+  rules; reconsider the latter when they obstruct the goal. This cannot relax
+  frozen acceptance, authority, budgets or stops, or rewrite criteria after a
+  failure.
+- Compare expected progress toward the goal or information gain with the full
+  marginal cost of the next step. Before expanding repeated validation, verify
+  that the changed intervention reaches the executed path and current artifact.
+  Prefer a discriminating probe, keep negative evidence scoped to tested
+  conditions and proxies scoped to their coverage, and reuse still-applicable
+  evidence when no new uncertainty warrants repetition.
+  Correct within the affected work first; widen replanning only when current
+  Goal, path, dependency or acceptance evidence warrants it. A due review may
+  retain the path rather than force a pivot. At the next review check actual
+  subsequent work and authoritative outcomes; recording the decision alone
+  proves neither adoption nor improvement.
+- **Only with `evidence_conditioned_v1`:** Review the previous path decision against subsequent work and authoritative
+  outcomes. When local tuning or repeated validation leaves the goal gap
+  unexplained, compare a bounded alternative mechanism with continuation or
+  replication. Elapsed time and one noisy result do not force a pivot. Protect
+  the best qualified artifact; name the next probe's distinguishing prediction,
+  adoption criterion and bounded cost, then check actual execution and outcome
+  at the next review. Research scope changes use existing paths or successors.
 
-This guidance is included by default whenever a replan action packet is
-projected. It is Agent judgment guidance, not a new machine-enforced acceptance
-gate or a permission grant. Typed semantic outcomes, lifecycle transitions and
-non-replan turns are unchanged. The existing TypeScript replan owner supplies
-the text; CLI and host projections preserve it without a new setting or editor.
-Transport tests prove delivery and unchanged gates, not improved model behavior.
+The first five instructions remain the ordinary replan contract. The optional
+TypeScript strategy component adds the sixth and the followthrough read model;
+`off` (the default, including legacy configurations) preserves ordinary context
+identity, evidence selection and guidance. Unknown versions fail before mutation.
+This is Agent judgment advice, not a new machine-enforced acceptance gate,
+permission, adaptive scheduler or automatic route actuator. Typed semantic
+outcomes and non-replan admission/settlement rules are unchanged. Tests prove delivery and isolation;
+model adoption and utility require matched experiments.
 
-共享 replan action packet 默认携带两条简短指引，并在完整/精简 quota 与
-Turn envelope 中保留：不能为了容易通过测试而悄悄缩小目标；宣布 Goal 达成前，
-须逐项核对当前要求与实际状态的权威证据。阶段成果保留剩余要求，证据缺失、
-过期或间接时保留未证实的缺口；阻塞、探索耗尽及被替代不等于达成。
-用户授权的范围调整、权限、预算和停止条件仍有效。这是 Agent 判断指引，
-不新增机器验收门禁或配置，不改变已有语义写回规则；投影测试不代表模型效果提升。
+Heartbeat templates consume this owner; they must not invent a separate
+two-stall replan or self-pause policy. Operation-local recovery first reconciles
+ambiguous effects. Local work correction preserves unaffected Todos and the
+original accountable Turn; a material scope/direction change still uses the
+existing Vision/ACK/successor contracts. The prompt and skill now remove those
+legacy count rules; Core stall detection and configured periodic reviews remain.
+
+心跳模板不再另设“两次停滞就重规划、再两次就暂停”的规则。操作恢复先核对不明
+副作用；局部纠偏保留无关工作和原 Turn 结算，扩大范围仍走 Vision/ACK/successor。
+到期复核可以维持原路线。纠偏写入、后续工作采纳、结果改善分别验证；Core 原有的
+停滞识别和周期复核不变。
+
+共享 replan action packet 保留五条默认指引，可选策略增加第六条，并在完整/精简 quota 与
+Turn envelope 中保留：
+
+- 不能为了容易通过测试而缩小目标；阶段成果保留剩余要求，遵守用户范围、
+  权限、预算和停止条件。
+- 宣布 Goal 达成前，逐项核对当前要求与实际状态的权威证据。空 Todo 队列、
+  部分测试通过或完成重规划都不构成证明；阻塞、探索耗尽及被替代不等于达成。
+- 在 `no_followup` 前，结合原始授权目标和证据复查未满足的验收。有合理的范围内
+  下一步就继续或重规划，无需等待指定 successor；空队列不缩小范围。否则说明
+  为什么已无下一步，不虚构工作、越权或仅为维持活跃而消耗预算。
+- 保留用户要求的优先级和优化方向，区分硬约束与 Agent 暂定的候选筛选规则；
+  后者阻碍目标时应重新审视。不能放宽冻结验收、权限、预算或停止条件，
+  也不能因失败而事后改写标准。
+- 将预期的目标推进或信息收益与下一步的完整边际成本一起比较。扩大重复验证前，
+  确认改动进入实际执行路径和当前产物。优先选择能区分剩余解释的探针；负证据
+  只覆盖已测条件，局部代理指标只覆盖其代表的范围。没有新不确定性时复用
+  仍然适用的证据。
+- **仅启用 `evidence_conditioned_v1` 时：** 将上次路线决定与后续工作、权威结果对照。若局部调参或重复验证仍无法解释目标
+  缺口，比较有界的新机制、原路线接续与重复测量；不因固定时长或一次噪声结果
+  强制转向。保留最佳已验证产物，为下一探针说明判别性预测、采用条件与有界成本，
+  下次复查真实执行和结果；实验范围通过现有 path/successor 改变，不改变权限或验收。
+
+默认 `off` 及旧配置保持普通 context 身份、证据选择和前五条指引；启用策略时
+增加第六条与上次决定回读。未知版本在写入前拒绝。它提供 Agent 判断建议，
+不新增机器验收门禁、执行权限、自动调度或路线执行器；送达和隔离测试不能
+证明模型采用及收益。
+
+### Configure and roll back the stride strategy
+
+Use the existing **Goal review and stride** capability editor, selecting device
+defaults or an explicit Goal target. Preview, confirm and read back the effective
+configuration/source. A Goal can select only the strategy and keep inheriting
+the live device review interval (six settled work Turns by default). An explicit
+Goal review unit/count still pins that interval; an older cadence-only override
+without a strategy remains `off`, even when the device strategy is enabled.
+Clearing the interval alone retains the Goal strategy, while clearing both
+restores device defaults. There is no separate stride timer. Switching between
+JSON and the form preserves that choice: omitted interval fields keep inheritance,
+while explicit fields remain pinned even when they equal the current device value.
+A strategy-only Goal capability JSON object clears an existing interval override.
+The CLI's single-field strategy option retains a stored interval; use its explicit
+cadence-clear options to restore inheritance.
+
+![Versioned stride strategy in the existing capability editor](assets/stride-strategy-editor.png)
+
+Isolated packaged editor with the real revision-checked configuration handler;
+workspace discovery is synthetic. This demonstrates configuration readback, not
+installed-App adoption or research utility.
+
+CLI preview/apply and readback (replace `GOAL`):
+
+```sh
+loopx configure-goal --goal-id GOAL --execution-stride-strategy evidence_conditioned_v1
+loopx configure-goal --goal-id GOAL --execution-stride-strategy evidence_conditioned_v1 --execute
+loopx --format json configure-goal --goal-id GOAL
+loopx configure-goal --goal-id GOAL --execution-stride-strategy off --execute
+```
+
+Turning the strategy off retains the review interval and ordinary review. To
+restore device defaults for the entire review configuration, clear the cadence
+and strategy through the editor or `--clear-execution-replan-after-turns
+--clear-execution-replan-after-todos --clear-execution-stride-strategy --execute`.
+Historical evidence remains readable after disabling. Activation cannot authorize
+experiments, spend quota, clone a checkpoint, relax acceptance or rewrite a
+frozen experiment. Configuration is versioned; preregister the selected version
+and captured input scope for comparisons.
+
+在既有「Goal 复盘与步幅」能力中心中选择设备默认值或明确的 Goal，预览、确认并
+回读生效来源。Goal 可仅选择策略，继续沿用设备的实时复盘周期（默认每 6 个已结算
+工作 Turn）；显式设置 Goal 计数依据和数量仍会固定该周期。旧的仅含周期覆盖没有
+策略时仍为 off。单独清除周期会保留 Goal 策略；两者都清除才恢复设备默认值。
+步幅策略没有第二个独立计时器。JSON 与表单切换保留原选择：省略周期字段继续
+继承，显式字段即使等于当前设备值也保持固定。Goal 能力 JSON 仅含策略时清除
+已有周期覆盖；CLI 单字段策略选项仍保留已存周期，要恢复继承须显式使用周期
+清除选项。关闭策略保留复盘周期。
+历史引用仍可读取。启用不会授权实验、消耗配额、复制 checkpoint、放宽验收或
+改写冻结实验；比较时预先记录策略版本与输入覆盖范围。
+
+### Structured stride control
+
+One opt-in strategy is selectable: `off | evidence_conditioned_v1`. The existing
+activation token remains stable; the initial implementation now replaces its
+fixed evidence-label mapping with **three independently justified coordinates**.
+Pin the exact source revision when comparing runs. Frozen workers retain their
+installed source; historical fixed-vector declarations remain readable without
+being reinterpreted as new decisions.
+
+The full, compact CLI and Host packets expose `replan_action_packet.stride_control`.
+Declare `agent_vision.stride_decision` using `stride_decision_v2`, the strategy,
+actual context and admitted obligation references, Agent-assessed `basis`, and
+an explicit `action`:
+
+- `grow`: expand a supported route's complete implementation, scale or coverage;
+- `switch`: test a different mechanism against the declared reference method;
+- `verify`: resolve a specific uncertainty that determines whether to grow or switch.
+
+Each of the three `axes`
+contains a concrete `plan` (up to 120 characters) and `reason` (up to 96), instead
+of a relative adjustment enum. Work size describes a complete experiment;
+route distance names the reference method and changed assumption or mechanism;
+validation scope describes the evidence needed to decide. Expanding useful work
+is encouraged when supported. A switch can require a larger implementation and
+wider validation, while continued research can resolve uncertainty in the
+existing route. Basis does not select a vector, and tuning alone does not
+establish a route switch. The minimal packet example demonstrates authoring
+syntax; its action is not a recommendation for the current evidence.
+
+`shrink` is not a new decision option. Both historical v1 shapes remain readable
+with their original values, including normalized off-mode attachments, but cannot
+discharge a fresh enabled review. The wire-schema revision changes authoring,
+not the single selectable strategy or the meaning of recorded experiments.
+Required acceptance and authority remain unchanged.
+
+`next_probe` records `scope`, `prediction`, `minimum_evidence`,
+`adoption_criterion` and `cost_bound`. Choose a **complete experiment
+that can reach an interpretable conclusion**, including implementation and
+validation, rather than the smallest Todo. Preserve unfinished useful work and
+the best qualified artifact. Do not repeat a smaller probe merely because the
+previous decision was not adopted or a repeated observation added no information;
+resolve the execution gap or name the changed inputs/new uncertainty first.
+A `verify` action names the grow-or-switch decision its result will inform;
+repeated checking without new information is not a default continuation policy.
+
+When evidence weakens the current route, the existing `route_distance` guidance
+asks for a small set of genuinely different explanations or approaches before
+selecting an experiment: representation, decomposition, search method or
+information source as applicable. Contrast predictions and full costs, preserve
+the qualified incumbent, and choose a comparison that can change the next
+decision. Parameter variants alone are not distinct mechanisms. Missing feedback
+is a wait/evidence gap, not evidence that a route failed or alternatives were
+exhausted. This is opt-in Agent guidance in the existing axes/reasons and
+`next_probe`, not a new proposal field, forced pivot, branch scheduler, permission
+or automatic experiment launch. A larger portfolio or a recorded switch does
+not establish adoption or benefit; subsequent evidence must still qualify both.
+
+当证据削弱当前路线时，现有 `route_distance` 指引要求先提出少量真正不同的解释或
+方法，再选择实验；可考虑表征、问题分解、搜索机制或信息来源。比较各自预测和
+完整成本，保留已验证的当前最佳产物，选择能改变下一步决策的对照。相同机制的
+参数变体不算不同路线；缺少反馈属于等待或证据缺口，不证明路线失败或其他方法
+已经穷尽。这仅补充启用策略后的既有轴、理由与 `next_probe` 指引，不增加字段、
+强制转向、分支调度或执行权限。记录了切换或更多候选，不等于执行或效果已经成立。
+
+When a prior accepted decision is delivered, `previous_review` references its
+exact `replan-decision-*` id and separately records:
+
+- `adoption`: executed, partially executed, not executed or unknown;
+- `information_gain`: new evidence, repeated evidence or unknown;
+- `goal_gain`: improved, flat, regressed or unknown;
+- delivered evidence references and the bounded lesson for the next experiment.
+
+A claim needs evidence references; unavailable evidence remains unknown. These
+are explicit Agent assessments, not host certification of scientific truth.
+The next review retains the assessment with the original decision and subsequent
+observations, so planning, execution, information and target benefit remain
+separately inspectable.
+
+Co-enabled Explore Graph/Harness supplies a scoped `explore_basis`: references
+into its existing findings, selected work branches and omitted-result read path.
+It does not create another graph or rerank branches. `explore_review` binds the
+basis revision and records considered finding ids, disposition (`used`,
+`deferred`, `no_applicable_evidence`, `unavailable`) and reason. A scoped
+counterexample is not a universal route ban, planner selection is not execution,
+and co-enablement is not evidence of synergy. Foreign/undelivered references,
+stale revisions and declaring unavailable evidence as empty are rejected. A
+changed evidence basis requires reassessment under the original Turn identity,
+not another quota debit. Disabled Explore adds no Explore assessment duty.
+
+For a considered finding omitted from the bounded basis, follow the global
+`result_page.next_command` (or increase its page size), then add
+`explore_review.result_pages: [{"revision": "<page revision>", "offset": 3, "limit": 3}]`.
+Copy these three coordinates from each page actually read; keep
+`explore_review.revision` bound to the original Explore basis. At most three
+distinct pages and three considered findings fit the existing Vision budget.
+Writeback replays the requested slices of the current, strictly validated
+Explore source and admits only findings present in those pages. The page
+revision binds the ordered full result contents and Goal/reader scope; it is
+not the bounded basis revision. Same-Goal peer findings remain reusable.
+Changed or unavailable source, forged membership and node-filtered pages are
+refused. Reread and reassess under the original Turn and obligation. This
+optional v2 field is retained in decision/history readback; ordinary reads stay
+read-only and no receipt store, claim, spawn or extra quota debit is created.
+Source replay verifies the declared citation, not that the model understood or
+adopted it. Existing v2 decisions without pages and historical v1 reads retain
+their behavior. Other detail routes are not supplemental citation sources.
+
+The typed owner validates shape, references and declared provenance before the
+fresh Vision path exit. When an enabled Goal reaches a periodic review or an
+existing observed-stall review (`typed_progress_repeat`, `no_progress_streak`,
+`repeated_action_loop`, `external_progress_review_drift`), every
+accepted exit must also record a current `agent_vision.stride_decision`: a new
+progress observation, runnable successor, blocker or coverage-backed terminal
+result cannot silently replace that decision. The typed outcome remains legal
+and retains its own evidence gate. The decision references both the due
+obligation and its delivered review context. A terminal review may attach it to
+an evidence-linked `stop` path. A Todo successor transition alone cannot settle
+the review. An evidence-linked `continue` or `no_change` decision can retain useful
+unfinished work without manufacturing a new progress identifier or successor.
+Explicit acceptance/capability outcome restrictions still apply. Other replan
+sources retain their existing exit policies; `off` retains the prior stall exits.
+This changes the completeness of an enabled review, not stall detection, cadence,
+authority or the choice of action.
+
+All attachment text counts toward the existing
+1,800-character Vision budget. The live packet exposes field limits. Legacy
+recorded declarations and old explicit off-mode attachments retain transport
+compatibility; a newly enabled fresh-path proposal requires v2 action,
+concrete plans/reasons and minimum evidence.
+
+The proposal does not execute or split a Todo, launch a child, submit a candidate,
+spend quota or certify gain. Ordinary Todo/Next Action and existing admission
+owners govern work. `off` preserves ordinary projection and review semantics.
+Evaluate actual artifact adoption, task outcomes and complete marginal cost
+before calling this strategy beneficial.
+
+**中文：** 初版只保留一套可选策略和总开关，沿用现有配置值，比较时固定确切源码。
+新提案使用 `stride_decision_v2` 数据格式，显式选择 `grow | switch | verify`，三个轴
+分别填写具体 `plan` 与 `reason`，移除 `shrink` 和含糊的 `hold` 选项。grow 扩大有
+支持的路线；switch 尝试不同机制；verify 解决决定扩大或切换的具体不确定性。
+切换需说明参照方法与
+机制变化，不能把调参重命名成新路线。工作单位是连贯的可验收交付或能产生可解释结论的完整实验，
+有支持时扩大工作；新路线可能需要更大实现，不稳定证据可能需要更多验证。
+最小示例仅演示格式，不是当前证据的行动推荐。下一实验须说明最低证据、预测、
+采用条件与完整成本。上轮复盘分别判断实际采用、新信息与目标收益，缺证据保持未知；
+不反复缩小未被采用或没有新信息的探针。Explore 开启时，绑定既有图谱/规划的证据
+revision 与具体 finding，说明采用、暂缓、无适用证据或读取不可用及理由，保留范围、
+反例和省略项的读取路径；不开新图或第二个 planner。错源、错引用、过期依据拒绝，
+按原 Turn 身份重新审视；不开额外执行权或配额。机器校验提案结构与引用，不能证明
+模型判断正确或已提升收益。两种历史 v1 决策保留原义读取兼容，但不能完成新的
+启用策略复盘；数据格式更新不增加可选策略版本。
+策略启用且周期复盘到期，或既有停滞复核触发时（`typed_progress_repeat`、
+`no_progress_streak`、`repeated_action_loop`、`external_progress_review_drift`），
+所有可接受出口都须记录绑定本次义务的
+`agent_vision.stride_decision`。新进展、可执行后续任务、阻塞或有覆盖证据的终止
+仍可作为结果，但不能代替复盘决定；决定须引用本次义务及交付的复盘上下文，
+单独创建后续 Todo 也不能结算到期义务。
+终止时可把决定附在有证据的 `stop` 路径上。有证据的 `continue` 或 `no_change`
+可以保留尚未完成的有用工作，不必编造新进展标识或后续任务；验收和能力 owner
+显式限定的结果仍须遵守。其他 replan 来源和 `off` 模式的停滞出口保持原规则。
+这补齐启用后的复核内容，不改变停滞检测、周期、权限或替 Agent 选择动作。
+
+The same opt-in strategy covers ordinary engineering, organizing and maintenance.
+`grow` expands a coherent accepted deliverable, including related integration,
+validation and readback; it does not enlarge authority, postpone settlement or
+bundle independent commitments. Compare complete marginal cost and quality in
+the next review. A synthetic admitted-work journey proves protocol adoption,
+not improved model decisions or net efficiency.
+
+同一可选策略也覆盖普通工程、整理和维护：grow 扩大连贯的可验收交付，包含相关
+集成、验证和回读，不扩大权限、延迟结算或捆绑独立承诺。下次复盘核查质量与完整
+边际成本；合成准入链路只能证明协议采用，不能证明模型决策或净效率改善。
+
+补读全局结果分页后，可在 `explore_review.result_pages` 中附上实际读取页面的
+`revision`、`offset`、`limit`，最多三页；`explore_review.revision` 仍引用原有界
+证据版本。提交时从当前可信来源重放页面并核对 `considered_refs`，支持同一 Goal
+其他 Agent 产出的证据。来源变化、不可用、伪造成员或按节点筛选的页面会被拒绝，
+应在原 Turn 和原复盘义务下补读并重新评估。读取不写入回执或扣额度，分页引用随
+决策保留到历史和下次复盘；来源核验不证明模型理解、采用或研究收益。
+
+### Source-bound comparison selection
+
+With Explore planning and `evidence_conditioned_v1` enabled, the existing
+turn-context result page can include `comparison_candidates`. Each card links
+an actionable, own-or-unclaimed canonical Todo to up to three current results
+through that Todo's explicit Explore node references. An outcome contains
+`node_id`, `finding_id`, and `source_sha256`, the digest of the full scoped
+result. These links survive into `stride_control.explore_basis`; an Agent can
+compare the actual result contents before planning further work. Planner rank
+does not grant or remove execution permission: eligible linked Todos from the
+planner's unselected pool can also supply cards. Negative findings do not
+automatically penalize, forbid or replace a route.
+
+A v2 decision may optionally copy one exact outcome and its Todo into
+`explore_review.selected_candidate`:
+
+```json
+{
+  "todo_id": "todo_current_probe",
+  "node_id": "current-question",
+  "finding_id": "current-result",
+  "source_sha256": "<64 lowercase hexadecimal characters from the source card>"
+}
+```
+
+This declaration requires `disposition: "used"`, the selected finding in
+`considered_refs`, and `retain:todo_current_probe` in the same Vision's existing
+`todo_delta`. Qualification of a fresh Vision stride decision checks the
+current source link and exact content digest; an unrelated fresh-path or
+successor outcome cannot make an invalid binding qualify as that decision.
+Changed source requires reassessment. For an enabled periodic or observed-stall
+review listed above, a standalone canonical successor ACK cannot replace the
+current evidence-linked stride decision. Other obligation sources and the
+disabled strategy keep their existing outcome gates; a successor ACK alone
+does not make an attached comparison selection an accepted decision or executed
+work.
+The optional fields share the existing Vision budget. A decision without this
+field, disabled planning, and the strategy's `off` mode retain their existing
+behavior and authority.
+
+Cards use the existing result page coordinates and limits. If a card is not
+visible, read a current global result page and attach its coordinates in
+`explore_review.result_pages`. Increasing the existing `--result-limit` to its
+maximum of 20 can expose more Todos linked to the same finding. The page's
+`omitted_comparison_candidates` reports remaining omissions; more than 20
+matching Todos on one page are not all selectable through this optional
+binding. Up to three replayed pages and three considered findings remain the
+existing upper bounds. No new pagination or scheduling protocol is created.
+
+The selection records evidence-backed **planning intent** for the retained
+Todo. It does not reserve that Todo or force the next scheduler choice. Another
+legally admitted Todo may run; its result remains attributable to its own work.
+The existing `decision_followthrough.planned_work` and scoped history distinguish
+the declared Todo from subsequent evidence, keep execution and Goal gain
+unknown without proof, and reject an execution claim supported only by
+unrelated work. An identifier or changed source digest cannot certify a new
+mechanism. The Agent must explain the mechanism, predicted benefit, evidence
+and uncertainty, then perform the chosen work and satisfy the original
+acceptance through the existing owners.
+
+The local comparison fixture exercises one original implementation Todo with
+three measured alternatives: retaining its program, searching parameters in a
+fixed representation, and generating programs from a finite arithmetic grammar.
+Each family performs 125 score calls against the same six training inputs.
+The choice uses those measured results; an additive positive control can retain
+the original program. The selected source is then deployed and executed by an
+independent pinned owner verifier on withheld inputs. This checks actual
+program adoption within the Todo, not mandatory cross-Todo scheduling or live
+provider creativity. Grammar generation CPU, token usage and money are not
+equalized by the score-call limit. The controlled Host does not read withheld
+inputs before choosing; the fixture is not an adversarial data-access sandbox.
+Keep measured choice, reasons and final verifier results in the existing
+`path_delta` and Explore findings so the shipped evidence view can show them
+beside linked Todo state.
+
+**中文：** 当前结果页可把真实可执行 Todo 与其明确关联的实验结果一起交给复盘，
+包括未进入高分候选的合法路线；排名不替代准入。可选 `selected_candidate` 精确
+绑定 Todo、节点、finding 及完整来源摘要，同时要求同一 Vision 保留该 Todo。
+错源、已变化的结果或没有保留对应工作均不能借别的后继结果混过核验。上述已启用
+的周期或停滞复核均不能用单独的后继 ACK 代替当前决策；其他义务和关闭策略时
+保留原出口边界，后继 ACK 本身也不证明比较选择已被接受或执行。分页仍沿用
+既有坐标与最多 20 项的上限，同一结果关联过多 Todo 时明确显示省略数，不能声称
+无限候选均可达。这是有来源的规划意图，不是调度命令；合法 B 任务可以执行，
+但不能凭 B 的结果声称所选 A 已执行。实际采用、机制差异和原验收仍需真实证据。
+受控实验比较停留原式、局部调参与结构语法搜索，评分调用预算相同；它证明原
+Todo 内的实际选程序、部署与独立验收，不证明付费模型创造力、完整成本或普遍
+研究收益。选择、理由和实际结果复用现有路径说明、Explore finding 与任务回读。
 
 ### Path Delta
 
@@ -349,6 +861,15 @@ receipts retain their checkpoint semantics:
   "required_resolution": ["write_vision_patch", "record_unchanged_reason"]
 }
 ```
+
+CLI in-flight settlement omits the material-closeout Vision authoring schema.
+Use the projected continuation command and its original boundary/identity flags;
+this does not waive validation, writeback or debit rules. Material CLI closeout
+and MCP `complete_task` retain their evidence-linked Vision authoring contract.
+
+CLI 进行中结算不附带实质收尾的 Vision 编写结构。沿用投影命令及原边界、身份
+参数，仍须验证、写回与原 debit；实质 CLI 收尾和 MCP `complete_task` 保留
+证据关联的 Vision 编写契约。
 
 One explicit exception exists for in-flight delivery. When quota admits an
 open advancement Todo for normal delivery, its settlement guidance may add the
@@ -517,14 +1038,36 @@ For the same `agent_id`, a newer satisfied checkpoint with `patched` or
 `unchanged_with_reason` supersedes older
 `missing_required` checkpoints; `not_required` does not.
 
-The ordinary CLI settlement plan now puts a compact material-closeout reminder
-in its existing writeback step, before the first write. The shared authoring
-example includes the acceptance claim, continuation path and evidence reference;
-replace its illustrative claims and reference with observed facts. Explicit
-`in_flight_continuation` plans retain their existing short writeback precondition.
-This changes guidance in CLI/TurnEnvelope and the shared MCP/replan authoring
-projection, not validation, admission or receipt authority. It does not establish
-lower model token cost or eliminate all replanning; those require live measurement.
+The ordinary Todo-bound CLI settlement plan carries `vision_authoring` in its
+existing durable-writeback step, including in-flight plans. It reuses the same
+TypeScript example and field limits as MCP and replan; it is authoring guidance,
+not a requirement to patch vision on every in-flight step. Replace example claims
+and references with observed facts and pass the packet via `--agent-vision-json`.
+`checkpoint-context` is recovery **after** the original committed Turn writeback,
+not a first-write preparation command. MCP removes the manual CLI settlement plan
+and retains its own authoring projection. The default quota CLI also retains
+autonomous replan's authoring schema. When an identical schema is already present
+in its durable-writeback step, the replan contract uses a same-response
+`vision_authoring_ref`; it never requires a diagnostic detail read for this input.
+Different schemas remain separate, and progress-only replan does not acquire a
+Vision requirement. TurnEnvelope preserves the ordinary plan's guidance.
+
+Shared `todo plan` and guided-start authoring steps also provide a routed exact
+readback command for each authored or reused Todo id. Inventory text is a bounded
+excerpt. Verify `todo_detail_projection.source_complete=true`, compare `.todo.text`
+with the intended requirements and check current status/claim before handoff;
+missing, ambiguous or changed work requires reinspection. Readback does not replace
+quota admission or lease authority. Lists remain compact and exact bodies lossless.
+
+These default guidance changes preserve validation, admission, original-Turn
+recovery and receipt authority. A larger self-contained packet can avoid discovery
+calls, but lower model cost or better outcomes still require live measurement.
+
+普通 Todo 结算包在写回步骤直接携带既有的 vision 示例和字段限制；示例须替换为实际
+事实与证据，不要求每个 in-flight 步骤都修改 vision。`checkpoint-context` 仅用于原
+Turn 写回后的恢复。规划与接续指引提供逐条精确读回命令，用完整 `.todo.text` 核对
+需求和当前状态，不能拿列表摘要判断正文丢失。读取不授予执行权限；准入、租约、
+恢复和单次记账规则保持不变。包体增量与模型效率、效果收益须分别测量。
 
 A satisfied checkpoint is protocol-complete, but a material closeout also has
 to qualify its relationship to the final outcome. A patched checkpoint must
@@ -702,6 +1245,50 @@ choose the explicit terminal lane semantics `retired`, `superseded`, or
 vision. This keeps stage completion from silently terminating a long-horizon
 goal.
 
+### Current acceptance scope and stopping
+
+When the existing Goal acceptance contract is enabled, a Todo's successful
+completion and `no_followup` do not supply the separate Goal verification
+receipt. Derived Goal terminal closure requires the acceptance owner's current
+`accepted` projection as well as the original complete, empty frontier and
+canonical closure intent. The projection validates the contract, owner revision,
+work digest and actual validator results. Present malformed canonical acceptance
+state fails the typed read; it cannot become the legacy absent-contract path.
+
+`selected_work` acceptance covers exactly its configured work. Other requested
+stages remain independently executable, and an accepted local scope cannot hide
+their outstanding requirements. Only an authorized owner configuration can
+revise the contract's scope; a stage summary, changed title or failed experiment
+does not do so. A bounded research criterion may accept a finite result and its
+explicit unproved claims. If the original criterion requires a proof, that same
+finite evidence leaves the requirement unproven; Core adds no universal proof
+judge or automatic weakening of the criterion.
+
+Once an enabled contract has concrete work or a currently accepted verification, no
+selected or independently executable work, no due
+Monitor and no new admitted obligation, quota does not turn its generic fallback
+recommendation into another model delivery. Preserve the current result and
+contract for `loopx goal-acceptance inspect`, then verify or repair that existing
+requirement. This pause does not declare the whole Goal achieved. Original
+receipt recovery, actual independent work and inbox delivery retain their
+existing admission paths.
+
+A new `all_advancement` contract with no work keeps the ordinary initial-planning
+route, including after a failed preflight verification of a not-yet-built artifact.
+Such a failure is not evidence that planning already occurred. Declaring requirements before planning
+must not disable that first step; creating a plan or Todo still grants no
+missing acceptance association.
+
+空 Goal 的验收预检查失败不构成“已经执行过工作”的依据，仍允许首次规划；已有具体
+工作或当前验收通过后的暂停规则不变。新建 Todo 不自动获得缺失的验收关联。
+
+启用原有 Goal acceptance 合同后，Todo 的局部通过与 `no_followup` 不替代独立的
+Goal 验证回执。终态还要求原完整 frontier 已闭合；`selected_work` 的通过只说明
+所选工作通过，不能遮蔽其他已请求阶段。只有真实 owner 合同修订可以变更要求。
+有限研究结果可以按原有限范围标准合理停止并保留未证明结论；原要求为证明时，
+相同有限证据不能被改称证明。没有可执行工作和新义务时，保持结果与合同供原入口
+核对，不因空的普通建议再启动模型，也不把暂停宣称为整个 Goal 达成。
+
 ### Exact blocked-successor wait
 
 An open agent vision can wait when every causal Todo binding of its ordinary
@@ -713,6 +1300,29 @@ another uncovered binding. When there is no other selectable advancement, quota/
 `resume_condition`, and `automatic_resume=true`. The ordinary
 `vision_acceptance_gap` is deferred while that read model is active, so the
 agent can remain quiet instead of inventing duplicate successor work.
+
+For a single exact successor without a bound heartbeat Turn, the scheduler can
+keep inexpensive source rechecks alive beyond the unchanged-poll limit when
+the resume owner supplies positive pending evidence. Alongside the existing
+clock-backed `resume_at` case, `todo_done` requires an identified, unarchived
+source of the supported task class that is still open or deferred.
+`monitor_changed` requires the exact open Monitor, the successor's matching
+generation baseline, and a current generation that has not advanced. The
+Monitor source must also carry a valid next-due time, the runtime clock
+observation, and explicit expiry evidence: either no expiry or an expiry later
+than both the observation and the next due time. These source facts are
+projected before compaction, including explicit null values that distinguish
+known absence of expiry or archival from missing evidence.
+
+This quiet path grants no delivery or spend. Missing sources, incomplete proof,
+an unscheduled or expired Monitor, and an existing Turn or settlement binding
+retain their original supervision. Supplying a new Turn id to a quota command
+is a bound operation, not an unbound scheduler recheck. Monitor-only waits keep
+their existing schedule-based cadence caps; when a Monitor becomes due, fresh
+quota admission must select its work before quiet waiting. A material poll then
+advances the original generation fence so the successor can resume. Goal stop,
+user gates and independently runnable advancement retain their existing
+priority.
 
 This is a read model, not a stored vision or todo lifecycle state. When the
 condition becomes ready, normal open-todo or deferred-successor routing resumes
@@ -748,6 +1358,37 @@ rule uses existing acceptance/lineage facts regardless of the optional advisory
 `fallback_declarations`. It neither discovers alternatives nor invents AND/OR
 relationships, and it grants no additional authority. Ownership, exclusions,
 capabilities, user gates, and quota remain independent execution constraints.
+
+For optional fallback advice, live quota takes one complete Todo source snapshot:
+canonical provider records after promotion, otherwise one legacy source read.
+Only the declared targets/successors and one layer of direct resume dependencies
+are transported to the typed projection (at most 16 records, including archived
+prerequisites). Deeper chains do not expand the selection or add reads. No
+declarations means no additional source read. This does not promise an atomic
+snapshot across the entire quota/status packet.
+Existing typed resume, ownership, and lifecycle rules decide availability.
+An unavailable, ambiguous, or malformed source read produces
+`vision_fallback_lookup_uncertain`; compact display evidence cannot override a
+failed authority read. Only absence from a complete source proves not-found.
+Pending `todo_done:<continuous_monitor>` keeps an unresolved fallback; a valid
+`monitor_changed` generation condition may establish a wait. `fallback_gaps`
+remains advisory and adds no replan obligation.
+
+Disposition is per declaration, not per candidate: a runnable, validly waiting,
+or bounded create/reopen alternative resolves its own declaration regardless of
+the other candidate's order, absence or uncertainty. It cannot clear a different
+declaration. Unavailable source/provider evidence stays uncertain; it is not proof of a
+valid wait. Waiting uses the shared positive target/generation/repository proof;
+an unbound PR reference, archived fallback itself, or contradictory done flag
+cannot suppress the advisory. Archived completed prerequisites remain valid
+evidence. No fallback declaration is required to discover canonical work, and
+none grants execution, user-decision or settlement authority.
+
+可选 fallback 提示从一次完整来源快照读取，最多输送 16 个直接相关记录，保留归档
+依赖；无声明不额外读取。按整条声明判断：一个可执行或有合法等待证据的候选即可
+消除该声明的提示，但不能替其他声明清账。候选顺序、另一个候选缺失或不确定不再
+误伤有效去向。等待复用 TS 的目标、generation 和仓库绑定正向证明；这仍是 advisory，
+不要求 Agent 为发现 canonical 工作额外维护声明，也不授予执行、审批或结算权限。
 
 等待资格现在逐项检查已有 acceptance 的 Todo 关联，并在展示裁剪前从完整来源计算。
 A 的等待不能遮住尚未落实的 B；有可执行工作则继续，相关工作都具有合法等待证据才暂缓。
@@ -794,12 +1435,53 @@ still rearm. Timestamp/evidence bookkeeping does not. Existing accepted ACKs
 remain readable, including predecessor recovery for historical open-count
 obligations; an outstanding pre-upgrade Turn should refresh its guard.
 
+The owned identity excludes display `title` and `priority` from the existing
+serialized work basis. Canonical Todo `text` remains part of the requirement:
+the existing priority owner removes only its exact legacy priority prefix before
+comparison. A finite-sample requirement changed to a universal-proof requirement
+therefore opens a new long-chain review, including when acceptance is disabled
+or its selected-work scope does not cover that Todo. Display edits still change
+the full frontier freshness revision. A new owned task, target or dependency
+also changes the review basis; no prose-equivalence judgment is performed.
+Actual negative experiments remain material history even when their score does
+not improve. For an unconfirmed acceptance association, its
+hold checkpoint binds the Todo, contract revision/digest and hold state. A
+formal accepted ACK for that exact checkpoint survives later display/note
+timestamps and event IDs. A different owner revision, Todo or hold checkpoint
+does not match it. Other newly observed vision/evidence gaps still require
+their original strict timestamp coverage; legacy ACKs without an exact
+obligation identity retain that freshness requirement.
+
+Before the stable hold codec, the checkpoint also included the Todo timestamp.
+The current owner can reconstruct that exact old checkpoint from the same
+canonical source and retain a matching admitted Turn's original obligation and
+receipt identity, rebuilding the original context and delivery references for
+that same id. Provider-first Todo reentry retains the same canonical acceptance
+projection while filtering public Todo lists. For a recorded old ACK followed
+by display edits, its retained
+`todo_source` must resolve to the exact store, provider revision and cursor. One
+bounded historical source read must prove the old checkpoint and the same current
+Todo, contract digest/revision and hold state before the existing typed ACK
+comparison can reuse it. Missing, unreadable or foreign sources and new owner
+revisions provide no compatibility approval. This read-time projection does not
+rewrite durable ACKs, receipts, outcome records or quota debits.
+
 长链触发范围修正：Agent lane 只在自己已认领的开放推进任务达到 15 项时触发；
 持续监控和共享未认领任务不计入该阈值，移除原 20 项已认领开放任务的触发分支。
 共享任务仍可选取；无 Agent 的 Goal 总览保留原可选池口径，监控到期和无变化重规划
 规则不变。历史开放任务计数 checkpoint 的读取与前置义务恢复保持兼容。
 义务身份使用 typed owner 给出的 owned 实质 revision，同伴修改共享池不会让正在
 处理的义务换 ID；自己任务的实质修改仍重新触发。证据补充或更新时间不重新触发。
+`title` 和 `priority` 属于显示信息；Todo 正文仍是要求身份的一部分，只由既有
+priority owner 移除准确匹配的优先级格式前缀。有限样本改成全整数证明会产生新的
+长链复查义务，未启用验收契约或契约未覆盖该 Todo 时亦然，不以自然语言猜测等价。
+已有验收 hold 则继续绑定原 Todo、owner 契约 digest/revision 和 hold 状态。
+
+旧 hold checkpoint 含 Todo 时间戳。原准入 Turn 只在同一规范来源能重建完整旧身份时
+保留原 obligation 和 receipt。已写入的旧 ACK 若经历后续显示编辑，须用原记录的
+`todo_source` 精确核验 store、provider revision 和 cursor，并在一次有界历史读取中
+证明旧 checkpoint 与当前 owner 契约身份相同。来源缺失、不可读、异源或 owner 修改
+契约均不能借此继承 ACK；投影不改写原持久 ACK、receipt、结果或配额扣账。
 
 The Agent-lane claimed advancement total comes from the evaluated full-source
 frontier index, before bounded claimant/status display. Adding peer Todos or
@@ -918,6 +1600,23 @@ receipt proves only context access. If projected evidence is empty, stale, or
 contradictory, the agent may use bounded public-safe search and write back
 source references with the typed observation.
 
+The default evidence display reduces a repeated accounting continuation only
+when a `quota_spend_commit_receipt_v0` matches the same complete
+`quota_settlement_identity_v0` as a typed work observation and their complete
+continuation text matches. The matching work must also be displayed. Different
+health or outcome evidence remains visible; a receipt-only row with no additional
+displayed facts can be omitted. Unpaired, legacy, mismatched and actual-progress
+rows retain their existing display. Grouped occurrences require a match for every
+underlying occurrence, rather than proof for only the newest one.
+
+This is presentation reduction at the existing TypeScript replan owner, not
+history deletion, quota accounting or a new completion rule. Source counts,
+coverage, obligation identity and immutable history reference resolution remain
+unchanged. Internal matching facts do not enter public reference digests. The
+codec transmits complete-text digests so equal bounded prefixes cannot hide
+different obligations in the tail. This adds no option or caller action to CLI,
+frontend or Lark, and does not establish model latency or task-quality gains.
+
 ## Write / Correction Mechanism
 
 For optional history drill-down, `history --goal-id ... --agent-id ... --limit N`
@@ -1026,8 +1725,16 @@ the existing public contract. This is deterministic policy; no observer model,
 new capability, provider selection, or additional permission is introduced.
 
 History is newest first. Agent scoping precedes an accepted replan ACK cutoff;
-a peer ACK cannot clear another lane. The three existing neutral accounting
-classifications are transparent. A valid logical turn id is counted once per
+a peer ACK cannot clear another lane. Neutral accounting classifications and
+canonical `replan_noop` / `repair_noop` observations are transparent. An
+unsuccessful review cannot count as new work, rotate its periodic obligation
+window, create a typed-progress repetition from its own repeated observations,
+or expire a still-applicable legacy ACK. The existing lane history producer
+skips those exact neutral classifications before applying its bounded decision
+window; hundreds of no-op observations cannot evict the work that made review
+due. Accepted ACKs remain window boundaries even if their display classification
+is neutral. The separate Goal-wide recent-history display retains its requested
+limit and includes recent neutral observations. A valid logical turn id is counted once per
 agent, including an id carried by settlement identity. Missing, malformed, or
 conflicting historical ids remain separate rows; the reader does not invent an
 identity. Unknown material work still breaks an established progress streak.
@@ -1039,6 +1746,9 @@ lane. Trigger precedence remains progress, Monitor, then periodic review.
 No-change `quota_monitor_poll` receipts do not advance the periodic material-turn
 counter; a poll with an explicit material transition does. Monitor repetition
 and persisted streak checks still inspect their own poll evidence.
+Accepted negative experiments remain work even when the result does not improve
+an objective; the no-op distinction uses canonical writeback classifications,
+not result prose, score trends or process exit codes.
 Accepted ACKs reset the historical window; clearing another frontier obligation
 still requires its existing typed semantic outcome and revision rules. A future
 blocking Monitor suppresses premature wait replanning only while its schedule

@@ -8,16 +8,45 @@ import {
 import { z } from "zod";
 
 import { DashboardPage } from "./views/dashboard-page";
-import { FrontstageDeveloperPage } from "./views/frontstage-developer-page";
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { resolveLocalStatusUrl } from "./data/local-status-query";
-import { BenchmarkStudyPage } from "./views/benchmark-study-page";
-import { AnswerReportPage } from "./features/personal-workspace/answer-report-page";
+
+// Secondary routes load on demand. The workspace is what every visit opens;
+// contributor projections, benchmark studies and answer reports arrive as
+// their own chunks only when such a route is entered.
+const FrontstageDeveloperPage = lazy(() => import("./views/frontstage-developer-page").then((module) => ({ default: module.FrontstageDeveloperPage })));
+const BenchmarkStudyPage = lazy(() => import("./views/benchmark-study-page").then((module) => ({ default: module.BenchmarkStudyPage })));
+const AnswerReportPage = lazy(() => import("./features/personal-workspace/answer-report-page").then((module) => ({ default: module.AnswerReportPage })));
+
+function RouteLoading() {
+  return <main className="p-8" role="status">加载中… / Loading…</main>;
+}
 
 const searchSchema = z.object({
   goalId: z.string().optional().default(""),
+  // Absence alone opens all Goals. Preserve present decoded values, including
+  // empty strings/arrays, so malformed scope cannot become an unscoped visit.
+  // Numeric opaque IDs still survive the router's JSON decoding.
+  rootGoalId: z.unknown().transform(value => typeof value === "string" && value
+    ? value : JSON.stringify(value)).optional(),
+  // Preserve the existing history/analysis owners' query state. They validate
+  // it from the URL themselves; router decoding can produce arrays or numbers.
+  research_lens: z.unknown().optional(),
+  research_goal: z.unknown().optional(),
+  research_node: z.unknown().optional(),
+  research_group: z.unknown().optional(),
+  research_pack: z.unknown().optional(),
+  research_analysis: z.unknown().optional(),
+  research_analysis_goal: z.unknown().optional(),
+  // Stable Goal/Agent working conversation; empty string opens the directory.
+  workAgent: z.string().regex(/^[A-Za-z0-9._:-]{0,200}$/).optional().catch(undefined),
+  todo: z.string().regex(/^[A-Za-z0-9._:-]{1,200}$/).optional().catch(undefined),
   // Scopes the steward conversation to a host-granted workspace; selecting a Goal clears it.
   workspace: z.string().regex(/^[A-Za-z0-9]{1,80}$/).optional().catch(undefined),
+  // Preserve malformed/partial addresses so they fail closed in the source
+  // reader instead of silently opening an ordinary steward conversation.
+  conversationBinding: z.unknown().transform(value => typeof value === "string" ? value : JSON.stringify(value)).optional(),
+  conversationSession: z.unknown().transform(value => typeof value === "string" ? value : JSON.stringify(value)).optional(),
   statusUrl: z.string().optional().default(""),
   view: z.enum(["conversation", "overview", "tasks", "files"]).optional(),
   reportSessionId: z.string().regex(/^[A-Za-z0-9._-]{1,160}$/).optional(),
@@ -81,7 +110,7 @@ export const dashboardRoute = createRoute({
   component: () => {
     const search = dashboardRoute.useSearch();
     return search.reportSessionId && search.reportMessageId
-      ? <AnswerReportPage sessionId={search.reportSessionId} messageId={search.reportMessageId} statusUrl={search.statusUrl}/>
+      ? <Suspense fallback={<RouteLoading />}><AnswerReportPage sessionId={search.reportSessionId} messageId={search.reportMessageId} statusUrl={search.statusUrl}/></Suspense>
       : <DashboardPage/>;
   },
 });
@@ -109,14 +138,14 @@ export const frontstageDeveloperRoute = createRoute({
 export const projectionDeveloperRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/developers/projections",
-  component: FrontstageDeveloperPage,
+  component: () => <Suspense fallback={<RouteLoading />}><FrontstageDeveloperPage /></Suspense>,
 });
 
 export const benchmarkStudyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/benchmarks/study",
   validateSearch: (search) => benchmarkStudySearchSchema.parse(search),
-  component: BenchmarkStudyPage,
+  component: () => <Suspense fallback={<RouteLoading />}><BenchmarkStudyPage /></Suspense>,
 });
 
 const routeTree = rootRoute.addChildren([

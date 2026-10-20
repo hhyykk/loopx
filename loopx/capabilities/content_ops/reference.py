@@ -60,7 +60,7 @@ def write_reference_artifact(path: Path, payload: Mapping[str, Any]) -> None:
 
 def reference_configuration_descriptor() -> dict[str, Any]:
     """Discover a native operation in the existing workbench, without a switch."""
-    return {"feature_id": "content_ops", "display_name": "Content references",
+    return {"feature_id": "content_ops", "display_name": "Content production",
             "availability": "local_artifact_preview",
-            "effect": "Import an existing local catalog, retrieve styles and prepare an attributed outline. Source/store writes remain unavailable.",
+            "effect": "Prepare attributed outlines and source-bound local videos. Video rendering requires the optional local extension; source catalog writes and publishing remain separate.",
             "documentation": {"path": "loopx/capabilities/content_ops/README.md"}}

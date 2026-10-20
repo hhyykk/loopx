@@ -19,6 +19,15 @@ _AUTHORITY_PRINCIPAL = re.compile(r"^[a-z][a-z0-9._-]{0,30}:[A-Za-z0-9._:-]{1,20
 class ChatActionNormalizationMixin:
     """Normalize typed action inputs without owning effects or persistence."""
 
+    def _goal(self, goal_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _allowed_parameters(
+        parameters: Mapping[str, Any], *, allowed: set[str],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
     def _normalize(
         self, action_kind: str, parameters: Mapping[str, Any]
     ) -> dict[str, Any]:
@@ -32,6 +41,18 @@ class ChatActionNormalizationMixin:
             _text,
         )
 
+        if action_kind == "goal.acceptance.check":
+            values = self._allowed_parameters(parameters, allowed={"goal_id", "document", "prepared_by"})
+            goal_id = _opaque(values.get("goal_id"), field="goal_id")
+            goal = self._goal(goal_id)
+            document = values.get("document")
+            if not isinstance(document, Mapping):
+                raise ValueError("a prepared check requires an acceptance document")
+            prepared_by = values.get("prepared_by")
+            if prepared_by is not None:
+                if prepared_by not in registered_agent_ids_for_goal(goal):
+                    raise ValueError("the preparing Agent must be registered for this Goal")
+            return {"goal_id": goal_id, "document": dict(document), "prepared_by": prepared_by}
         if action_kind == "operation.execute":
             values = self._allowed_parameters(
                 parameters,
@@ -388,6 +409,9 @@ class ChatActionNormalizationMixin:
                     "resume_when",
                     "successor_todo_ids",
                     "no_followup",
+                    "task_lease_idempotency_key",
+                    "task_lease_expected_version",
+                    "review_basis",
                 },
             )
             goal_id = _opaque(values.get("goal_id"), field="goal_id")
@@ -409,8 +433,19 @@ class ChatActionNormalizationMixin:
                     "todo.update operation must be edit, reassign, block, defer, complete, or successor"
                 )
             result["operation"] = operation
+            if "review_basis" in values:
+                basis = values["review_basis"]
+                if (operation != "edit" or not values.get("text") or not isinstance(basis, dict)
+                        or set(basis) != {"schema_version", "provider_revision", "source_authority", "registry_sha256"}
+                        or basis.get("schema_version") != "loopx_chat_canonical_update_basis_v0"
+                        or any(not isinstance(x, str) or not x for x in basis.values())
+                        or not BARE_SHA256_PATTERN.fullmatch(basis["registry_sha256"])):
+                    raise ValueError("Task edit requires its complete current source basis")
+                result["review_basis"] = dict(basis)
             if values.get("text"):
-                result["text"] = _text(values["text"], field="text", limit=400)
+                # Source-bound requirements use the existing journal's 8,000
+                # character envelope, never the 400-character quick-action copy.
+                result["text"] = _text(values["text"], field="text", limit=8000 if "review_basis" in result else 400)
             if values.get("status"):
                 status = str(values["status"]).strip().lower()
                 if status not in {"open", "blocked", "deferred"}:
@@ -443,6 +478,20 @@ class ChatActionNormalizationMixin:
                 if not isinstance(values["no_followup"], bool):
                     raise ValueError("no_followup must be true or false")
                 result["no_followup"] = values["no_followup"]
+            proof_fields = {"task_lease_idempotency_key", "task_lease_expected_version"}
+            if proof_fields.intersection(values):
+                if operation != "complete":
+                    raise ValueError("execution proof requires todo.update operation=complete")
+                if not proof_fields.issubset(values) or not result.get("agent_id"):
+                    raise ValueError("completion execution proof requires agent_id, key and version")
+                key = values["task_lease_idempotency_key"]
+                version = values["task_lease_expected_version"]
+                if not isinstance(key, str):
+                    raise ValueError("task_lease_idempotency_key must be a compact opaque id")
+                if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+                    raise ValueError("task_lease_expected_version must be a non-negative integer")
+                result["task_lease_idempotency_key"] = _opaque(key, field="task_lease_idempotency_key")
+                result["task_lease_expected_version"] = version
             if "clear_priority" in values:
                 if not isinstance(values["clear_priority"], bool):
                     raise ValueError("clear_priority must be true or false")
@@ -529,7 +578,9 @@ class ChatActionNormalizationMixin:
                 if values.get(field):
                     result[field] = _opaque(values[field], field=field)
             if result.get("agent_id"):
-                self._agent_eligibility(str(result["agent_id"]))
+                # A creation's Agent is refused as a typed gate, so a fresh install
+                # learns which Agent is missing instead of reading a protocol sentence.
+                self._creation_agent_eligibility(str(result["agent_id"]))
             if values.get("heartbeat") is not None:
                 if not isinstance(values["heartbeat"], Mapping):
                     raise ValueError("heartbeat must be an object")

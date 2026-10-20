@@ -4,7 +4,7 @@
 - 替代 / 关闭：无
 - Proposed by：LoopX maintainers
 - Date：2026-08-15
-- Last revised：2026-10-07
+- Last revised：2026-10-19
 - Scope：LoopX 控制面核心从 Python 到 TypeScript 的增量、replacement-first
   迁移；不长期维护两份语义实现
 - Tracking issue：[#3225](https://github.com/loopx-project/loopx/issues/3225)
@@ -17,6 +17,21 @@
 
 ### 产品对话与通用异步 inbox
 
+**接收方 Inbox 读取事务（2026-10-19）。**
+`loopx/control_plane/collaboration/inbox_read.ts` 现在通过既有 typed owner 组合本地源扫描、分页、
+Goal-instance 准入、接收方及 peer-return 读取回执和未完成委派上下文。
+Turn-start 观察使用只读请求。没有待处理 Host provider 的接收读取，在同一个请求中
+提交本地读取回执。实际 Core Todo、工作区输入和操作票据 provider 仍是显式 Python IO；
+finalize 重新取得 Goal lifetime guard，并在共享 request fence 内重读 entry。
+读取仍不授予 adoption、consumption 或执行权限。
+旧 Python 扫描与组合循环及五个细粒度 RPC 注册已删除。
+旧 Inbox 读取 import 和 tracking/presentation 回执视图保留薄 native facade；
+这些层在剩余 Python 消费者迁移后退出。既有 return 展示文件 IO 保留 Python adapter，
+复用同一份持久化 delivery 词汇。大页面复用共享私有 snapshot 传输。
+正常 runtime IPC、已安装 HTTP 调用者一致性、
+完整默认 SQLite CLI 性能仍是独立资格门。本次源码切换不证明 R1–R3 或完整异步协作
+生命周期已通过验收。
+
 R1–R3 的 TS 消费者包括 App 产品路径，不只 CLI 结算。
 [App/inbox 融合设计](app-conversation-and-async-inbox-v0.md#ts-and-generic-async-inbox-migrate-with-the-user-path)
 按调用者修复、行为刻画、完整异步生命周期切换、真实 adapter 恢复与旧代码删除推进。
@@ -26,32 +41,77 @@ R1–R3 的 TS 消费者包括 App 产品路径，不只 CLI 结算。
 首个 App 结果不需要第二份 inbox 存储、逐字段 RPC 或全量重写。
 这里是 T0–T4 的产品消费计划，不新增 provider promotion，也不声称迁移完成。
 
+请求者范围内的委派清单现在由 `collaboration/delegation.ts` 一次组装整页读回。
+Python 保留有界地址扫描、请求者注册检查和实时 `Delegations.read` IO，
+包括 canonical 验收与产物检查。TS 校验页内顺序和逐项观察，选择下一游标并报告
+完整性。逐项投影 RPC 与 Python 页级决定已退役：查询准入和整页投影每页共两次
+请求；provider 读取与验证调用仍保留。超过内联传输预算的完整页复用既有私有
+快照传输。CLI、MCP 与 Goal Chat 保持原有实时分页契约。异步生命周期切换和
+接收方采用资格仍需单独验收。
+同一次整页投影现经既有 `projection_envelope.ts` owner 封装真实目录与操作读取
+时间。完整性仅限 `requester_page`；不可读操作触发告警，展示/可用数量说明
+剩余页，重放保留原始观察时间。
+每页复用既有代码版本请求作用域；操作记录仍实时读取，下一页重新解析当前代码。
+
 
 <a id="当前交付边界2026-10-02"></a>
 
-## 当前交付边界（2026-10-07）
+## 当前交付边界（合入后，2026-10-16）
 
-按 main `06b6caa07` 复核，#5413/#5466/#5283，以及创建、Host 停止、UI 历史
-相关 owner #5500/#5805/#5308/#5398 均已合并。复用各自已交付的边界，不重开
-10 月 2 日的合并队列。
-[当前验证、迁移与删除计划](ledger/shared-goal-authority-state-provider-v0/2026-09-28-retirement-cadence.zh-CN.md#当前收尾验证迁移与删除2026-10-02)
-现在优先安装态可回退验证、相关消费者采用、策略迁移及最后调用方删除，并分别
-记录已合并源码和仍缺的证据。
+贡献者主导的 [#6396](https://github.com/loopx-project/loopx/pull/6396) 已合入，
+主干提交为 `a4483aaece5bc74ec3f969fd067229487022401b`，最终 PR head 为
+`404433aee47d6efd92f26202eddbef67831f1036`，两者完整 tree 相同。C1/T4 普通
+Markdown writer 截止已包含 fork 补缺、原生 Core 版本修复及
+[#6366 有价值的义务](../../reference/local-authority-provider-selection.md#retirement-proposal-reconciliation)。
+Canonical 写入、创建、team-plan、Monitor 和 lease 消费者复用既有 typed owner。
+普通 writer／capture producer 删除已进入 main，不从旧清单再次派生删除任务。
+兼容的 1.4.2 已先发布；已落地的 `2.0.0a1` 源码边界不等于已发布 2.0 截止或
+默认资格完成。
 
-#5500/#5805 已实现 canonical 新 Goal 创建。既有机器设置与
-`coordination/local_authority_defaults.ts` 为未配置的新 Goal 选择 canonical
-SQLite／`hard_lease`；CLI bootstrap 和 App 创建共享 typed 初始化及原操作恢复
-owner。显式 v0 设置和 v1 `canonical_creation=false` 保留晋升后目标行为；存量
-Goal 保持已记录的选择。见[配置及关闭契约](../../reference/local-authority-provider-selection.md#new-goal-authority-machine-setting)。
-这是源码候选，不认证安装采用、发布默认、完整共享 Goal 意图或 D2/D3；不重建
-创建／默认值 owner。
+新执行／配置目标共享从 `EXECUTION_HANDOFF_MODES`（`soft_claim`／`hard_lease`）
+派生的 `ExecutionHandoffMode`；历史 `HandoffMode` 和回执 codec 仍识别 `legacy`。
+typed 策略 owner 拒绝 fresh legacy 执行、acquire／维护及当前 proof 授权，包括
+delegation 启动／恢复；精确原操作恢复、release 及有备份的审核迁移保留。File 仍是 canonical provider；存储转换、策略迁移和 Goal 生命周期接纳
+是不同操作。本检查点不迁移任何活跃 Goal。
 
-存量 Goal 迁移、两策略退役和格式升级仍各有独立回执及出口；原回执恢复不能成为
-保留 legacy 活跃策略的理由，必要迁移 reader 保留。
+[合入后证据记录](https://github.com/loopx-project/loopx/pull/6396#issuecomment-6208115093)
+区分已执行源码与最终组合：原生修复源 `bf8372b1e` 和已吸收的 `286624b94` 完整
+tree 相同；后续 main 同步与自动合并结果相同，并包含 #6597 原生预览恢复修复。
+图／tree 等价不代表执行过最终组合。既有批准、真实 backend 结果、安装产物及
+失败／未测项继续保留原 revision 和适用边界。
 
-有界 cohort 在安装恢复和相关执行控制通过后可开始，不代表发布默认值或正式十天
-D2 已通过；冻结的失败／缺项保持可见。T4 随实现删除已证明重复的 owner，不等 R6
-或所有 Python 消失。本节替代陈旧的当前数量估算，不覆盖历史执行证据。
+沿用[既有 R5 交付顺序](loopx-overall-roadmap-v0.zh-CN.md#post-6396-delivery-plan)：
+
+[计划内 Agent 迁移细化](complete-state-recovery-v0.zh-CN.md#planned-agent-transfer)
+提出产品优先级：把工作迁到目标并继续完成，下述安装升级/准入作为必要伴随。
+按完整旅程的实证断点选择 TS 改动，不用语言迁移或捕获字段系列代替用户结果。
+源端可用的迁移与原源不可用的灾难恢复分别资格化；这里不授予任何一方 activation，
+也不声称迁移已经实现。
+
+1. 在冻结的最终 main 源码和正常安装的 CLI／App／受影响 Host 上收尾 T4/C1、
+   D1 采用：完整数据、新旧 proof、原操作重试、中断、后写及可逆迁移。剩余 transport
+   按真实 caller 判断；native 进程内接管时删除废弃跨界，不新增逐字段 bridge。
+2. 通过既有 Goal／provider／effect owner 推进完整恢复 M2 捕获证据和 M3 受控接纳。
+   普通导入和可读的隔离备份不证明 Goal 生命周期或外部 effect 已重新激活。
+3. 独立继续既有 D2/D3：同负载完整命令成本、正式容量／经过时间证据及受支持发布
+   profile。新 Goal 的 SQLite／hard-lease 源码选择已经存在，应验证该行为，不重建
+   selector 或宣布未经资格化的默认值。
+
+永久 Markdown 文档／显示 IO、历史 reader 和未完成 receipt／outbox 处置仍是义务。
+只在最后真实 caller 退出，或明确兼容窗口结束并完成受影响真实路径验证时再删 adapter。
+当前归属见[退役 ledger](ledger/shared-goal-authority-state-provider-v0/2026-09-28-retirement-cadence.zh-CN.md#current-candidate-checkpoint)；
+下方具名历史证据不是新的任务队列。
+
+历史检查点已移至执行账本：[1.x 前置条件（截至 2026-10-12）](ledger/typescript-control-plane-migration-v0/2026-10-12-1x-prerequisites.zh-CN.md)。
+
+## 原生 authority 验收与原型退役（2026-09-26）
+
+仅用于覆盖验证的 Python coordination executor、head codec、File provider 与
+bootstrap bridge 已随最后 example/test 调用方退役。Stage 0 现运行完整原生
+File/SQLite conformance，不再使用旧 Python provider；复用既有 TS domain owner
+与共享 fixture。`authority_core.py` 仍是活跃 adapter，未删除。这是早期有界 T4
+删除切片，不代表默认 cutover 或全部 Python 退役。见
+[覆盖、行为差异与格式边界](../../../examples/shared-goal-authority-e2e/README.md#native-qualification-and-prototype-retirement)。
 
 ## Todo 事件路径退役（2026-09-25）
 
@@ -114,6 +174,12 @@ receipt，再执行新准入。这修复同 operation 并发竞争，不扩展 p
 准入/回放之后才请求私有声明。删除 Python 的终结操作审核分流和提前解析声明编排。
 这闭合 T1/T2/L2 的一组真实终结 caller，剩余 leased metadata、executor fence 和 T4
 仍未完成。[语义、调用次数与回滚](../../reference/canonical-terminal-review.zh-CN.md)。
+
+Canonical completion 的后继 role/status 现在由同一 TS 事务 head 读取；Python
+只传声明的 ID 和 registry 意图，删除完整 Todo 复制及旧快照连接。后继状态改变后，
+原 receipt 重放仍返回原策略。本批只退役 canonical 的 Python join，保留未晋升
+writer 的真实源读取、私有 validation 适配和历史回执，不增加 RPC 或改变 provider/
+默认值。见[来源与恢复边界](../../reference/canonical-terminal-review.zh-CN.md#后继来源)。
 
 Canonical supersede 的 CLI/facade 现在把已有后继关联交给同一个 terminal owner。
 一次提交关联已声明的替代工作、退役原任务并释放原租约，取代先更新关联再 supersede
@@ -336,11 +402,23 @@ token／重试成本、source-mode 修复和常规短上下文／replan 完整�
 
 Replan 的义务结果规则现收敛到 `work_items/replan_semantics.ts`：接受结果选择、
 vision path／terminal 一致性校验与对应 refresh 输入投影共用同一 owner。
-Python 保留 progress 归一化／新颖性与持久化适配，不再重复义务匹配规则。
+`work_items/progress_delta.ts` 现在在同一资格请求内推导语义维度、终态覆盖及
+证据／blocker 新颖性；删除 Python 的 delta 与终态覆盖规则。Python 保留共享的
+observation／fingerprint 归一化、历史 codec 和持久化适配。TS 对完整的归一化窗口
+比较身份复用；更大的资格输入复用既有私有快照传输，不截断旧声明。更换 Turn／
+work-item 或刷新证据不能让旧 blocker 成为新结果，独立的 Vision 证据路径仍可使用。
+资格请求次数与输入错误顺序不变。共享 codec 随 refresh writer、replan history／
+context reader、external review 与 Explore evidence 消费者一起迁移后退役。
 这是有界规则收敛，不是 settlement writer 或存储迁移。先刻画既有接受语义，
 再修正所有 vision trigger 的可执行写入投影，并验证真实绑定 CLI 闭环、回读及
 资格范围错配反例。Checkpoint 恢复与 in-flight 规则仍由既有边界负责，
 不新增 capability、provider 或设置。
+
+有限的 refresh／checkpoint CLI 与独立 replan 资格判断复用既有 managed-runtime
+request scope。它只固定代码版本；source／provider 读取、canonical 写入、错误顺序与
+Turn 回执仍实时执行，保持原语义。晋升同时要求完整 File／SQLite CLI 资格与原生请求
+测量；减少指纹扫描本身不能证明收益。既往尾部失败、相同代码的 A/A 波动与当前资格
+分别保留在 PR 验证记录中。
 
 交付历史边界将 `classification`、`health_check` 与 `recommended_action` 视为
 叙述文本。它们不能生成或解除 follow-through obligation，不能证明 outcome，也
@@ -398,6 +476,16 @@ classification 保留为历史标签；没有明确展示消费者时，不保�
 identifier 不能仅因都归一化为缺失值而被视为相等；此类 observation 不能推断出
 blocker writeback 或解除后续义务。仍在使用的 Python writer predicate 同样拒绝该
 情况，不改写任何活跃历史。
+
+Quota 的 work-lane 读取端现在也遵守这一边界。历史 run 的 `classification`
+及由它形成的 status 标签不能选择 `dependency_observation` lane，也不能取代
+typed follow-through 义务。Status 压缩投影保留已写入的
+`progress_scope=goal|agent_lane`，供既有归属消费者使用；这两个值与本地
+work-lane 的 `dependency_observation` 模式并非同一分类。没有显式 scope 的旧
+run 继续可读，默认走普通推进；typed Todo／monitor 事实要求观察时仍走观察。
+本地显式 work-lane scope 继续有效；到期与安静等待的 monitor 门槛保持 typed
+行为。这是对旧标签所导致 quota 指引的有意修正，不改写历史 run，也不新增
+Python 交付历史决策 owner。
 
 下一步另行盘点仍缺少 material-result 字段的 writer，并用明确兼容计划退役旧
 marker/hint 配置。精确的旧 lifecycle classification code、历史选取与其他 cadence
@@ -668,8 +756,11 @@ Todo 来源；frontier 和报告事实复用同一完整已求值快照。展示
 
 Todo 摘要 lane 与裁剪前工作计数现共用 `todos/summary_lanes.ts`，删除 Python 的
 lane 分类和隐藏任务推断循环。quota 在作用域筛选后重新计数，不完整来源状态贯穿
-压缩与重复投影；公开 canonical Todo 列表保留同版本 acceptance 限制。见
-[计数语义](../../reference/todo-work-counts.md)。本切片闭合摘要到 work-lane 的计数
+压缩与重复投影；公开 canonical Todo 列表保留同版本 acceptance 限制。Goal frontier
+现复用同一工作计数和 TS 在裁剪前产出的 deferred 就绪计数，移除对展示列表重新计数、
+把未展示行推成 blocked 的旧规则。File/SQLite CLI 在 Markdown 丢失后仍保留完整计数；
+authority 不可用仍拒绝，不完整来源保留 unknown。见
+[计数语义](../../reference/todo-work-counts.md)。本切片闭合摘要到 work-lane/frontier 的计数
 消费者，不代表所有 T3 来源或 D1 展示交付完成；旧格式解码、renderer 及其他摘要策略仍保留。
 
 
@@ -686,7 +777,19 @@ Handoff mode 的 legacy adapter 与原生 CAS／receipt 事务现共用 TS 空�
 Task graph topology 与 inventory/horizon 共用 `work_items/planning_relations.ts`。
 一轮纯 TS 请求拥有关系发现、稳定有界遍历、边去重与缺失/截断完整度；删除
 Python 的前驱索引、条件拆解和遍历。Python 保留 status 来源适配及节点、
-evidence/handoff 的脱敏展示。明确的语义修正：successor 谱系不再冒充完成
+evidence/handoff 的脱敏展示，适用于选中工作项的图。整 Goal 任务地图现在在
+同一 TS 拓扑请求内组合节点类型、元数据可见性、边和公共地图结构。Python 暂留共享的
+可展示来源、文本/状态及稳定 ID codec；元数据只对已准入节点做脱敏。剩余的
+选中工作项图和共享来源消费者一起迁移后，这些 codec 退役。一张地图仍只发
+一次请求；扩大的完整输入复用既有私有快照传输，不在普通传输上限处截断来源。
+HTTP delivery-review 的既有读取复用同一托管运行时代码版本作用域；provider
+读取和新鲜度检查仍由既有 owner 持有。
+原生地图现经既有 projection envelope owner 封装真实 Todo 读取时间、无法展示或
+超出上限的条目及未解析关系。HTTP 外层用一次整批封装请求继承 status 与地图来源；
+完整 HTTP 读取增加一次运行时调用，不增加逐节点调用。已交付读界面披露过期、
+不可读、部分或未知来源，导出保留封套。原来源打开和授权 owner 不变；这些元数据
+不成为新的执行或配置门槛。
+明确的语义修正：successor 谱系不再冒充完成
 依赖，unblocks 方向修正，补 Monitor generation 条件，上限处保留平行关系
 和菱形汇合边。详见[图协议](../../reference/protocols/task-graph-projection-v0.md#typed-todo-topology)。
 不改变生命周期准入、claim/lease 或默认 provider。来源仍可能不完整：本批
@@ -717,6 +820,14 @@ User action 按 `bound_agent` 路由（兼容旧 claim 回退），不是执行�
 写回/capability fence 与 resume 义务不变。这些只读判断不授予写权限。
 本批不替换 source adapter、不新增 inventory，也不宣称整个 T3 完成；继续按下文
 审计剩余消费者。独立 Todo summary 的展示 codec 保留至其真实调用者迁移。
+
+Quota 批次的协同发布 v4 carrier 将同一个 producer record 只存一次，各 lane
+保留有序引用。Python 在原消费者读取前恢复相互独立的可变记录；完整决策、元数据、
+null／缺省与来源完整性保持。v0–v3 仍返回原格式。此修复处理有效规划请求的多份
+lane 正文超过 2 MiB 响应边界、从而阻断启动及 Goal 增长后的原 Turn 重放的问题。
+全局 frame 上限及未知效果策略不变；解码在复制记录前沿用既有本地 snapshot 的
+64 MiB 展开边界。这是内部传输，不新增 capability、设置、授权源，也不代表安装态
+已采用此修改。
 
 当前有边界交付：shared-goal alignment 与 amendment admission 每次决策共用一份
 `shared_goal_work_source.py` 快照，promotion 后复用 canonical Todo summary；同一次
@@ -771,6 +882,19 @@ Turn 的区分，以及无持久授权的恢复合同由 `agents/capability_gate
 argv；同一 interaction packet 复用结果，重入投影本身在健康路径不增加 runtime 调用。修正行为是：显式
 选择前，可执行的低优先级推荐不能隐藏受阻任务的真实能力验证；验证成功在原 Turn 重入，
 失败后仍可显式选择其他工作。已提交 receipt 的 Todo 不变。
+
+调度仲裁现在与 required-read 投影在 `work_items/interaction_contract.ts` 内组合。
+结构诊断、共享一致性检查和 disposition 选择由同一个原生 owner 负责。Quota 消费私有
+`{required_reads, arbitration}` 结果，不增加公共 contract 字段。Python 选择规则与独立
+consistency RPC 已删除。后续 cooldown 与 recovery 构造仍返回 dict，并丢弃未消费的
+仲裁；它们不覆盖 scheduler hint 较早的决策。完整 fact 的 compact ASCII JSON
+不超过 64 KiB 时使用 inline 通道。原 reads 透传、最多三条生成 read、shell 引号展开和
+有界诊断给出 `16B + 8 KiB` 保守结果上界；B 为完整 compact ASCII JSON 的字节数。
+当 `B <= 64 KiB` 时，该上界低于 2 MiB。
+更大的 fact 继续走既有私有快照，不截断数据。2 MiB wire 与 64 MiB snapshot 上限不变。
+Python 暂留 scalar/Mapping codec、
+Enum/dataclass 结果适配、调度 cadence 和 Host IO，直到对应 consumer 迁移。
+这不代表整个 scheduler 或正式安装采用已完成。
 
 `agents/capability_memory.ts` 现在持有本机 Agent 运行时能力声明、校验与幂等合并，
 复用现有文件锁及 durable JSON writer；`capability_gate.ts` 统一 Goal、Agent、本次
@@ -842,6 +966,14 @@ user role。历史节点不会进入活动工作或 lease lane。无法识别的
 不得恢复 promotion 后的 Markdown fallback。本批闭合已复现的依赖遗漏，不代表所有
 历史导入、provider 资格化、soak 或 D3 cutover 条件均完成。
 
+可选 Vision fallback 提示在 `goal_frontier/fallback_disposition.ts` 内组合已有
+resume evaluator 与合法 pending target 正向证明。Python 仅保留持久输入 codec、
+来源 I/O 和展示，删除独立 Monitor 等待分支与声明聚合规则。Live quota 一次读取
+完整 canonical/legacy 快照，再选择最多 16 个目标／直接依赖记录（含归档），不再
+逐 Todo 重复查询。有意修正：候选对称地消除所属声明，uncertainty 仅属于尚未解决
+的声明，非法／含混等待证据不能隐藏提示。这只闭合一个 T3 consumer，不代表整个
+quota 的快照一致性或 T1/T2 完成；声明仍是可选 advisory，不是执行 authority。
+
 - 分别审计 Turn/quota、Dashboard、standing decision、shared-goal alignment、
   amendment revision 输入。复用 #4117 canonical source adapter，一次决策传递一份
   snapshot，不新增 Todo inventory。
@@ -870,13 +1002,41 @@ T3/D1 reader，未完成全部 Todo writer、retention/compaction 或 promotion�
 
 **Scoped gate 动作回读。** 最终 quota 包在选择、能力、workspace、回执及通知决策之后，通过 TS quota 规则投影 scoped User gate/action override。可选 `selected_action` 只在 interaction 允许交付时取最终选中 Todo 的文字；待选择、修复和已结算包省略该字段。准入诊断与回执身份保留。这修正 peer gate 场景的 CLI JSON 误导，不代表剩余 route／primary-action builder 已迁移、推荐已成为预留，或 T3/D1–D3 已完成。
 
+**基础配额准入组合。** `quota/run_decision.ts` 现在统一按顺序组合能力、workspace、
+automation、replan、终态、inbox 和协调者覆盖规则，生成基础运行决定。Python 分类器
+及其两个动作 helper 已退役；原有公共适配器只发一次粗粒度 native 请求。Goal 终态
+证据和 peer 作用域事实暂由既有 owner 提供；共享 Goal 来源投影与所有调用方一起
+迁移后退役。CLI/Host 调用方直接使用类型化内核后，Python 公共函数、dataclass
+及诊断 codec 退役。最终实现全部由 TypeScript 持有，不设 Python 规则回退。
+适配器传递有界事实及诊断字符串，再应用
+类型化配额补丁，不让来源数值或元数据经历 JSON 往返转换。回执绑定覆盖、后续
+route/action builder 和 effect 权限保留各自 owner。沿用既有 effective-action
+词表及生成的 TS binding；canonical Python enum 等独立契约 owner 切换后退役。
+TS 生产者验证器通过共享 guard fixture 执行真实 TS 分类器，并拒绝规则变更或
+仅枚举 owner 的替代结果。这交付一个基础准入消费者的实现及语义一致性；完整 CLI
+出现 p95 回退，性能验收保留 owner 复核门禁。整 Goal 迁移及 provider／默认配置
+资格仍待完成。
+
 **长历史传输边界。** Replan 历史仍由一个 TS owner 决策。小请求保留 inline
 codec；较大的完整事实快照通过私有临时文件和摘要绑定的引用传递。同一 reducer
 校验全部记录、agent 作用域内的 ACK 及重试身份；RPC 预算和展示窗口都不允许截断
 历史。快照缺失、改变或无效时在决策前拒绝，适配器在返回或失败后清理临时文件。
-这修复 T3/S2 的结算阻塞并补充 S7/R7 的传输增长证据，不代表全历史解析已经恒定
-内存，也不证明分布式执行。游标/checkpoint 归约保留为以测量驱动、完整源语义一致
+Replan 语义投影也通过既有同 UID、摘要绑定的请求/响应 snapshot 通道传递完整生命周期
+和 receipt 恢复事实。调用方共用一个 transport adapter；生命周期、stride 与 receipt
+决策仍归同一个 TS owner。普通 RPC 保留 2 MiB 上限，本地 snapshot 保留 64 MiB 上限。
+File/SQLite CLI 恢复覆盖超过 wire 预算的完整事实、后续独立工作与用户 gate、持久 refresh
+及 replay，以及精确一次 quota 扣记。这修复 T3/S2 的结算阻塞并补充 S7/R7 的传输增长
+证据，不代表全历史解析已经恒定内存，也不证明已安装宿主采用或分布式执行。
+游标/checkpoint 归约保留为以测量驱动、完整源语义一致
 为前提的后续工作，不再造 Python 规则。见[历史决策证据](ledger/typescript-control-plane-migration-v0/2026-09-22-replan-history-policy.zh-CN.md)。
+
+结算等待适配器现在对完整依赖图共用既有 resume 事实投影，保留绑定 Todo 的
+resume 证明及 Monitor 时钟、hash、cadence；不重复传递无关正文，也不截断
+canonical 记录。受阻 writeback、回执绑定等待恢复和普通 `quota.settlement.read`
+回读按需显式复用同 UID、摘要绑定的私有 snapshot 通道，2 MiB wire 和 64 MiB
+snapshot 上限均不变。依赖资格、冻结观测、原 Turn 身份、受阻不扣额收尾及
+精确一次记账仍由既有 TS owner 判断。隔离 File/SQLite CLI 验证覆盖完整多 MiB
+Goal 与重放；源码验证不代表已安装宿主采用或整 Goal 资格通过。
 
 **Checkpoint 恢复编写契约。** 现有 TS vision owner 只能投影校验器接受的恢复
 选项：没有持久 vision 时，缺失的 checkpoint 必须提交 vision patch；有该基线时
@@ -925,6 +1085,18 @@ acceptance 和 vision。展示限制不能变成结算限制。在 legacy、File
   重复 reference aggregate。
 - 保留永久 Markdown renderer、已验证 import/export 和外部 effect adapter。
   每条保留 bridge 标明真实 caller 与退出条件；不等待全 TS CLI、daemon 或远端服务。
+- canonical handoff-mode show/set 复用共同 runtime-root resolver，只有 canonical
+  路由返回未晋升时才加载兼容来源锁和 Todo capture producer。移除旧源的真实
+  File/SQLite CLI 验证覆盖预览、写入、后续模式变化后的原操作回放及 provider
+  故障时禁止 Markdown 回退。本批闭合 canonical setter 的 import 依赖；未晋升
+  writer、lease capture 恢复及旧源迁移窗口仍保留独立退役验收。
+- 旧源 task-lease facts 直接复用 `todos/list_readback.py`，移除对历史 mutation
+  facade 的依赖。领取及生命周期决策仍由 TypeScript 拥有；Markdown IO、source
+  capture 与公开兼容 export 仍有实际 caller。CLI 分发反例移除 facade 并禁用
+  editable install finder，防止从 checkout 偷读已删除模块。源码与安装 wheel
+  覆盖 capture 关闭／开启、三种 handoff 模式、回放、owner/version 拒绝、转交、
+  释放及保留历史。本批闭合 reader 到 writer facade 的依赖；完整 writer 删除
+  仍须验收剩余 caller 与迁移窗口。
 
 **每张执行卡的验证与停止规则**
 
@@ -954,6 +1126,12 @@ stack 中的 schema identifier 清理是独立维护，不是上述路线的前�
 TypeScript 完成最终 reduction 并返回 typed result。没有待执行 provider 的 replay
 只需一次 reduction。Python 只把结果投影为旧 CLI shape，不再串行调用一组
 TypeScript leaf helper，也不保留平行的 enum 和 reducer。
+
+显式 `turn run-once --resume-turn-key` 现在先加载原 journal plan，再进入原恢复路径，
+保留 actor／Goal 生命周期准入、既有 TypeScript 恢复判定，以及剩余效果的当前校验。
+它不再构造并丢弃 fresh decision、TurnEnvelope 或新一轮 Turn-start 的上下文、同步与
+recall。新 Turn 仍使用共享的 fresh decision owner。本批删除恢复中的冗余 Python
+编排，不代表 Python CLI 已退役，也不代表其余 cutover 已完成。
 
 同一 PR 必须删除被它替代的 Python 语义路径。仅新增 TypeScript module 不等于取得
 迁移进展；真正的兑现是语义 owner 更少、跨 runtime round trip 更少，并且 facade
@@ -1090,12 +1268,12 @@ Python 拥有的投影只传入紧凑的读取 facts。每个投影一次请求�
 status projection 迁入 kernel（§4 已将其列为 facade 退出条件），由 TS 直接收集
 facts，adapter 随之删除。
 
-推广顺序。`status`（含 `--goal-id` 与 projection cache 命中）、`global-summary`
-与 `global-gates` 现已携带 envelope。其他 `collect_status` 调用方会在 payload 里
-收到 status envelope，但尚未输出自己的 envelope。下一步依次为：`global-todos` 与
-`global-risks`（同样的组合，各一次调用）、`quota should-run`、`review-packet`，
-以及 Decision Context packet。新加入或迁入 TypeScript 的读模型在同一个 PR 里输出
-envelope；§6 把这一条定为 promotion 门禁。
+推广顺序。`status`（含 `--goal-id` 与 projection cache 命中）、`global-summary`、
+`global-gates`、`global-todos`、`global-risks` 与 `quota should-run` 现已携带
+envelope。其他 `collect_status` 调用方会在 payload 里收到 status envelope，但尚未
+输出自己的 envelope。下一步依次为：`review-packet` 与 Decision Context packet。
+新加入或迁入 TypeScript 的读模型在同一个 PR 里输出 envelope；§6 把这一条定为
+promotion 门禁。
 
 消费者把缺失 envelope 视为新鲜度未知；envelope 告警时，必须先披露，再陈述依赖它的
 结论。字段语义与消费者规则见
@@ -1153,7 +1331,7 @@ replay、receipt 与 settlement。这个架构选择已经落地，不再是假�
 | Quota monitor-poll commit transaction | TypeScript 拥有 monitor admission 复核、target/event/result 构造、effect replay/index CAS、provider intent，以及可修复的 JSON/Markdown/index persistence | Python 投影 compact `should-run` facts，在最多两次 reduction 之间调用真实 Todo provider，刷新 legacy status，并持有 cross-writer index lock |
 | Runtime decoder（[#3443](https://github.com/loopx-project/loopx/pull/3443)） | 稳定 primitive decoding 进入一个很小的共享模块；domain decoder 仍留在本地 | 没有理由建设更大的 schema framework |
 | Transaction 兑现（[#3464](https://github.com/loopx-project/loopx/pull/3464)、[#3481](https://github.com/loopx-project/loopx/pull/3481) 与 Todo completion） | Turn settlement、quota delivery routing 与 Todo completion 均只跨一个粗粒度 TS boundary；Todo transaction 拥有 identity、replay fence、validation planning/result reduction、continuation/recovery 与 completion metadata | Python 仍执行显式 external provider，并物化 legacy Markdown result；其他 domain 仍需各自的 bounded cutover |
-| Projection envelope | TypeScript 拥有 `loopx_projection_envelope_v0` 的解码，以及全部 freshness、告警、完整性与重放判定 | 在 `status`、`global-summary`、`global-gates` 迁移前，Python 仍为它们收集读取 facts |
+| Projection envelope | TypeScript 拥有 `loopx_projection_envelope_v0` 的解码，以及全部 freshness、告警、完整性与重放判定 | 在这些投影迁移前，Python 仍为 `status`、`global-summary`、`global-gates`、`global-todos`、`global-risks` 与 quota `should-run` 收集读取 facts |
 
 Scheduler facade exit 已交付第一段有边界的 Stage 3 路径。带版本的
 `heartbeat_followup_cli.ts` 从生成的 ACK/failure hint 接收有大小上限的 compact host
@@ -1521,6 +1699,12 @@ transaction 要和 matched durability baseline 比较，而不是套用 2 ms ker
 不达标，或用更快的 microbenchmark 隐藏 tail regression，都是 owner review gate，
 不能静默放宽。
 
+默认交付将上述性能门槛用于实际发布的默认 profile，当前新建本地 Goal 为 SQLite。
+File 性能单独判断：仅 File 未达标须披露，但不阻塞其它条件已合格的默认 SQLite
+交付；明确宣称 File 性能结果仍须取得 File 资格。受影响支持后端的正确性、持久化、
+authority、数据完整性和恢复要求保持。在既有评审证据声明 profile；维护者修订资格
+范围时保留历史失败和冻结实验标准，见[验证规则](../../development/testing-and-quality.md#default-provider-performance-qualification--默认-provider-性能资格)。
+
 ## 7. 安装、升级与回滚
 
 迁移不能要求用户管理服务。Python 过渡版本要求 Node.js 22.18.0 或更新版本，
@@ -1587,6 +1771,13 @@ actual callers have moved. [Operator contract](../../reference/reviewed-coordina
 
 ### Todo 摘要决策收口
 
+S7 到期 Monitor 公平选择复用同一 typed planning owner：先筛选资格，保留
+claim/profile/priority 等级，再让同等级的到期时刻先于展示 index。先选择再按
+一项裁剪；一般展示与旧 untimed wire 兼容不变。真实 legacy/File/SQLite CLI
+覆盖连续 Monitor 选择、精确 poll 重放与无额外扣额。保留逐 Turn 结算和所有者
+周期，只关闭 index 导致的选择饥饿，不宣称多职责宿主容量或同次唤醒接续已完成。
+见[调用契约](../../reference/todo-work-counts.md#due-monitor-selection-before-display-limits)。
+
 相邻截止点修复：Agent／User frontier 等待必须比较 UTC 时刻，保留裁剪前证据和
 quota 压缩、Monitor 等待、scheduler 接续三个真实调用方。此前独立 TS 读取虽保留
 语义，却让实测 warm scheduler 消费者更慢。现在复用既有 quota planning 批次，
@@ -1603,6 +1794,40 @@ TS 摘要批次；Python 保留旧格式解码、公开字段筛选及渲染。�
 公开 `todo_summary_v0` 和持久记录不变；完整来源的关系求值先于筛选，来源完整性不被
 查询命中情况覆盖。见[语义及回滚](../../reference/todo-work-counts.md)。这是 T3/L5 的
 共享读取边界推进，不替代 D2/D3 或 provider 默认切换。
+
+上述共享读取边界仍须通过真实 File/SQLite 入口的功能等价验证；完整 CLI 性能
+按 §6 的默认 SQLite profile 及明确附加目标判断。减少 crossing 不能替代尾延迟
+解释，也不代表 writer／备份／默认 provider 退役已完成。
+
+fresh 公共边界扫描继续归现有专门 Python regex／Host IO owner。
+Characterization 已覆盖全部十一种 `splitlines` 分隔符、Unicode regex 折叠、
+casefold 扩展的假阳性、逐规则命中顺序、凭据引用、公共主机例外及字面量元字符；
+这些是 scanner 语义，不新增决策 owner 或缓存。
+
+折叠字面量合并的受控干预，在真实 quota 扫描集合上降低中位 wall／CPU 成本
+8.5%／6.9%，完整 scanner payload 相等。但每 provider 固定 32 对交替完整 CLI
+比较仍得到 File p95 976.33 → 986.84 ms（+10.52 ms／1.08%）、SQLite p95
+936.00 → 962.34 ms（+26.33 ms／2.81%）。后者未通过既有未解释 25 ms 目标，
+因此撤回运行时候选，保留全部样本；profile 不能证明尾延迟根因或豁免资格。
+后续完整 payload 对照淘汰了 folded-line 复用及 literal regex 合并；既有
+direct-loop 与 line-union 组合仅降低 scanner wall 3.6%。另一次独立固定每 provider
+32 对 A/A 对照，在运行时字节及完整 CLI 负载相同的两个 checkout 间，仍得到
+File p95 -8.20 ms／-0.84%、SQLite p95 -85.95 ms／-9.90%；全部 128 次命令的
+selection／frontier 均符合预期。这证明比较存在混杂，尚未证明其根因或优化资格；
+此前候选失败及全部观察继续保留。同一 checkout 的冷暖对照随后隔离了 runtime
+启动：32 次冷态均更换 setup PID，且比暖态配对更慢；暖态仍明显波动。
+这证明启动成本贡献，未解释历史 A/A 尾差。
+
+下一项干预在 Git 枚举和目录遍历中，先跳过后缀不支持的普通文件，再做 canonical
+路径解析；符号链接仍先解析目标，再判断后缀及 local 名称。Git 跟踪的剪枝目录、
+显式文件 root 及链接改指向后的 fresh 读取保持原行为。同一 package-root 负载少做
+602／3,281 次解析，完整 payload 相等；8 对交替 scanner 中位 wall 改善 5.1%。
+每 provider 固定 32 对完整 quota CLI，在同一 physical checkout 逐次确认暖态
+setup PID 复用。File p50/p95 为 708.70/891.78 → 689.04/856.32 ms；SQLite 为
+758.55/1036.27 → 769.41/1026.34 ms，均通过原 25 ms 及 5% 尾延迟预算。
+SQLite 中位数略升，收益不能外推为全面加速。这只资格化本次枚举干预，不改写
+已撤回 filter 的失败，也不解除历史 frontier／direct-loop hold 或冻结多命令时限。
+这些与新 Goal 默认、可恢复导入、开发者试用及最后调用方退役分别保留。
 
 2026-09-24：[完整源捕获的 TS 组装与剩余交付包](ledger/shared-goal-authority-state-provider-v0/2026-09-24-source-capture.zh-CN.md)统一源构造、身份拒绝和当前图成员规则；不关闭 L7/D2/D3 或启用默认 provider。
 

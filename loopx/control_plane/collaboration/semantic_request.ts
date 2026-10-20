@@ -2,6 +2,10 @@ import type { JsonObject } from "../effect_program.ts";
 import { EffectRuntimeRequestError } from "../effect_runtime_errors.ts";
 import { requireJsonObject, requireNonEmptyString } from "../runtime_decode.ts";
 import { BARE_SHA256_PATTERN } from "../content_digest.ts";
+import { isDeepStrictEqual } from "node:util";
+import {parseExactGoalRef} from "../goals/goal_instance_identity.ts";
+
+export type ReceiverDecision = "adopt" | "defer" | "reject" | "no_change";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 
@@ -117,4 +121,58 @@ export function normalizeCollaborationSourceContext(input: JsonObject): JsonObje
     throw new EffectRuntimeRequestError("collaboration source context exceeds 98304 encoded bytes; use a scoped artifact reference for larger material");
   }
   return {source_message: source};
+}
+
+/** One publication decision for both ingress adapters, under their request lock.
+ * Generated guidance is historical delivery metadata, never request identity.
+ * The original operation also supplies guidance when recovering a missing entry.
+ */
+export function planCollaborationRequestPublication(params: JsonObject): JsonObject {
+  const request = requireJsonObject(params.request, "request");
+  const entry = params.entry === null ? null : requireJsonObject(params.entry, "entry");
+  const operation = params.operation === null ? null : requireJsonObject(params.operation, "operation");
+  const peer = request.source_kind === "peer";
+  if ((!peer && request.source_kind !== undefined) || (!peer && operation !== null)
+      || "delivered_at" in request || "source_channel" in request) {
+    throw new EffectRuntimeRequestError("invalid request publication source");
+  }
+  const content = (value: JsonObject, entryMetadata: boolean): JsonObject => Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== "instruction"
+      && !(entryMetadata && (key === "delivered_at" || (!peer && key === "source_channel")))),
+  );
+  const expected = content(request, false);
+  if (operation !== null && !isDeepStrictEqual(content(operation, false), expected)) {
+    throw new EffectRuntimeRequestError("peer request operation identity conflict");
+  }
+  if (entry !== null && !isDeepStrictEqual(content(entry, true), expected)) {
+    throw new EffectRuntimeRequestError(peer ? "peer request identity conflict" : "context request identity conflict");
+  }
+  const original = operation ?? request;
+  return {
+    replayed: entry !== null,
+    operation: peer ? original : null,
+    entry: entry ?? original,
+  };
+}
+
+function sameGoalRef(left: unknown, right: unknown): boolean {
+  if (left === undefined && right === undefined) return true;
+  const a = parseExactGoalRef(left);
+  const b = parseExactGoalRef(right);
+  return a.kind === "parsed" && b.kind === "parsed"
+    && a.value.goalId.value === b.value.goalId.value
+    && a.value.goalInstanceId.value === b.value.goalInstanceId.value;
+}
+
+export function sameRequest(receipt: JsonObject | null, request: JsonObject, source: boolean): receipt is JsonObject {
+  return receipt !== null && ["request_id", "goal_id", "agent_id"].every((key) => receipt[key] === request[key])
+    && sameGoalRef(receipt.goal_ref, request.goal_ref)
+    && (!source || receipt.source_id === request.source_id);
+}
+
+export function receiverDecision(value: unknown): ReceiverDecision | null {
+  switch (value) {
+    case "adopt": case "defer": case "reject": case "no_change": return value;
+    default: return null;
+  }
 }

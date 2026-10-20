@@ -48,6 +48,21 @@ def register_turn_commands(
             "Host Session binding check."
         ),
     )
+    inspect_journal.add_argument(
+        "--watch",
+        action="store_true",
+        help=(
+            "Poll the read-only journal projection and emit one progress event "
+            "per changed phase/status until the Turn is terminal. With --format "
+            "json, events are newline-delimited JSON."
+        ),
+    )
+    inspect_journal.add_argument(
+        "--watch-interval",
+        type=float,
+        default=1.0,
+        help="Seconds between journal reads while --watch is active (default: 1).",
+    )
 
     plan = command_sub.add_parser(
         "plan",
@@ -226,13 +241,25 @@ def register_turn_commands(
         help="Opt in to the owned app-server operation transport for this admitted codex-cli Turn. Reuses the original Todo/session; does not authenticate an attached Desktop or grant domain effects.",
     )
     run_once.add_argument(
+        "--confirmed-operation-id",
         "--codex-confirmed-operation-id",
+        dest="codex_confirmed_operation_id",
         help="Internal exact-operation resume fence for an operator-granted callback continuation. Requires operation tools; does not authenticate a caller or permit a domain effect.",
     )
     run_once.add_argument(
+        "--operation-source-route-json",
         "--codex-operation-source-route-json",
+        dest="codex_operation_source_route_json",
         type=json.loads,
         help="Registered return audience {host_surface,thread_id} for operation proposals. Required when this Agent has several source routes; not executor authentication or execution permission.",
+    )
+    run_once.add_argument(
+        "--operation-request-file",
+        help="Operator-frozen operation request file. Requires its SHA-256 and an owned operation transport; the model receives only an invocation-bound locator. Not approval or execution permission.",
+    )
+    run_once.add_argument(
+        "--operation-request-sha256",
+        help="Exact lowercase SHA-256 of --operation-request-file bytes; rechecked after native call authentication before canonical prepare.",
     )
     run_once.add_argument(
         "--codex-reasoning-effort",
@@ -303,6 +330,10 @@ def register_turn_commands(
         help="cordis.yml used by the built-in dsh host runtime.",
     )
     run_once.add_argument("--dsh-runtime-bin")
+    run_once.add_argument(
+        "--dsh-operation-module",
+        help="Opt in to the owned DSH operation transport with this absolute compiled native-operation module. Requires the real SDK, not --dsh-runner; installation grants no execution permission.",
+    )
     run_once.add_argument(
         "--dsh-runner",
         help=(

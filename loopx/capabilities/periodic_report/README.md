@@ -74,7 +74,16 @@ automatically. With multiple active providers, the Agent selects the provider
 explicitly with `--source-adapter-id <adapter-id>`. The journal retains that
 adapter identity, and later settlement resolves only that owner regardless of
 extension discovery order. A temporarily unavailable owner leaves the request
-pending; LoopX never falls through to another provider.
+pending; LoopX never falls through to another provider. A declared adapter
+that was not activated is reported by adapter id with a content-free code and
+the `loopx extension doctor` next step instead of being silently dropped:
+`extension_disabled` or `extension_doctor_not_ready` for a disabled or
+doctor-stale extension, whose factory is never imported, and
+`extension_hook_adapter_unavailable` (or an incomplete/ambiguous port code)
+when a ready extension fails its permission check, factory import or port
+contract. An unreadable extension state is reported as
+`extension_state_unavailable`, with or without `--source-adapter-id`, rather
+than as "no provider installed".
 
 The adapter id is part of the request idempotency namespace together with the
 Goal, Agent, and provider-local source reference. Two providers may therefore
@@ -202,6 +211,12 @@ readback boundaries.
 The CLI streams the append-only log and applies the 4,096-row capacity limit
 only after goal, segment-window, and relevant-kind filtering. Malformed durable
 rows and an oversized relevant window fail closed.
+
+Every `--*-json` input, from a file or `-` for stdin, is refused before parsing
+when it exceeds 16 MiB (16,777,216 bytes). Pass `--max-input-bytes N` on the
+subcommand to set a different positive limit for a legitimately larger or
+deliberately smaller request; there is no unlimited setting. The limit counts
+input bytes, not total process memory. Request files stay strict UTF-8.
 
 ### Automatic post-writeback intent
 

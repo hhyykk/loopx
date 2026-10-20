@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,6 +30,93 @@ try:  # pragma: no cover - imported only on Windows hosts.
     msvcrt: Any = importlib.import_module("msvcrt")
 except ImportError:  # pragma: no cover
     msvcrt = None
+
+
+def write_bytes_atomic(
+    path: Path,
+    payload: bytes,
+    *,
+    mode: int | None = None,
+    preserve_mode: bool = False,
+    directory_mode: int | None = None,
+    fsync_directory: bool = False,
+) -> None:
+    """Replace one file with `payload` through a same-directory temp file.
+
+    Kernel-owned owner of the temp-file/fsync/rename dance. Callers keep their
+    own serialization, so on-disk bytes do not change; this only owns the temp
+    file, the resulting file mode, the fsync policy and the atomic rename. The
+    previous implementation existed in more than ten copies across the package.
+
+    `mode=None` leaves the `mkstemp` mode (0600 narrowed by the process umask)
+    untouched; an explicit `mode` is applied with chmod. `preserve_mode` keeps
+    an existing destination's mode and wins over both.
+    """
+    destination = Path(path).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=directory_mode or 0o777)
+    if preserve_mode and destination.exists():
+        mode = destination.stat().st_mode & 0o777
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            os.chmod(temporary, mode)
+        os.replace(temporary, destination)
+        if fsync_directory and os.name == "posix":
+            directory_fd = os.open(
+                destination.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_json_atomic(
+    path: Path,
+    payload: Mapping[str, Any],
+    *,
+    mode: int | None = None,
+    preserve_mode: bool = False,
+    directory_mode: int | None = None,
+    fsync_directory: bool = False,
+    indent: int | None = 2,
+    sort_keys: bool = False,
+    separators: tuple[str, str] | None = None,
+) -> None:
+    """Serialize `payload` as UTF-8 JSON and write it atomically.
+
+    Serialization stays a caller choice so each writer keeps byte-identical
+    output: `indent=2` reproduces the pretty form, `indent=None` with
+    `separators=(",", ":")` the compact form, and `sort_keys` the ordered
+    form. A single trailing newline matches the existing private-state writers.
+    """
+    text = json.dumps(
+        dict(payload),
+        ensure_ascii=False,
+        indent=indent if separators is None else None,
+        sort_keys=sort_keys,
+        separators=separators,
+    )
+    write_bytes_atomic(
+        path,
+        (text + "\n").encode("utf-8"),
+        mode=mode,
+        preserve_mode=preserve_mode,
+        directory_mode=directory_mode,
+        fsync_directory=fsync_directory,
+    )
 
 
 def _prepare_windows_lock(lock_file: TextIO) -> None:
@@ -151,8 +239,28 @@ def _open_lock_descriptor(path: Path, *, flags: int) -> int:
 def lock_holder_path(path: Path) -> Path:
     lock_path = _lock_path(path)
     if os.name == "nt":
-        return lock_path.with_name(f"{lock_path.name}.holder.json")
+        # Not ``*.json``: the sidecar persists beside state files, and state
+        # directory scans must not read lock metadata as a state record.
+        return lock_path.with_name(f"{lock_path.name}.holder")
     return lock_path
+
+
+def _legacy_lock_holder_path(lock_path: Path) -> Path:
+    return lock_path.with_name(f"{lock_path.name}.holder.json")
+
+
+def lock_holder_paths(path: Path) -> tuple[Path, ...]:
+    """Every holder record name, current first.
+
+    Older Windows releases wrote ``*.lock.holder.json``. Readers still accept
+    it because an older process may hold the lock during an upgrade; a newer
+    holder removes it while it owns the kernel lock.
+    """
+
+    current = lock_holder_path(path)
+    if os.name != "nt":
+        return (current,)
+    return (current, _legacy_lock_holder_path(_lock_path(path)))
 
 
 def lock_incident_path(path: Path) -> Path:
@@ -253,6 +361,13 @@ def _persist_holder_record(
         _write_holder_record(lock_file, record)
         return
     _write_holder_sidecar(holder_path, record)
+    try:
+        # Only a kernel-lock owner writes either name, so removing the legacy
+        # record here cannot race its writer. A failure leaves it for the next
+        # holder; readers prefer the most recently acquired record.
+        _legacy_lock_holder_path(lock_path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _mark_released(
@@ -297,12 +412,31 @@ def _filter_holder_record(payload: object) -> dict[str, object]:
     return {key: payload[key] for key in _HOLDER_RECORD_FIELDS if key in payload}
 
 
-def _read_holder_record(lock_path: Path) -> dict[str, object]:
-    try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return _filter_holder_record(payload)
+def _read_latest_holder_record(path: Path) -> tuple[dict[str, object], bool]:
+    """Return the most recently acquired holder record and whether any present
+    record was unreadable. ``({}, False)`` means no record exists."""
+
+    records: list[dict[str, object]] = []
+    unreadable = False
+    for holder_path in lock_holder_paths(path):
+        try:
+            text = holder_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeDecodeError):
+            unreadable = True
+            continue
+        try:
+            record = _filter_holder_record(json.loads(text))
+        except ValueError:
+            record = {}
+        if record:
+            records.append(record)
+        else:
+            unreadable = True
+    if not records:
+        return {}, unreadable
+    return max(records, key=lambda record: str(record.get("acquired_at") or "")), unreadable
 
 
 def lock_holder_host_label() -> str:
@@ -344,19 +478,9 @@ def lock_holder_liveness(path: Path) -> tuple[str, dict[str, object]]:
     overwrites the record.
     """
 
-    holder_path = lock_holder_path(path)
-    try:
-        text = holder_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return LOCK_HOLDER_ABSENT, {}
-    except OSError:
-        return LOCK_HOLDER_UNREADABLE, {}
-    try:
-        record = _filter_holder_record(json.loads(text))
-    except ValueError:
-        return LOCK_HOLDER_UNREADABLE, {}
+    record, unreadable = _read_latest_holder_record(path)
     if not record:
-        return LOCK_HOLDER_UNREADABLE, {}
+        return (LOCK_HOLDER_UNREADABLE if unreadable else LOCK_HOLDER_ABSENT), {}
     released_at = record.get("released_at")
     if isinstance(released_at, str) and released_at:
         return LOCK_HOLDER_RELEASED, record
@@ -454,7 +578,7 @@ def _timeout_error(
     agent_id: str | None,
     operation: str | None,
 ) -> LockAcquireTimeoutError:
-    holder = _read_holder_record(lock_holder_path(path))
+    holder, _ = _read_latest_holder_record(path)
     waiter = {
         **_identity(agent_id=agent_id, operation=operation, policy=policy),
         "started_at": started_at,
@@ -561,11 +685,15 @@ def try_exclusive_file_lock(
     *,
     agent_id: str | None = None,
     operation: str | None = None,
+    preserve_holder: bool = False,
 ) -> Iterator[Path | None]:
     """Try once to hold a sibling lock file for single-flight work.
 
     ``None`` means another process already owns the lock. POSIX uses ``flock``;
     Windows uses the standard-library ``msvcrt`` byte-range lock.
+    Non-executing recovery can preserve the previous holder record while
+    taking the same kernel fence, so a failed recovery does not consume proof
+    of the original executor's death. Other callers retain normal recording.
     """
 
     lock_path = _lock_path(path)
@@ -586,20 +714,22 @@ def try_exclusive_file_lock(
             policy=LockAcquisitionPolicy.SINGLE_FLIGHT,
         )
         try:
-            _persist_holder_record(
-                lock_file,
-                lock_path=lock_path,
-                holder_path=holder_path,
-                record=record,
-            )
+            if not preserve_holder:
+                _persist_holder_record(
+                    lock_file,
+                    lock_path=lock_path,
+                    holder_path=holder_path,
+                    record=record,
+                )
             yield lock_path
         finally:
-            _mark_released(
-                lock_file,
-                lock_path=lock_path,
-                holder_path=holder_path,
-                record=record,
-            )
+            if not preserve_holder:
+                _mark_released(
+                    lock_file,
+                    lock_path=lock_path,
+                    holder_path=holder_path,
+                    record=record,
+                )
             _release_kernel_lock(lock_file)
 
 

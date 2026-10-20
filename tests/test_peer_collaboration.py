@@ -122,12 +122,34 @@ def cli(root, registry, agent, action, *args, ok=True):
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         cwd=registry.parent,
     )
     result = json.loads(proc.stdout)
     assert proc.returncode == (0 if ok else 1), (proc.stdout, proc.stderr)
     return result
+
+
+def test_peer_cli_preserves_unicode_request_and_reply(scenario):
+    root, registry, brief, _, _, _, parent = scenario
+    purpose = "独立复核恢复计划 🚀"
+    reply = "已验证库存约束，恢复完成 🚀"
+    path = root / "unicode-peer-brief.json"
+    path.write_text(json.dumps({**brief, "purpose": purpose}, ensure_ascii=False), encoding="utf-8")
+    request_id = cli(root, registry, "builder", "request", "--peer-agent-id", "reviewer",
+                     "--operation-id", "unicode-review", "--brief-file", str(path),
+                     "--parent-request-id", parent)["request_id"]
+    received = next(item for item in cli(root, registry, "reviewer", "read")["items"]
+                    if item["request_id"] == request_id)
+    assert received["brief"]["purpose"] == purpose
+    cli(root, registry, "reviewer", "acknowledge", "--request-id", request_id,
+        "--decision", "adopt", "--reason", "按原约束进行独立复核。")
+    cli(root, registry, "reviewer", "report", "--request-id", request_id, "--reply-text", reply)
+    returned = cli(root, registry, "builder", "read")["peer_returns"]["items"][0]
+    assert returned["text"] == reply and returned["parent_request_id"] == parent
+    rejected = cli(root, registry, "unknown-agent", "read", ok=False)
+    assert rejected["ok"] is False and "recipient is not registered" in rejected["error"]
 
 
 @pytest.fixture
@@ -372,6 +394,91 @@ def test_two_peer_review_rounds_return_to_original_conversation_after_restart(sc
     )
     assert card["returns"][-1]["status"] == "delivered"
     assert not pending(root, "delivery", "builder")["items"]
+
+
+@pytest.mark.parametrize("exact", [False, True], ids=["legacy", "goal-instance"])
+@pytest.mark.parametrize("interrupted", [False, True], ids=["delivered", "prepared"])
+def test_peer_request_recovers_original_guidance_after_upgrade(scenario, monkeypatch, exact, interrupted):
+    from loopx.control_plane.collaboration import peers
+
+    root, registry, brief, *_ = scenario
+    if exact:
+        from loopx.control_plane.projects.registry_codec import source_session_registry_transaction
+
+        data = json.loads(registry.read_text())
+        data["goals"][0]["goal_instance_id"] = "ginst_" + "a" * 32
+        data.update(profile_id="source_session_v1", session_bindings=[], session_receipts=[], lifetime_receipts=[])
+        registry = root / "exact-source" / "registry.json"
+        with source_session_registry_transaction(registry, operation="test_create_exact_source", create=lambda: data) as transaction:
+            transaction.commit(transaction.payload_copy())
+
+    def send(value=brief):
+        return request(root, registry, "delivery", "builder", "reviewer", "review-upgrade", value)
+
+    original_write = peers._write
+
+    def stop_before_entry(path, value):
+        if path.parent.parent.name == "entries":
+            raise OSError("publication interrupted")
+        original_write(path, value)
+
+    with monkeypatch.context() as old_version:
+        old_version.setattr(peers, "PEER_INSTRUCTION", "Earlier receiver guidance.")
+        if interrupted:
+            old_version.setattr(peers, "_write", stop_before_entry)
+            with pytest.raises(OSError, match="publication interrupted"):
+                send()
+        else:
+            first = send()
+    before = {p.relative_to(_root(root)): p.read_bytes() for p in _root(root).rglob("*.json")}
+
+    recovered = send()
+    assert recovered["replayed"] is (not interrupted)
+    rid = recovered["request_id"]
+    entry = next(_root(root).glob("entries/*/" + rid + ".json"))
+    stored_entry = json.loads(entry.read_text())
+    if exact:
+        assert stored_entry["schema_version"] == "loopx_manager_context_entry_v2"
+        assert stored_entry["goal_ref"] == {"goal_id": "delivery", "goal_instance_id": "ginst_" + "a" * 32}
+    else:
+        assert stored_entry["schema_version"] == "loopx_manager_context_entry_v1"
+        assert "goal_ref" not in stored_entry
+    assert stored_entry["instruction"] == "Earlier receiver guidance."
+    assert all((_root(root) / p).read_bytes() == value for p, value in before.items())
+    if not interrupted:
+        assert recovered == {**first, "replayed": True}
+
+    cli(root, registry, "reviewer", "acknowledge", "--request-id", rid,
+        "--decision", "adopt", "--reason", "Retain the original work")
+    cli(root, registry, "reviewer", "report", "--request-id", rid,
+        "--reply-text", "Original review result")
+    settled = {p.relative_to(_root(root)): p.read_bytes() for p in _root(root).rglob("*.json")}
+    assert send() == {**recovered, "replayed": True}
+    assert {p.relative_to(_root(root)): p.read_bytes() for p in _root(root).rglob("*.json")} == settled
+    with pytest.raises(ValueError, match="identity conflict"):
+        send({**brief, "purpose": "A different task"})
+    assert {p.relative_to(_root(root)): p.read_bytes() for p in _root(root).rglob("*.json")} == settled
+
+
+def test_peer_request_requires_return_route_readback_before_publication(scenario, monkeypatch):
+    from loopx.control_plane.collaboration import peers
+
+    root, registry, brief, *_ = scenario
+    original_read = peers._read
+
+    def unreadable_route(path):
+        if path.parent.name == "roundtrips":
+            raise OSError("return readback unavailable")
+        return original_read(path)
+
+    with monkeypatch.context() as failed:
+        failed.setattr(peers, "_read", unreadable_route)
+        with pytest.raises(OSError, match="return readback unavailable"):
+            request(root, registry, "delivery", "builder", "reviewer", "route-retry", brief)
+    assert pending(root, "delivery", "reviewer")["items"] == []
+    recovered = request(root, registry, "delivery", "builder", "reviewer", "route-retry", brief)
+    assert recovered["replayed"] is False
+    assert [item["request_id"] for item in pending(root, "delivery", "reviewer")["items"]] == [recovered["request_id"]]
 
 
 def test_operation_replay_conflicts_and_independent_requests(scenario):
@@ -778,6 +885,37 @@ def test_peer_update_rejects_another_results_read_and_consumption_receipts(scena
     consumed.write_bytes((folder / "conclusion.consumed.json").read_bytes())
     with pytest.raises(ValueError, match="receipt scope"):
         returns(root, "delivery", "builder")
+
+
+def test_a_failed_input_readiness_leaves_no_read_receipt(scenario, monkeypatch):
+    """A read that did not complete is not a delivered read.
+
+    #5511 reported that the Windows readiness crash left the request already
+    looking read in `reads/`. That ordering was real: 025be07e3 later committed
+    inbox reads after response validation instead of before it, and nothing has
+    held the new ordering since. A receipt is evidence of a completed read only,
+    so a raising readiness probe must leave `reads/` untouched and the next
+    completed read must record it.
+    """
+
+    from loopx.control_plane.collaboration import peers
+    from loopx.control_plane.collaboration.inbox import _root
+
+    root, registry, _, _, _, _, request_id = scenario
+    receipt = _root(root) / "reads" / f"{request_id}.json"
+
+    def _fail_readiness(*args, **kwargs):
+        raise AttributeError("module 'os' has no attribute 'O_NONBLOCK'")
+
+    monkeypatch.setattr(peers, "_input_readiness_for_goal", _fail_readiness)
+    with pytest.raises(AttributeError, match="O_NONBLOCK"):
+        peers.read_inbox(root, registry, "delivery", "builder")
+    assert not receipt.exists()
+
+    monkeypatch.undo()
+    assert peers.read_inbox(root, registry, "delivery", "builder")["items"]
+    assert receipt.is_file()
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Win32 extended path regression")
 def test_peer_exchange_survives_long_private_store_paths(scenario):
     root, registry, brief, *_ = scenario

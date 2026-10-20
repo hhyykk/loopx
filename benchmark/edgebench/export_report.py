@@ -18,6 +18,15 @@ from pathlib import Path
 from loopx.capabilities.benchmark_toolkit.experiment_board import (
     normalize_benchmark_experiment_board_row,
 )
+from .feedback_hook import FEEDBACK_PAYLOAD
+
+
+def _validate_feedback_payload(runner, profile):
+    payload = runner.get("feedback_payload")
+    if payload != profile.get("feedback_payload"):
+        raise ValueError("Settings profile disagrees with feedback payload")
+    if payload is not None and (payload != FEEDBACK_PAYLOAD or runner["feedback"] != "best-only"):
+        raise ValueError("Unsupported feedback payload for this mode")
 
 
 def digest(path: Path) -> str:
@@ -30,7 +39,8 @@ def read(path: Path):
 
 def write(path: Path, value):
     path.write_text(
-        json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
+        newline="\n",
     )
 
 
@@ -44,10 +54,37 @@ def number(value):
     return value
 
 
+def _higher_is_better(config, row):
+    """Validate explicit provider vocabulary; never infer policy from a task id."""
+    higher = True  # Historical reports use the original maximizing contract.
+    if "native_ranking" in config:
+        ranking = config["native_ranking"]
+        if (
+            not isinstance(ranking, dict)
+            or set(ranking) != {"selection", "score_direction"}
+            or ranking["selection"] not in ("score_first", "valid_then_score", "pass_rate_first")
+            or ranking["score_direction"] not in ("maximize", "minimize")
+        ):
+            raise ValueError("Invalid native ranking: supply selection and score_direction")
+        higher = ranking["score_direction"] == "maximize"
+    metric = row["metrics"].get("best_score", {})
+    if "higher_is_better" in metric and metric["higher_is_better"] is not higher:
+        raise ValueError("Score direction disagrees with report ranking metadata")
+    return higher
+
+
+def _pass_rate(value):
+    value = number(value)
+    if not 0 <= value <= 1:
+        raise ValueError("Expected a native pass rate between zero and one")
+    return value
+
+
 def csv_write(path, records):
     with path.open("w", newline="") as stream:
         writer = csv.DictWriter(
-            stream, fieldnames=list(records[0]), lineterminator="\n"
+            stream, fieldnames=list(dict.fromkeys(k for r in records for k in r)),
+            lineterminator="\n",
         )
         writer.writeheader()
         writer.writerows(records)
@@ -78,6 +115,8 @@ def _csv_summary(record):
 
 def _validate_run_data(row, config, summary, points):
     """Check known same-run projections; do not certify private source truth."""
+    if row["metrics"]["best_score"].get("higher_is_better") is not _higher_is_better(config, row):
+        raise ValueError("Missing score direction in canonical row")
     for key, row_key in (
         ("run_id", "run_id"),
         ("case_id", "case_id"),
@@ -89,6 +128,7 @@ def _validate_run_data(row, config, summary, points):
         if config[key] != row[row_key]:
             raise ValueError(f"Settings identity mismatch: {key}")
     runner, profile = config["runner"], config["worker_profile"]
+    _validate_feedback_payload(runner, profile)
     if (
         runner["runner_commit"] != row["runner_revision"]
         or runner["model"] != row["model_id"]
@@ -135,7 +175,7 @@ def _validate_run_data(row, config, summary, points):
         raise ValueError("Score summary disagrees with canonical row")
     values = [number(float(p["score"])) for p in points]
     if (
-        max(values) != summary["best_score"]
+        ("native_ranking" not in config and max(values) != summary["best_score"])
         or values[-1] != summary["last_observed_score"]
     ):
         raise ValueError("Sample scores disagree with summary")
@@ -146,7 +186,16 @@ def _validate_run_data(row, config, summary, points):
     best = [p for p in points if p["round"] == summary["best_round"]]
     if len(best) != 1 or number(float(best[0]["score"])) != summary["best_score"]:
         raise ValueError("Best round does not substantiate best score")
+    if "native_ranking" in config:
+        metric = row["metrics"].get("best_pass_rate", {})
+        if (
+            metric.get("higher_is_better") is not True
+            or _pass_rate(metric.get("value")) != _pass_rate(float(best[0]["pass_rate"]))
+        ):
+            raise ValueError("Best round does not substantiate native pass rate")
     for p in points:
+        if "native_ranking" in config:
+            _pass_rate(float(p["pass_rate"]))
         if (
             p["elapsed_seconds"] not in (None, "")
             and number(float(p["elapsed_seconds"])) < 0
@@ -204,6 +253,17 @@ def export(runs_root: Path, selection: list, output: Path, *, observed_at: str):
                 raise ValueError(f"Profile disagrees with runtime: {key}")
         if row.get("runner_revision") != receipt["runner_commit"]:
             raise ValueError("Board and runner revision disagree")
+        _validate_feedback_payload(receipt, profile)
+        if receipt.get("planning_horizon_goal") != profile.get("planning_horizon_goal"):
+            raise ValueError("Profile disagrees with runtime: planning_horizon_goal")
+        for source in (receipt, profile):
+            if "planning_horizon_goal" in source and not isinstance(source["planning_horizon_goal"], bool):
+                raise ValueError("planning_horizon_goal must be a boolean")
+        if receipt.get("stride_strategy") != profile.get("stride_strategy"):
+            raise ValueError("Profile disagrees with runtime: stride_strategy")
+        if "stride_strategy" in receipt:
+            from loopx.control_plane.work_items.stride_policy_codec import normalize_stride_strategy
+            normalize_stride_strategy(receipt["stride_strategy"])
         if number(final["best_score"]) != number(receipt["best_score"]):
             raise ValueError("Final and runtime scores disagree")
         score_entries = [
@@ -216,6 +276,18 @@ def export(runs_root: Path, selection: list, output: Path, *, observed_at: str):
         if not score_entries:
             raise ValueError("History does not substantiate best score")
         config = copy.deepcopy(selected["settings"])
+        higher = _higher_is_better(config, row)
+        if "native_ranking" in config:
+            # Bind the native result, without recomputing its ranking or score.
+            number(history.get("best_score"))
+            _pass_rate(history.get("best_pass_rate"))
+            for key in ("best_round", "best_score", "best_pass_rate"):
+                if key not in history or key not in final or history[key] != final[key]:
+                    raise ValueError(f"Native history disagrees with final result: {key}")
+            row["metrics"]["best_pass_rate"] = {
+                "value": _pass_rate(final["best_pass_rate"]),
+                "unit": "ratio", "higher_is_better": True,
+            }
         # Settings are supplied separately only for facts absent from receipts.
         config.update(
             run_id=run,
@@ -257,11 +329,22 @@ def export(runs_root: Path, selection: list, output: Path, *, observed_at: str):
                 "feedback",
             )
         }
+        # Old notification-only attempts retain absent/unknown payload metadata;
+        # never relabel them using today's default or operator-supplied settings.
+        if "feedback_payload" in receipt:
+            config["runner"]["feedback_payload"] = receipt["feedback_payload"]
+            config["worker_profile"]["feedback_payload"] = profile["feedback_payload"]
+        if "planning_horizon_goal" in receipt:
+            config["runner"]["planning_horizon_goal"] = receipt["planning_horizon_goal"]
+            config["worker_profile"]["planning_horizon_goal"] = profile["planning_horizon_goal"]
+        if "stride_strategy" in receipt:
+            config["runner"]["stride_strategy"] = receipt["stride_strategy"]
+            config["worker_profile"]["stride_strategy"] = profile["stride_strategy"]
         row["status"], row["observed_at"] = "completed", observed_at
         row["metrics"]["best_score"] = {
             "value": final["best_score"],
             "unit": "raw_score",
-            "higher_is_better": True,
+            "higher_is_better": higher,
         }
         row["countability"]["official_result_present"] = True
         # Preserve integrity, countability, and insight decisions; never promote.
@@ -306,6 +389,8 @@ def export(runs_root: Path, selection: list, output: Path, *, observed_at: str):
                     "elapsed_seconds": elapsed,
                     "score": number(entry["score"]),
                     "valid": entry.get("valid"),
+                    **({"pass_rate": _pass_rate(entry.get("pass_rate"))}
+                       if "native_ranking" in config else {}),
                 }
             )
         summary = {

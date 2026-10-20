@@ -16,7 +16,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from loopx.control_plane.runtime.status_projection_cache import write_status_projection_cache
+from loopx.control_plane.runtime.status_projection_cache import write_status_projection_cache  # noqa: E402
+from loopx.control_plane.testing.canary_harness import import_fixture_authority  # noqa: E402
 
 GOAL_ID = "status-projection-cache-fixture"
 AGENT_ID = "codex-main-control"
@@ -41,7 +42,8 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path]:
         "## Objective\n\n"
         "Validate opt-in status projection cache behavior.\n\n"
         "## Next Action\n\n"
-        "- Exercise the status/quota projection cache.\n",
+        "- Exercise the status/quota projection cache.\n\n"
+        "## Agent Todo\n\n",
         encoding="utf-8",
     )
     public_doc.write_text("Public smoke fixture for status projection cache.\n", encoding="utf-8")
@@ -81,6 +83,7 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path]:
         + "\n",
         encoding="utf-8",
     )
+    import_fixture_authority(registry_path, GOAL_ID)
     return registry_path, runtime, public_doc
 
 
@@ -258,6 +261,8 @@ def main() -> int:
             "agent",
             "--todo-id",
             initial_todo_id,
+            "--agent-id",
+            AGENT_ID,
             "--claimed-by",
             AGENT_ID,
             "--evidence",
@@ -336,8 +341,12 @@ def main() -> int:
             "--use-projection-cache",
         )
         assert stale_quota.get("ok") is True, stale_quota
-        assert_cache_hit(stale_quota)
-        assert_next_action(stale_quota, initial_todo_id)
+        # Read-only status may display an opted-in stale snapshot; scheduling
+        # must invalidate changed authoritative Todos before selecting work.
+        quota_cache = cache_metadata(stale_quota)
+        assert quota_cache["hit"] is False, quota_cache
+        assert quota_cache["miss_reason"] == "goal_todo_projection_changed", quota_cache
+        assert_next_action(stale_quota, successor_id)
 
         expire_cache_record(stale_status)
         expire_cache_record(stale_quota)
@@ -373,6 +382,35 @@ def main() -> int:
         assert expired_quota.get("ok") is True, expired_quota
         assert_cache_expired(expired_quota)
         assert_next_action(expired_quota, successor_id)
+
+        # A damaged optional cache cannot hide the current canonical successor.
+        for previous, command in (
+            (expired_status, ("status",)),
+            (expired_quota, (
+                "quota", "should-run", "--goal-id", GOAL_ID,
+                "--agent-id", AGENT_ID, "--available-capability", "shell",
+            )),
+        ):
+            path = Path(str(cache_metadata(previous)["path"]))
+            damaged = b'{"payload":"\xe2\x82'
+            path.write_bytes(damaged)
+            args = (*command, "--scan-path", str(public_doc), "--limit", "5")
+            recovered = run_cli(registry_path, *args, "--use-projection-cache")
+            assert recovered["ok"] is True, recovered
+            assert cache_metadata(recovered)["hit"] is False, recovered
+            assert cache_metadata(recovered)["miss_reason"] == "unreadable", recovered
+            assert successor_id in json.dumps(recovered), recovered
+            assert path.read_bytes() == damaged
+            if command[0] == "quota":
+                assert_next_action(recovered, successor_id)
+
+            rewritten = run_cli(
+                registry_path, *args, "--use-projection-cache", "--write-projection-cache",
+            )
+            assert_cache_written(rewritten)
+            reused = run_cli(registry_path, *args, "--use-projection-cache")
+            assert_cache_hit(reused)
+            assert successor_id in json.dumps(reused), reused
 
         public_doc.write_text(
             f"Public leak probe must still be caught by default quota scan: {PRIVATE_DOC_MARKER}\n",

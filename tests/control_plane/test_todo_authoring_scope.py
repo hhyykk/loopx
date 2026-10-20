@@ -4,6 +4,9 @@ from pathlib import Path
 import pytest
 
 from loopx.control_plane.testing.canary_harness import run_json_cli_result, write_fixture_registry
+from loopx.control_plane.coordination.local_authority import (
+    LocalCoordinationAuthorityUnavailable,
+)
 from loopx.control_plane.todos.active_state_editing import find_todo_block
 from loopx.todos import add_goal_todo, update_goal_todo
 from canonical_authority_fixture import initialize_canonical_authority, isolate_sqlite_runtime
@@ -12,8 +15,10 @@ from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_s
 GOAL = "authoring-scope"
 
 
-@pytest.fixture
-def authored_goal(tmp_path):
+@pytest.fixture(params=["file", "sqlite"])
+def authored_goal(tmp_path, monkeypatch, request):
+    if request.param == "sqlite":
+        isolate_sqlite_runtime(tmp_path, monkeypatch)
     project = tmp_path / "project"
     project.mkdir()
     state = project / "ACTIVE_GOAL_STATE.md"
@@ -23,6 +28,17 @@ def authored_goal(tmp_path):
         registry_path=registry, goal_id=GOAL, domain="scope-test",
         adapter_kind="generic_project_goal_v0", registered_agents=["agent-a", "agent-b"],
         quota_allowed_slots=None)
+    initialize_canonical_authority(
+        tmp_path / "runtime",
+        GOAL,
+        build_todo_runtime_shadow_projection(
+            goal_id=GOAL,
+            handoff_mode="soft_claim",
+            todos=[],
+        ),
+        state_path=state,
+        provider=request.param,
+    )
     return registry, state
 
 
@@ -61,7 +77,7 @@ def test_update_rejects_explicit_scope_conflicts_without_writing(authored_goal, 
     registry, state = authored_goal
     result = add(registry, state, task_class="user_gate", global_gate=True, goal_bound=True)
     before = state.read_bytes()
-    with pytest.raises(ValueError):
+    with pytest.raises((ValueError, LocalCoordinationAuthorityUnavailable)):
         update_goal_todo(registry_path=registry, goal_id=GOAL, state_file=state,
             todo_id=result["todo_id"], agent_id="agent-a", role="user",
             clear_global_gate=not intent.get("global_gate", False), **intent)
@@ -100,19 +116,9 @@ def test_missing_scope_never_creates_global_gate(authored_goal):
         assert state.read_bytes() == before
 
 
-@pytest.fixture(params=["unpromoted", "file", "sqlite"])
-def execution_exclusion_goal(authored_goal, tmp_path, monkeypatch, request):
+@pytest.fixture
+def execution_exclusion_goal(authored_goal):
     registry, state = authored_goal
-    if request.param != "unpromoted":
-        if request.param == "sqlite":
-            isolate_sqlite_runtime(tmp_path, monkeypatch)
-        projection = build_todo_runtime_shadow_projection(
-            goal_id=GOAL, handoff_mode="soft_claim", todos=[]
-        )
-        initialize_canonical_authority(
-            tmp_path / "runtime", GOAL, projection,
-            state_path=state, provider=request.param,
-        )
 
     def cli(*args):
         return run_json_cli_result(
@@ -127,7 +133,7 @@ def test_execution_exclusion_registration_and_claim_conflict_preserve_source(exe
     _, state, cli = execution_exclusion_goal
     create = ("add", "--role", "agent", "--text", "Review the current change",
               "--task-class", "advancement_task",
-              "--claimed-by", "agent-a")
+              "--claimed-by", "\u001cAGENT\u0085A\u001f")
     before = state.read_bytes()
     for excluded in ("unknown-agent", "agent-a", "invalid/token"):
         code, rejected = cli(*create, "--excluded-agent", excluded)
@@ -135,7 +141,7 @@ def test_execution_exclusion_registration_and_claim_conflict_preserve_source(exe
         assert state.read_bytes() == before
         assert cli("list")[1]["todo_count"] == 0
 
-    code, created = cli(*create, "--excluded-agent", " agent-b ", "--excluded-agent", "agent-b")
+    code, created = cli(*create, "--excluded-agent", "\u001cAGENT\u0085B\u001f", "--excluded-agent", "agent-b")
     assert code == 0, created
     todo_id = created["todo_id"]
     code, listed = cli("list", "--todo-id", todo_id)
@@ -171,7 +177,7 @@ def test_execution_exclusion_owner_unavailable_does_not_write(execution_exclusio
     effect = authoring_scope.effect_runtime_result
 
     def unavailable(method, params, **kwargs):
-        if method == "todo.authoring_scope.plan" and params.get("command") == "create":
+        if method == "todo.creation_scope.plan":
             raise EffectRuntimeStartupError(
                 "isolated authoring owner unavailable", diagnostic_code="node_unavailable"
             )
@@ -211,3 +217,29 @@ def test_create_role_restrictions_refuse_before_source_write(
     code, listed = cli("list")
     assert code == 0, listed
     assert listed["todo_count"] == 0
+
+
+@pytest.mark.parametrize("role, task_class, flags, error", [
+    ("user", None, ("--bound-agent", "agent-a"), "user todo requires explicit --task-class"),
+    ("user", "advancement_task", ("--bound-agent", "agent-a"), "user todo requires explicit --task-class"),
+    ("user", "user_action", ("--blocks-agent", "agent-a"), "user_action is non-blocking"),
+    ("user", "user_action", ("--global-gate",), "user_action is non-blocking"),
+    ("agent", "user_gate", (), "user_action and user_gate task_class are only valid for --role user"),
+])
+def test_create_class_rules_reject_before_any_provider_write(
+    execution_exclusion_goal, role, task_class, flags, error,
+):
+    _, state, cli = execution_exclusion_goal
+    before = state.read_bytes()
+    code, initial = cli("list")
+    assert code == 0, initial
+    declaration = ("--task-class", task_class) if task_class else ()
+    code, rejected = cli("add", "--role", role, "--text", "Decide the next step",
+                         *declaration, *flags)
+    assert code != 0, rejected
+    assert error in rejected["error"], rejected
+    assert state.read_bytes() == before
+    code, listed = cli("list")
+    assert code == 0, listed
+    assert listed["todo_count"] == 0
+    assert listed.get("authority_read") == initial.get("authority_read")

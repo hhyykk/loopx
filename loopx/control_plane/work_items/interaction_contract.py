@@ -1,10 +1,13 @@
 from __future__ import annotations
+
+from ..goals.acceptance_readback import configured_checks
 from ..quota.blocked_transition_notice import blocked_priority_fallback_owner_reason
 from ..quota.effective_action import EffectiveAction
 from ..effect_runtime import effect_runtime_result
+import json
 import shlex
 import typing
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from ..agents.agent_scope_frontier import AgentScopeFrontierAction, agent_scope_frontier_action as _agent_scope_frontier_action
@@ -21,6 +24,7 @@ from ..quota.spend_sources import (
     host_goal_turn_reentry_action,
     quota_spend_source_for_execution_context,
 )
+from ..scheduler.arbitration import SchedulerArbitration, _scheduler_arbitration_facts
 from ..scheduler.execution_context import (
     APP_HEARTBEAT_SETTLEMENT_RUNTIME_PROFILES,
     SchedulerExecutionContextResolution,
@@ -80,12 +84,19 @@ class InteractionContractPacket(_InteractionContractRequired, total=False):
     fallback_policy: dict[str, Any]
 
 
-def _blocked_successor_wait_observation_required(payload: dict[str, Any]) -> bool:
-    return bool(
-        payload.get("effective_action")
-        == AgentScopeFrontierAction.AGENT_SCOPE_WAIT.value
-        and exact_blocked_successor_wait_state(payload)
-    )
+def _blocked_successor_wait_observation_required(payload: Mapping[str, object]) -> bool:
+    wait = exact_blocked_successor_wait_state(payload)
+    if payload.get("effective_action") != AgentScopeFrontierAction.AGENT_SCOPE_WAIT.value or not wait:
+        return False
+    identity = payload.get("agent_identity")
+    agent_id = identity.get("agent_id") if isinstance(identity, Mapping) else None
+    result = effect_runtime_result("work_item.blocked_wait_observation.project", {
+        "effective_action": payload.get("effective_action"),
+        "agent_id": agent_id,
+        "vision_wait_state": wait,
+        "heartbeat_receipt": payload.get("heartbeat_receipt"),
+    })
+    return result["required"] is True
 
 
 def _user_todo_item_is_explicitly_non_gating(item: dict[str, Any]) -> bool:
@@ -170,12 +181,12 @@ def user_channel_action_required(payload: dict[str, Any]) -> bool:
     ) or user_action_owns_empty_agent_lane(payload)
 
 
-def _user_gate_notification_suppressed(payload: dict[str, Any]) -> bool:
+def _user_gate_notification_suppressed(payload: Mapping[str, object]) -> bool:
     cooldown = payload.get("user_gate_notification_cooldown")
     return isinstance(cooldown, dict) and cooldown.get("notification_suppressed") is True
 
 
-def _user_gate_scope_projection_repair_active(payload: dict[str, Any]) -> bool:
+def _user_gate_scope_projection_repair_active(payload: Mapping[str, object]) -> bool:
     repair = payload.get("stall_self_repair")
     return bool(
         isinstance(repair, dict)
@@ -701,12 +712,18 @@ def _selection_recovery_command(
     registry_path: str | None = None,
 ) -> str:
     identity = payload.get("agent_identity") if isinstance(payload.get("agent_identity"), dict) else {}
+    try:
+        scheduler_args = render_scheduler_execution_args(
+            scheduler_execution_context=scheduler_execution_context,
+        )
+    except ValueError:
+        scheduler_args = ""
     return selection.action_selection_recovery_command(
         goal_id=str(payload.get("goal_id") or "<GOAL_ID>"),
         agent_id=identity.get("agent_id"), runtime_root=runtime_root,
         registry_path=registry_path,
         turn_instance_id=turn_instance_id, available_capabilities=available_capabilities,
-        scheduler_args=render_scheduler_execution_args(scheduler_execution_context=scheduler_execution_context),
+        scheduler_args=scheduler_args,
     ) + _goal_ref_cli_arg(payload)
 
 
@@ -722,6 +739,23 @@ def _render_replan_successor_closeout_guard(
         # Todo-bound replans retain their distinct closeout path.
         return None
     return typed_quota_guard + settlement_args
+
+
+def _dependency_cycle_cli_actions(
+    frontier: dict[str, Any], *, command_prefix: str, goal_id: str,
+    lifecycle_actor_args: str, typed_quota_guard: str,
+) -> list[str]:
+    """Render the typed cycle repair without adding selection policy here."""
+    candidates = frontier.get("dependency_cycle_candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return []
+    todo_id = str(candidates[0]["todo_id"])
+    return [
+        f"{command_prefix} todo list --goal-id {goal_id} --todo-id {todo_id}{lifecycle_actor_args}",
+        str(frontier["recommended_action"]),
+        f"{command_prefix} task-lease inspect --goal-id {goal_id} --todo-id {todo_id}",
+        typed_quota_guard,
+    ]
 
 
 def interaction_next_cli_actions(
@@ -746,6 +780,29 @@ def interaction_next_cli_actions(
             turn_instance_id=turn_instance_id, runtime_root=runtime_root,
             registry_path=registry_path,
         )]
+    return _admitted_interaction_next_cli_actions(
+        payload, mode=mode, available_capabilities=available_capabilities,
+        scheduler_execution_context=scheduler_execution_context, capability_reentry=capability_reentry,
+        capability_reentry_resolved=capability_reentry_resolved, settlement_plan=settlement_plan,
+        turn_instance_id=turn_instance_id, runtime_root=runtime_root, registry_path=registry_path,
+    )
+
+
+def _admitted_interaction_next_cli_actions(
+    payload: dict[str, Any],
+    *,
+    mode: str,
+    available_capabilities: Any = None,
+    scheduler_execution_context: (
+        Mapping[str, Any] | SchedulerExecutionContextResolution | None
+    ) = None,
+    capability_reentry: dict[str, Any] | None = None,
+    capability_reentry_resolved: bool = False,
+    settlement_plan: Mapping[str, Any] | None = None,
+    turn_instance_id: str | None = None,
+    runtime_root: str | None = None,
+    registry_path: str | None = None,
+) -> list[str]:
     goal_id = str(payload.get("goal_id") or "<GOAL_ID>")
     command_prefix = selection.render_cli_command_prefix(runtime_root=runtime_root, registry_path=registry_path)
     agent_identity = payload.get("agent_identity") if isinstance(payload.get("agent_identity"), dict) else {}
@@ -911,6 +968,11 @@ def interaction_next_cli_actions(
             if isinstance(payload.get("agent_scope_frontier"), dict)
             else {}
         )
+        if cycle_actions := _dependency_cycle_cli_actions(
+            agent_scope_frontier, command_prefix=command_prefix, goal_id=goal_id,
+            lifecycle_actor_args=lifecycle_actor_args, typed_quota_guard=typed_quota_guard,
+        ):
+            return cycle_actions
         monitor_candidates = (
             agent_scope_frontier.get("monitor_blocked_resume_candidates")
             if isinstance(agent_scope_frontier.get("monitor_blocked_resume_candidates"), list)
@@ -1029,10 +1091,11 @@ def interaction_next_cli_actions(
     )
 
 
-def _interaction_required_reads(
+def _interaction_reads_and_arbitration(
     payload: dict[str, Any], contract: dict[str, Any], *,
     runtime_root: str | None, registry_path: str | None,
-) -> list[dict[str, Any]]:
+    agent_scope_frontier_actions: Collection[str],
+) -> tuple[list[dict[str, Any]], SchedulerArbitration]:
     """Transport source/admission facts to the existing typed interaction owner."""
     reads = payload.get("required_reads")
     summary = payload.get("agent_todo_summary") or {}
@@ -1040,12 +1103,14 @@ def _interaction_required_reads(
     replan = payload.get("replan_action_packet") or {}
     selected = payload.get("selected_todo") or {}
     orchestration = payload.get("task_orchestration_contract") or {}
-    result = effect_runtime_result("work_item.interaction_reads.project", {
+    projection_params = {
+        "arbitration_facts": _scheduler_arbitration_facts(contract, agent_scope_frontier_actions, payload=payload),
         "required_reads": [dict(item) for item in reads if isinstance(item, dict) and item.get("command")]
             if isinstance(reads, list) else [],
         "goal_id": payload.get("goal_id"),
         "goal_state_file": payload.get("goal_state_file"),
-        "goal_acceptance_enabled": acceptance.get("enabled") is True,
+        "goal_acceptance_checks_present": configured_checks(acceptance) is not None,
+        "goal_outcomes_present": bool(acceptance.get("outcome_requirements")),
         "selected_todo": {"todo_id": selected.get("todo_id")},
         "task_orchestration_contract": {field: orchestration.get(field)
             for field in ("schema_version", "mode", "primary_todo_id")},
@@ -1057,13 +1122,22 @@ def _interaction_required_reads(
         "command_prefix": selection.render_cli_command_prefix(
             runtime_root=runtime_root or payload.get("runtime_root"),
             registry_path=registry_path or payload.get("registry")),
-    })
+    }
+    # With at most three generated reads and shell-quote expansion, replies fit
+    # 16B + 8 KiB for B ASCII JSON bytes; 64 KiB inputs stay below the 2 MiB frame cap.
+    try:
+        large_local_snapshot = len(json.dumps(projection_params, ensure_ascii=True, separators=(",", ":")).encode()) > 64 * 1024
+    except (TypeError, ValueError, RecursionError, OverflowError):
+        large_local_snapshot = True
+    result = effect_runtime_result(
+        "work_item.interaction_reads.project", projection_params, large_local_snapshot=large_local_snapshot,
+    )
     projected = result.get("required_reads")
     if not isinstance(projected, list) or any(
         not isinstance(item, dict) or not item.get("command") for item in projected
     ):
         raise RuntimeError("TypeScript interaction required reads are malformed")
-    return projected
+    return projected, SchedulerArbitration.from_projection(result.get("arbitration"))
 
 
 def _interaction_spend_policy(
@@ -1329,6 +1403,7 @@ def _build_interaction_cli_channel(
     heartbeat_recommendation: dict[str, Any],
     *,
     mode: str,
+    selection_recovery_required: bool,
     spend_after_validation: bool,
     available_capabilities: Any = None,
     scheduler_execution_context: (
@@ -1339,7 +1414,7 @@ def _build_interaction_cli_channel(
     runtime_root: str | None = None,
     registry_path: str | None = None,
 ) -> dict[str, Any]:
-    if unadmitted_action_selection(payload):
+    if selection_recovery_required:
         return selection.action_selection_recovery_cli_channel(_selection_recovery_command(
             payload, available_capabilities=available_capabilities,
             scheduler_execution_context=scheduler_execution_context,
@@ -1358,7 +1433,7 @@ def _build_interaction_cli_channel(
         )
     )
     channel = {
-        "next_cli_actions": interaction_next_cli_actions(
+        "next_cli_actions": _admitted_interaction_next_cli_actions(
             payload,
             mode=mode,
             available_capabilities=available_capabilities,
@@ -1617,7 +1692,7 @@ def _attach_interaction_vision_wait_state(
     }
 
 
-def _interaction_fallback_policy_required(payload: dict[str, Any], *, mode: str) -> bool:
+def _interaction_fallback_policy_required(payload: Mapping[str, object], *, mode: str) -> bool:
     return mode in {
         "user_gate",
         "user_todo_blocker_push",
@@ -1632,7 +1707,7 @@ def _interaction_fallback_policy_required(payload: dict[str, Any], *, mode: str)
 def unadmitted_action_selection(payload: dict[str, Any]) -> bool:
     """Use the same current-obligation facts as interaction and CLI preflight."""
     qualification = payload.get("action_selection_qualification")
-    if not isinstance(qualification, Mapping) or qualification.get("state") not in {"deferred", "rejected"}:
+    if not isinstance(qualification, Mapping):
         return False
     mode = _interaction_mode(payload)
     user_required = False if payload.get("agent_work_mode") == "monitor_only" else user_channel_action_required(payload)
@@ -1641,21 +1716,22 @@ def unadmitted_action_selection(payload: dict[str, Any]) -> bool:
         blocked_successor_wait_observation=_blocked_successor_wait_observation_required(payload),
     )
     return selection.action_selection_needs_recovery(
-        payload, agent_must_attempt=must_attempt, agent_delivery_refused=delivery_allowed is False,
+        payload, agent_must_attempt=must_attempt, agent_delivery_allowed=delivery_allowed,
     )
 
 
-def build_interaction_contract(
-    payload: dict[str, Any],
+def _build_interaction_contract_projection(
+    payload: dict[str, object],
     *,
-    available_capabilities: Any = None,
+    agent_scope_frontier_actions: Collection[str],
+    available_capabilities: object = None,
     scheduler_execution_context: (
-        Mapping[str, Any] | SchedulerExecutionContextResolution | None
+        Mapping[str, object] | SchedulerExecutionContextResolution | None
     ) = None,
     turn_instance_id: str | None = None,
     runtime_root: str | None = None,
     registry_path: str | None = None,
-) -> InteractionContractPacket:
+) -> tuple[InteractionContractPacket, SchedulerArbitration]:
     execution_obligation = (
         payload.get("execution_obligation")
         if isinstance(payload.get("execution_obligation"), dict)
@@ -1672,6 +1748,9 @@ def build_interaction_contract(
     must_attempt, delivery_allowed = interaction_execution_flags(
         payload, mode=mode, user_required=user_required,
         blocked_successor_wait_observation=_blocked_successor_wait_observation_required(payload),
+    )
+    selection_recovery_required = selection.action_selection_needs_recovery(
+        payload, agent_must_attempt=must_attempt, agent_delivery_allowed=delivery_allowed,
     )
     quiet_noop_allowed = interaction_quiet_noop_allowed(
         mode=mode,
@@ -1701,7 +1780,7 @@ def build_interaction_contract(
             "notify": "DONT_NOTIFY",
             "reason": payload.get("reason"),
         }
-    if unadmitted_action_selection(payload):
+    if selection_recovery_required:
         agent_channel = {
             "must_attempt": False, "delivery_allowed": False,
             "quiet_noop_allowed": quiet_noop_allowed,
@@ -1721,6 +1800,11 @@ def build_interaction_contract(
             quiet_noop_allowed=quiet_noop_allowed,
             capability_reentry=capability_reentry,
         )
+    retry_wait = execution_obligation.get("wait")
+    if execution_obligation.get("kind") == EffectiveAction.BLOCKED_WAIT.value and isinstance(retry_wait, dict):
+        agent_channel["wait"] = retry_wait
+        agent_channel["primary_action"] = execution_obligation["reason"]
+        user_channel["non_gating_notice"] = True
     contract: dict[str, Any] = {
         "schema_version": INTERACTION_CONTRACT_SCHEMA_VERSION,
         "mode": mode,
@@ -1732,6 +1816,7 @@ def build_interaction_contract(
             heartbeat_recommendation,
             mode=mode,
             spend_after_validation=spend_after_validation,
+            selection_recovery_required=selection_recovery_required,
             available_capabilities=available_capabilities,
             scheduler_execution_context=scheduler_execution_context,
             capability_reentry=capability_reentry,
@@ -1746,11 +1831,30 @@ def build_interaction_contract(
     )
     if response_plan is not None:
         contract["response_plan"] = response_plan
-    _attach_interaction_required_reads(contract, _interaction_required_reads(
-        payload, contract, runtime_root=runtime_root, registry_path=registry_path))
+    required_reads, arbitration = _interaction_reads_and_arbitration(
+        payload, contract, runtime_root=runtime_root, registry_path=registry_path,
+        agent_scope_frontier_actions=agent_scope_frontier_actions)
+    _attach_interaction_required_reads(contract, required_reads)
     _attach_interaction_post_writeback_actions(contract, payload)
     _attach_interaction_vision_continuation_audit(contract, payload)
     _attach_interaction_vision_wait_state(contract, payload)
     if _interaction_fallback_policy_required(payload, mode=mode):
         contract["fallback_policy"] = {"do_not_cancel_on_block": True}
-    return typing.cast(InteractionContractPacket, contract)
+    return typing.cast(InteractionContractPacket, contract), arbitration
+
+
+def build_interaction_contract(
+    payload: dict[str, Any],
+    *,
+    available_capabilities: Any = None,
+    scheduler_execution_context: Mapping[str, Any] | SchedulerExecutionContextResolution | None = None,
+    turn_instance_id: str | None = None,
+    runtime_root: str | None = None,
+    registry_path: str | None = None,
+) -> InteractionContractPacket:
+    contract, _arbitration = _build_interaction_contract_projection(
+        payload, agent_scope_frontier_actions=[action.value for action in AgentScopeFrontierAction],
+        available_capabilities=available_capabilities, scheduler_execution_context=scheduler_execution_context,
+        turn_instance_id=turn_instance_id, runtime_root=runtime_root, registry_path=registry_path,
+    )
+    return contract

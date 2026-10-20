@@ -1,11 +1,11 @@
 import {useEffect, useState} from "react";
 import {RefreshCw} from "lucide-react";
-import {fetchPresentationProjection, type DecisionResearchView} from "../../data/decision-research";
+import {fetchPresentationProjection, type PresentationProjectionEnvelope} from "../../data/decision-research";
 import {parsePresentationSurfaceCollectionResponse, type PresentationSurface, type RunGoal} from "../../data/status";
 import {DecisionResearchSurface} from "../../views/decision-research-surface";
 
 export type GoalResearchApi = {indexUrl: string; detailUrl: string; goals: RunGoal[]};
-type Result = {surface: PresentationSurface; view?: DecisionResearchView; error?: string};
+type Result = {surface: PresentationSurface; projection?: PresentationProjectionEnvelope; error?: string};
 
 /** The active Goal's published research; the extension index owns availability. */
 export function GoalResearchResults({goalId, api, zh}: {goalId: string; api: GoalResearchApi; zh: boolean}) {
@@ -29,7 +29,7 @@ export function GoalResearchResults({goalId, api, zh}: {goalId: string; api: Goa
           if (surface.state !== "ready" && surface.state !== "review_due") return {surface};
           try {
             const projection = await fetchPresentationProjection(api.detailUrl, surface);
-            return {surface, view: projection.view};
+            return {surface, projection};
           } catch (failure) {return {surface, error: String(failure)};}
         }));
         if (current) setResults(next);
@@ -41,8 +41,7 @@ export function GoalResearchResults({goalId, api, zh}: {goalId: string; api: Goa
 
   return <section className="goal-team-results goal-research-results min-w-0 [overflow-wrap:anywhere]"
     aria-label={zh ? "研究成果" : "Research results"} aria-busy={busy}>
-    <header><div><h3>{zh ? "研究成果" : "Research results"}</h3>
-      <p>{zh ? "查看本 Goal 已保存的研究结论、反证和待复核事项。" : "Review this Goal’s saved conclusions, counterevidence and open questions."}</p></div>
+    <header><div><h3>{zh ? "研究成果" : "Research results"}</h3></div>
       <button type="button" disabled={busy} onClick={() => {setResults([]); setRevision(value => value + 1);}}>
         <RefreshCw size={14} aria-hidden="true"/>{zh ? "刷新" : "Refresh"}
       </button></header>
@@ -50,6 +49,7 @@ export function GoalResearchResults({goalId, api, zh}: {goalId: string; api: Goa
     {error ? <p role="alert">{zh ? "无法核验研究结果；旧内容已清除。" : "Cannot verify research results; previous content was cleared."} {error}</p> : null}
     {!busy && !error && !results.length ? <p>{zh ? "本 Goal 暂无可读取的公开研究成果。" : "No readable public research results for this Goal yet."}</p> : null}
     {results.map(result => <DecisionResearchSurface key={`${result.surface.extension_id}:${result.surface.surface_id}`}
-      goals={api.goals} surface={result.surface} view={result.view} viewError={result.error}/>) }
+      goals={api.goals} surface={result.surface} view={result.projection?.view}
+      projection={result.projection} viewError={result.error} zh={zh}/>) }
   </section>;
 }

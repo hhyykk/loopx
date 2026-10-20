@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import io
 import json
 import os
@@ -9,6 +8,7 @@ import shlex
 import shutil
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -30,6 +30,10 @@ from loopx.control_plane.testing.cli_output_budget import (
 from loopx.heartbeat_prompt import build_heartbeat_prompt
 from loopx.help_surface import COMMAND_GROUPS
 from loopx.rollout_event_log import rollout_event_log_path
+from tests.control_plane.cli_output_fixture import (
+    budget_fixture_path,
+    stable_budget_fixture_root as _stable_budget_fixture_root,
+)
 
 GOAL_ID = "cli-output-budget-goal"
 AGENT_IDS = ("codex-alpha", "codex-beta", "codex-gamma")
@@ -327,21 +331,6 @@ def _quota_payload_without_rollout_receipt(text: str) -> dict[str, object]:
     return payload
 
 
-@contextlib.contextmanager
-def _stable_budget_fixture_root(root: Path):
-    """Keep lexical and resolved fixture paths independent of runner layout."""
-
-    suffix = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
-    fixture = Path("/tmp") / f"loopx-cli-budget-{suffix}"
-    if fixture.exists() or fixture.is_symlink():
-        raise RuntimeError(f"refusing to replace existing fixture root: {fixture}")
-    fixture.mkdir()
-    try:
-        yield fixture
-    finally:
-        shutil.rmtree(fixture)
-
-
 def _surface_commands(
     *,
     project: Path,
@@ -513,8 +502,11 @@ def _assert_turn_plan_writeback_routes(
     # Budget compaction must not discard or redirect the writeback target.
     action = measurement["payload"]["turn_envelope"]["writeback"]["next_cli_actions"][0]
     argv = shlex.split(action)
-    assert argv[argv.index("--registry") + 1] == str(registry_path)
-    assert argv[argv.index("--runtime-root") + 1] == str(runtime)
+    assert argv.count("--registry") == argv.count("--runtime-root") == 1
+    # Windows drive-rooted aliases are canonicalized by the runtime owner.
+    # Compare target identity while retaining each complete route exactly once.
+    assert Path(argv[argv.index("--registry") + 1]).resolve() == registry_path.resolve()
+    assert Path(argv[argv.index("--runtime-root") + 1]).resolve() == runtime.resolve()
 
 
 def _mode_variant_commands(
@@ -811,16 +803,26 @@ def test_stable_budget_fixture_uses_an_owned_physical_short_root(tmp_path: Path)
     outer = tmp_path / ("nested-runner-" + "p" * 128)
     with _stable_budget_fixture_root(outer) as fixture:
         assert not fixture.is_symlink()
-        assert fixture.resolve().parent == Path("/tmp").resolve()
+        expected_parent = Path(tempfile.gettempdir()) if os.name == "nt" else Path("/tmp")
+        assert fixture.resolve().parent == expected_parent.resolve()
         (fixture / "owned.json").write_text("{}", encoding="utf-8")
     assert not fixture.exists()
     assert not outer.exists()
 
 
+def test_stable_budget_fixture_does_not_require_a_drive_root_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tempfile.gettempdir())
+    with _stable_budget_fixture_root(tmp_path / "native-temp-drive") as fixture:
+        expected_parent = Path(tempfile.gettempdir()) if os.name == "nt" else Path("/tmp")
+        assert fixture.resolve().parent == expected_parent.resolve()
+    assert not fixture.exists()
+
+
 def test_stable_budget_fixture_preserves_an_existing_directory(tmp_path: Path) -> None:
     root = tmp_path / "foreign-directory"
-    suffix = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
-    fixture = Path("/tmp") / f"loopx-cli-budget-{suffix}"
+    fixture = budget_fixture_path(root)
     fixture.mkdir()
     marker = fixture / "foreign.json"
     marker.write_text("preserve", encoding="utf-8")
@@ -833,6 +835,26 @@ def test_stable_budget_fixture_preserves_an_existing_directory(tmp_path: Path) -
         assert marker.read_text(encoding="utf-8") == "preserve"
     finally:
         shutil.rmtree(fixture)
+
+
+def test_stable_budget_fixture_cleans_up_after_a_failed_probe(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="probe failed"):
+        with _stable_budget_fixture_root(tmp_path / "failed-probe") as fixture:
+            (fixture / "owned.json").write_text("{}", encoding="utf-8")
+            raise RuntimeError("probe failed")
+    assert not fixture.exists()
+
+
+def test_stable_budget_fixture_retains_the_posix_path_contract(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from tests.control_plane import cli_output_fixture
+
+    monkeypatch.setattr(cli_output_fixture, "os", SimpleNamespace(name="posix"))
+    fixture = cli_output_fixture.budget_fixture_path(tmp_path)
+    assert fixture.parent == Path("/tmp")
+    assert fixture.name.startswith("loopx-cli-budget-")
+    assert len(fixture.name) == len("loopx-cli-budget-") + 12
+    assert fixture == cli_output_fixture.budget_fixture_path(tmp_path)
 
 
 def test_real_cli_output_stays_inside_baseline_and_growth_contracts(
@@ -1167,7 +1189,7 @@ def test_malformed_todo_state_fails_closed_without_dropping_bounded_detail(
         assert default_payload.get(key) == detail_payload.get(key)
 
 
-def test_quota_cli_bounds_real_scale_vision_audit_and_keeps_cold_detail(
+def test_quota_cli_keeps_complete_vision_rules_with_reachable_duplicate_refs(
     tmp_path: Path,
 ) -> None:
     with _stable_budget_fixture_root(tmp_path / "quota-vision-detail") as stable_root:
@@ -1196,9 +1218,10 @@ def test_quota_cli_bounds_real_scale_vision_audit_and_keeps_cold_detail(
 
     assert default_exit_code == 0, default_text
     assert detail_exit_code == 0, detail_text
-    # Pinned base/head emit 41,503 chars on the same 36-Todo / 12-run vision
-    # fixture. Keep complete decision semantics; 42k leaves 497 chars.
-    assert len(default_text) <= 42_000
+    # Same 36-Todo / 12-run workload: 45,313 lossy -> 48,418 complete chars.
+    # Retain the required clauses; the qualified 50k ceiling leaves 1,582 chars.
+    # The separate 40k compactor fixture and collection-growth guards stay fixed.
+    assert len(default_text) <= 50_000
     default_payload = json.loads(default_text)
     detail_payload = json.loads(detail_text)
     compact_audit = default_payload["vision_continuation_audit"]
@@ -1208,20 +1231,31 @@ def test_quota_cli_bounds_real_scale_vision_audit_and_keeps_cold_detail(
     assert compact_audit["payload_compaction"]["full_detail_cold_path"] == (
         "quota should-run --include-detail vision"
     )
-    assert "registry_read_instruction" not in compact_audit["vision_gap_judge"]
-    assert "registry_read_instruction" in detailed_audit["vision_gap_judge"]
+    assert compact_audit["vision_gap_judge"]["registry_read_instruction"]
+    assert {k: v for k, v in compact_audit.items() if k != "payload_compaction"} == (
+        detailed_audit
+    )
+    for compact_container, detailed_container in (
+        (default_payload["goal_frontier_projection"], detail_payload["goal_frontier_projection"]),
+        (default_payload["interaction_contract"]["agent_channel"], detail_payload["interaction_contract"]["agent_channel"]),
+        (default_payload["interaction_contract"]["cli_channel"], detail_payload["interaction_contract"]["cli_channel"]),
+    ):
+        if "vision_continuation_audit" not in detailed_container:
+            continue
+        audit = dict(compact_container["vision_continuation_audit"])
+        if "projection_ref" in audit:
+            assert audit["projection_ref"] == "$.vision_continuation_audit"
+            audit = {k: v for k, v in compact_audit.items() if k != "payload_compaction"}
+        elif "projection_ref" in audit.get("vision_gap_judge", {}):
+            assert audit["vision_gap_judge"]["projection_ref"] == (
+                "$.vision_continuation_audit.vision_gap_judge"
+            )
+            audit["vision_gap_judge"] = compact_audit["vision_gap_judge"]
+        assert audit == detailed_container["vision_continuation_audit"]
     compact_replan = default_payload["replan_action_packet"]
     detailed_replan = detail_payload["replan_action_packet"]
-    assert compact_replan["payload_compaction"] == {
-        "schema_version": "quota_cli_replan_action_compaction_v0",
-        "mode": "compact_hot_path",
-        "compacted_fields": ["writeback_contract.vision_authoring"],
-        "full_detail_cold_path": "quota should-run --include-detail vision",
-    }
-    assert "vision_authoring" not in compact_replan["writeback_contract"]
-    assert compact_replan["writeback_contract"]["vision_authoring_detail_ref"] == (
-        "quota should-run --include-detail vision"
-    )
+    assert compact_replan["writeback_contract"] == detailed_replan["writeback_contract"]
+    assert "payload_compaction" not in compact_replan
     assert detailed_replan["writeback_contract"]["vision_authoring"][
         "schema_version"
     ] == "goal_vision_replan_contract_v0"
@@ -1321,6 +1355,10 @@ def test_crowded_quota_preserves_long_chain_decision_clauses(
     assert "a reasonable in-scope next step" in guidance
     assert "Otherwise explain why no such step remains" in guidance
     assert "do not invent work, exceed authority or consume budget merely to stay active" in guidance
+    assert "provisional agent-created candidate rules" in guidance
+    assert "or rewrite criteria after failure" in guidance
+    assert "executed path and current artifact" in guidance
+    assert "Reuse still-applicable evidence" in guidance
 
 
 def test_quota_cli_keeps_full_user_todo_diagnostics_on_explicit_cold_path(
@@ -1436,7 +1474,13 @@ def test_quota_cli_keeps_goal_boundary_authority_on_explicit_cold_path(
 
 def test_quota_cli_deprecated_scheduler_detail_flag_matches_canonical_selector(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Compare selectors at the same observation instant, including freshness.
+    monkeypatch.setattr(
+        "loopx.control_plane.runtime.time.now_utc",
+        lambda: datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
     with _stable_budget_fixture_root(
         tmp_path / "quota-detail-alias-scheduler"
     ) as stable_root:
@@ -1469,7 +1513,13 @@ def test_quota_cli_deprecated_scheduler_detail_flag_matches_canonical_selector(
 
 def test_quota_cli_all_detail_matches_repeated_canonical_selectors(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Compare selectors at the same observation instant, including freshness.
+    monkeypatch.setattr(
+        "loopx.control_plane.runtime.time.now_utc",
+        lambda: datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
     with _stable_budget_fixture_root(tmp_path / "quota-detail-all") as stable_root:
         project, runtime, registry_path, state_file = _write_fixture(
             stable_root,
@@ -1695,30 +1745,150 @@ def _assert_mode_variant_budgets(root: Path, *, only: str | None = None) -> None
             )
 
 
+def test_thin_json_budget_retains_full_supported_scope(tmp_path: Path) -> None:
+    # Keep the original public CLI fixture and expand only its authored scope
+    # to the supported boundary. JSON/body budgets must fit complete guidance.
+    with _stable_budget_fixture_root(tmp_path) as root:
+        project, runtime, registry_path, state_file = _write_fixture(root, SCENARIOS[0])
+        command = _surface_commands(
+            project=project, runtime=runtime, registry_path=registry_path,
+            state_file=state_file, output_format="json",
+        )["heartbeat_prompt_thin"]
+        scope = "x" * 320
+        command[command.index("--agent-scope") + 1] = scope
+        exit_code, text = _invoke_cli(command)
+        assert exit_code == 0, text
+        measurement = measure_cli_output(text, output_format="json")
+        assert_cli_output_baseline(
+            CLI_OUTPUT_BUDGET_BY_ID["heartbeat_prompt_thin"], scenario="small",
+            output_format="json", text=text, measurement=measurement,
+        )
+        payload = measurement["payload"]
+        assert scope in payload["task_body"]
+        assert payload["interface_budget"]["max_chars"] == 4200
+        assert payload["interface_budget"]["within_budget"] is True
+        assert "refresh-state --goal-outcome-update-json" in payload["task_body"]
+        assert "Local outcomes never replace root continuation, budget or stop criteria." in payload["task_body"]
+
+
 def test_brief_budget_retains_full_commands_on_real_long_paths() -> None:
-    # A reproducible 128-character absolute root, independent of pytest's
-    # ever-growing temp/worker prefix. Do not shorten rendered paths or raise
-    # the absolute output ceiling to make this case pass.
-    # Reuse the other budget fixtures' short namespace. A canary's nested
-    # TMPDIR can already exceed 128 characters before we create this root.
-    parent = Path("/tmp").resolve()
+    # A reproducible 128-character absolute root; directory depth can still
+    # change JSON escaping cost. Keep full routes and this workload;
+    # presentation-budget changes require matched base/head cost evidence.
+    # Use an existing native temp namespace on Windows; a drive-root /tmp
+    # need not exist. POSIX keeps the short namespace used by socket fixtures.
+    parent = Path(tempfile.gettempdir() if os.name == "nt" else "/tmp").resolve()
+    prefix = "loopx-brief-"
+    # A nested runner temp can exceed the workload itself. Use its nearest
+    # existing ancestor that leaves room for our owned, random child.
+    while len(str(parent / prefix)) + 8 > 128:
+        assert parent != parent.parent, "No temporary ancestor fits the 128-character workload"
+        parent = parent.parent
     # tempfile contributes an eight-character random suffix. Hold input size
-    # constant across Linux /tmp and macOS's longer temporary-directory root.
-    prefix = "loopx-brief-".ljust(128 - len(str(parent)) - 1 - 8, "p")
+    # constant even when the selected parent is a drive or share root.
+    prefix += "p" * (128 - len(str(parent / prefix)) - 8)
     with tempfile.TemporaryDirectory(prefix=prefix, dir=parent) as directory:
         root = Path(directory).resolve()
         assert len(str(root)) == 128
         _assert_mode_variant_budgets(root, only="heartbeat_prompt_brief")
 
 
+def test_brief_long_path_budget_retains_semantics_across_parent_depths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    # Use the native namespace on every host, without changing pathlib or the
+    # product's platform checks. Keep raw output measurements for enforcement.
+    monkeypatch.setitem(globals(), "os", SimpleNamespace(name="nt", environ=os.environ))
+    invoke = _invoke_cli
+    assert_budgets = _assert_mode_variant_budgets
+    roots: list[Path] = []
+    outputs: list[dict[str, object]] = []
+
+    def capture_root(root: Path, *, only: str | None = None) -> None:
+        roots.append(root)
+        assert len(str(root)) == 128
+        assert_budgets(root, only=only)
+
+    def capture_output(command):
+        exit_code, text = invoke(command)
+        output_format = command[command.index("--format") + 1]
+        root = str(roots[-1])
+        if output_format == "json":
+            canonical = json.dumps(json.loads(text), ensure_ascii=False, sort_keys=True)
+            normalized = json.loads(canonical.replace(
+                json.dumps(root, ensure_ascii=False)[1:-1], "<OWNED_ROOT>"
+            ))
+            spec = CLI_OUTPUT_MODE_VARIANT_BY_ID["heartbeat_prompt_brief"]
+            oversized = text + " " * max(0, spec.max_chars["json"] + 1 - len(text))
+            with pytest.raises(AssertionError, match="variant ceiling"):
+                assert_cli_output_mode_variant(
+                    spec,
+                    output_format="json", text=oversized,
+                    measurement=measure_cli_output(oversized, output_format="json"),
+                )
+        else:
+            # The frozen 94-line body/envelope loses only two diagnostic
+            # lines: one duplicate route and one absent pre-quota command.
+            assert len(text.splitlines()) == 92
+            normalized = text.replace(root, "<OWNED_ROOT>")
+        outputs.append({"format": output_format, "normalized": normalized})
+        return exit_code, text
+
+    monkeypatch.setitem(globals(), "_assert_mode_variant_budgets", capture_root)
+    monkeypatch.setitem(globals(), "_invoke_cli", capture_output)
+    with tempfile.TemporaryDirectory(prefix="loopx-depth-") as directory:
+        base = Path(directory).resolve()
+        # Do not silently climb to an unqualified writable ancestor to fit.
+        if len(str(base.joinpath(*("d" for _ in range(12))) / "loopx-brief-")) + 8 > 128:
+            pytest.skip("Native temp namespace cannot fit the qualified depth-12 layout")
+        for depth in (0, 6, 12):
+            parent = base.joinpath(*("d" for _ in range(depth)))
+            parent.mkdir(parents=True, exist_ok=True)
+            monkeypatch.setattr(tempfile, "tempdir", str(parent))
+            test_brief_budget_retains_full_commands_on_real_long_paths()
+    assert [len(root.parts) for root in roots] == [
+        len(roots[0].parts) + depth for depth in (0, 6, 12)
+    ]
+    assert outputs[:2] == outputs[2:4] == outputs[4:6]
+
+
 def test_long_path_budget_is_independent_of_runner_temp_prefix(
     tmp_path: Path, monkeypatch
 ) -> None:
-    parent = tmp_path / ("nested-canary-" + "p" * 128)
+    # Remain longer than the workload without adding 141 characters to an
+    # arbitrary runner prefix and crossing Windows directory limits.
+    prefix = "nested-canary-".ljust(160 - len(str(tmp_path.resolve())) - 1, "p")
+    parent = tmp_path / prefix
     parent.mkdir()
     assert len(str(parent.resolve())) > 128
     monkeypatch.setattr(tempfile, "tempdir", str(parent))
     test_brief_budget_retains_full_commands_on_real_long_paths()
+
+
+@pytest.mark.parametrize("nested_temp", [False, True])
+def test_long_path_budget_uses_native_temp_without_a_drive_root_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested_temp: bool,
+) -> None:
+    from types import SimpleNamespace
+
+    # Model a Windows drive with no /tmp while keeping real filesystem and
+    # CLI reads. Do not change the host's pathlib or product platform checks.
+    missing_drive_tmp = tmp_path / "missing-drive-tmp"
+    path_type = Path
+
+    def native_path(value):
+        return missing_drive_tmp if value == "/tmp" else path_type(value)
+
+    monkeypatch.setitem(globals(), "Path", native_path)
+    monkeypatch.setitem(globals(), "os", SimpleNamespace(name="nt", environ=os.environ))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    if nested_temp:
+        test_long_path_budget_is_independent_of_runner_temp_prefix(tmp_path, monkeypatch)
+    else:
+        test_brief_budget_retains_full_commands_on_real_long_paths()
+    assert not missing_drive_tmp.exists()
 
 
 def test_todo_list_explicit_limit_stays_bounded_and_default_path_unchanged(
@@ -1929,14 +2099,12 @@ def test_turn_envelope_cli_preserves_codex_app_scheduler_binding(
     assert exit_code == 0, text
     payload = json.loads(text)
     full_decision = shlex.split(payload["detail_ref"]["full_decision"])
-    # A cold read must preserve the originating source as well as the host
-    # profile, rather than silently switching to the operator's default Goal.
-    for option, value in (
-        ("--registry", str(registry_path)), ("--runtime-root", str(runtime)),
-        ("--goal-id", GOAL_ID), ("--agent-id", AGENT_IDS[0]), ("--format", "json"),
-    ):
-        assert full_decision[full_decision.index(option) + 1] == value
-    assert full_decision[0] == "loopx" and "--codex-app" in full_decision
+    # A cold read must preserve the complete originating source and host profile.
+    assert full_decision == [
+        "loopx", "--registry", str(registry_path), "--runtime-root", str(runtime),
+        "--format", "json", "quota", "should-run", "--goal-id", GOAL_ID,
+        "--agent-id", AGENT_IDS[0], "--codex-app",
+    ]
     read_rc, read_text = _invoke_cli(full_decision[1:])
     assert read_rc == 0, read_text
     assert json.loads(read_text)["goal_id"] == GOAL_ID
@@ -1980,9 +2148,9 @@ def test_quota_should_run_cli_actions_keep_explicit_runtime_root(
     def assert_selected_runtime_root(command: str) -> None:
         argv = shlex.split(command)
         assert argv[0] == "loopx"
-        assert "--runtime-root" in argv
+        assert argv.count("--runtime-root") == 1
         assert argv[argv.index("--runtime-root") + 1] == str(runtime)
-        assert "--registry" in argv
+        assert argv.count("--registry") == 1
         assert argv[argv.index("--registry") + 1] == str(registry_path)
 
     assert cli_channel["next_cli_actions"]

@@ -81,7 +81,7 @@ class CompletedTodoPages:
     ttl_seconds = 300
     max_cache_bytes = 16 * 1024 * 1024
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._snapshots = OrderedDict()
         self._lock = Lock()
 
@@ -178,7 +178,7 @@ class CompletedTodoRequestMixin:
     def _completed_todos(self) -> None:
         # This loopback-only workspace read preserves task text and evidence.
         # Select display fields without returning the authority's internal metadata.
-        from .todos import list_goal_todos
+        from .control_plane.todos.list_readback import list_goal_todos
 
         if not self._require_loopback_origin():
             return

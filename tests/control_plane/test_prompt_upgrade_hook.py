@@ -140,8 +140,9 @@ def test_partial_reconciliation_preserves_other_pending_entries(tmp_path, monkey
 @pytest.mark.parametrize("route_source", ["quota_cli_invocation", "loopx_turn_run_once"])
 def test_upgrade_read_projection_preserves_work_authority(tmp_path, monkeypatch, route_source):
     home, path, database, registry, root, _, desired, _ = _deferred(tmp_path, monkeypatch)
-    monkeypatch.setattr("loopx.control_plane.scheduler.scheduler_hint.now_utc",
-        lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr("loopx.control_plane.scheduler.scheduler_hint.now_utc", lambda: now)
+    monkeypatch.setattr("loopx.control_plane.runtime.time.now_utc", lambda: now)
     status = quota_status_payload(goal_id="fixture-goal", status="active", recommended_action="Advance the selected work",
         coordination={"registered_agents": ["agent-a"]},
         agent_todo_items=[{"todo_id": "todo_ordinary_work", "index": 1,
@@ -157,11 +158,15 @@ def test_upgrade_read_projection_preserves_work_authority(tmp_path, monkeypatch,
     baseline = build_live_quota_should_run_decision(status, **kwargs)
     receipt.write_bytes(contents)
     pending = build_live_quota_should_run_decision(status, **kwargs)
-    assert any(x.get("kind") == "automation_prompt_upgrade"
-        for x in pending["interaction_contract"]["agent_channel"]["required_reads"])
+    assert "turn_start_capability_hook_dispatch" not in baseline
     assert "required_reads" not in pending
-    hint = next(x for x in pending["interaction_contract"]["agent_channel"]["required_reads"]
-        if x.get("kind") == "automation_prompt_upgrade")
+    reads = pending["interaction_contract"]["agent_channel"]["required_reads"]
+    hint = next(x for x in reads if x.get("kind") == "automation_prompt_upgrade")
+    dispatch = pending["turn_start_capability_hook_dispatch"]
+    assert set(dispatch) == {"required_reads"}
+    assert len(dispatch["required_reads"]) == 1
+    assert dispatch["required_reads"][0]["command"] == hint["command"]
+    assert hint["source"] == "turn_start_capability_hook"
     assert len(hint["command"]) > 360
     assert hint in compact_quota_should_run_cli_payload(pending)["interaction_contract"]["agent_channel"]["required_reads"]
     envelope = build_turn_envelope(pending)

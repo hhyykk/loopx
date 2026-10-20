@@ -185,7 +185,7 @@ def register_pr_review_command(
         metavar="NUMBER@HEAD_OID",
         help=(
             "Explicitly request a fresh evidence audit for one unchanged exact head "
-            "that already has a valid conclusion. Repeatable."
+            "that already has a valid conclusion or independent review. Repeatable."
         ),
     )
     parser.add_argument(
@@ -608,6 +608,13 @@ def handle_pr_review_command(
         payload["request"]["readiness_observation_count"] = len(
             readiness_observations
         )
+        from ..capabilities.pr_review_queue.repository_experience import attach_repository_review_experience
+        try:
+            attach_repository_review_experience(payload, goal=goal, agent_id=review_agent_id)
+        except (OSError, TypeError, ValueError):
+            # Memory availability must not invalidate the review queue or create
+            # a user gate. Never expose source/config exception text.
+            payload["repository_experience_warning"] = "repository_experience_unavailable"
         if args.autonomous_observation:
             autonomous_review = build_pull_request_review_queue_observation(
                 repository=repository,

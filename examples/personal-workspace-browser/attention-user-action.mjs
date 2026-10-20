@@ -8,36 +8,40 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { repoRoot, outputDir } from "./fixture.mjs";
 import { resolveTestPython } from "../../scripts/test-python.mjs";
-import { openWorkspacePage } from "./scenario-context.mjs";
+import { fetchWorkspaceBackend, openWorkspacePage } from "./scenario-context.mjs";
 
 const actionText = "在桌面 App 中手动创建剩余的 3 个角色会话";
 const idlessText = "核对本机备份目录是否可写";
+const nativeLongRequest = "[P1] Handle complete. " + "Keep the full review conditions. ".repeat(12)
+  + "https://example.org/review?candidate=verified&view=full-history";
 
 // The compiled UI's own payloads reach the real ChatActionService and File
 // hard-lease owner. Other unrelated APIs retain the shared browser fixture.
 async function boundActorJourney(browser, url, registerDefault) {
   const root = await mkdtemp(join(tmpdir(), "loopx-user-action-"));
   const child = spawn(resolveTestPython({ repoRoot }), ["-u", "-c", `
-import json, pathlib, sys
+import json, os, pathlib, sys
 sys.path.insert(0, 'tests/control_plane')
 from canonical_authority_fixture import initialize_canonical_authority
 from loopx.chat_server import ChatHTTPServer, ChatRequestHandler
 from loopx.chat_actions import ChatActionService
 from loopx.chat_action_store import ChatActionStore
 from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
-from loopx.todos import add_goal_todo, list_goal_todos
+from loopx.todos import add_goal_todo
 r=pathlib.Path(sys.argv[1]); runtime=r/'runtime'; registry=r/'registry.json'; state=r/'state.md'
+profile=r/'.codex-gpt'; profile.mkdir(); os.environ['LOOPX_CODEX_HOMES']=str(profile)
 state.write_text('---\\ngoal_id: product-release\\n---\\n\\n## Agent Todo\\n')
 agents=['codex-review','codex-delivery'] + (['codex'] if sys.argv[2]=='true' else [])
 registry.write_text(json.dumps({'common_runtime_root':str(runtime),'goals':[{'id':'product-release','repo':str(r),'state_file':'state.md','coordination':{'agent_model':'peer_v1','registered_agents':agents}}]}))
+config=json.loads(registry.read_text()); config['goals'][0]['coordination']['handoff_mode']='hard_lease'; registry.write_text(json.dumps(config))
+projection=build_todo_runtime_shadow_projection(goal_id='product-release',handoff_mode='hard_lease',todos=[])
+initialize_canonical_authority(runtime,'product-release',projection,state_path=state,provider='file')
 ids={}
 for operation in ['complete','cancel']:
-    target=add_goal_todo(registry_path=registry,goal_id='product-release',role='agent',text='Dependent '+operation,status='blocked',task_class='advancement_task',claimed_by='codex-delivery')
-    action=add_goal_todo(registry_path=registry,goal_id='product-release',role='user',text='Handle '+operation,task_class='user_action',bound_agent='codex-delivery',unblocks_todo_id=target['todo_id'])
+    target=add_goal_todo(registry_path=registry,goal_id='product-release',role='agent',text='Dependent '+operation,status='blocked',task_class='advancement_task',claimed_by='codex-delivery',operation_id='attention-user-action:'+operation+':target')
+    text=${JSON.stringify(nativeLongRequest)} if operation=='complete' else 'Handle cancel'
+    action=add_goal_todo(registry_path=registry,goal_id='product-release',role='user',text=text,task_class='user_action',agent_id='codex-review',bound_agent='codex-delivery',unblocks_todo_id=target['todo_id'],operation_id='attention-user-action:'+operation+':request')
     ids[operation]=[action['todo_id'],target['todo_id']]
-projection=build_todo_runtime_shadow_projection(goal_id='product-release',handoff_mode='hard_lease',todos=list_goal_todos(registry_path=registry,goal_id='product-release')['todos'])
-config=json.loads(registry.read_text()); config['goals'][0]['coordination']['handoff_mode']='hard_lease'; registry.write_text(json.dumps(config))
-initialize_canonical_authority(runtime,'product-release',projection,state_path=state,provider='file')
 s=ChatHTTPServer(('127.0.0.1',0),ChatRequestHandler)
 s.registry_path,s.runtime_root,s.runtime_root_override,s.verbose=registry,runtime,str(runtime),False
 s.selected_goal_id,s.scan_roots,s.limit='product-release',[],10
@@ -67,13 +71,13 @@ print(json.dumps({'port':s.server_port,'ids':ids}),flush=True); s.serve_forever(
     const previews = [];
     let applications = 0;
     context = await openWorkspacePage(browser, url, { beforeGoto: async (_api, page) => {
-      for (const pattern of ["**/status.json*", "**/api/actions**", "**/api/chat/todo/detail?*", "**/api/chat/completed-todos?*"]) {
+      for (const pattern of ["**/status.json*", "**/api/actions**", "**/api/chat/machine-configuration**", "**/api/chat/todo/detail?*", "**/api/chat/completed-todos?*", "**/extension-presentation-surfaces*", "**/extension-projection*"]) {
         await page.route(pattern, async route => {
           const request = route.request(), parsed = new URL(request.url());
           if (pattern === "**/status.json*" && parsed.pathname !== "/status.json") { await route.fallback(); return; }
           if (parsed.pathname === "/api/actions/preview") previews.push(request.postDataJSON());
-          if (parsed.pathname.endsWith("/apply")) applications++;
-          const response = await route.fetch({ url: `${backend}${parsed.pathname}${parsed.search}` });
+          if (parsed.pathname.startsWith("/api/actions/") && parsed.pathname.endsWith("/apply")) applications++;
+          const response = await fetchWorkspaceBackend(route, backend);
           await route.fulfill({ response });
         });
       }
@@ -89,10 +93,25 @@ print(json.dumps({'port':s.server_port,'ids':ids}),flush=True); s.serve_forever(
       await page.getByRole("button", { name: /LoopX 管家/ }).first().click();
       await page.getByTestId("personal-home-lane-needs_you").locator(".personal-home-goal-card").first().click();
       await page.getByRole("button", { name: /^任务$/ }).first().click();
-      await page.getByText(`Handle ${operation}`, { exact: true }).first().click();
+      const openTask = () => page.locator('[data-goal-panel="tasks"]:not([hidden])').getByText(new RegExp(`^Handle ${operation}`)).first().click();
+      await openTask();
+      await drawer.getByText("提出请求：Agent codex-review", {exact: true}).waitFor();
+      await drawer.getByText("回复交给：Agent codex-delivery", {exact: true}).waitFor();
+      if (operation === "complete") {
+        assert.ok((await drawer.locator(".personal-attention-brief").innerText()).includes("https://example.org/review?candidate=verified&view=full-history"), "full conditions and URL survive the compact status path");
+        await drawer.getByRole("button", {name: "在对话中回复", exact: true}).click();
+        await page.waitForFunction(expected => document.querySelector("textarea")?.value === expected,
+          `关于「${nativeLongRequest}」：\n\nTodo: ${actionId}`, {timeout: 5000}).catch(async error => {
+          throw new Error(`${error.message}; composer=${await page.getByLabel("向 LoopX 发送消息").inputValue()}`);
+        });
+        assert.equal(context.api.turnRequests.length, 0, "a reply draft never dispatches a Turn");
+        await page.getByRole("button", {name: /^任务$/}).first().click();
+        await openTask();
+      }
       if (operation === "cancel") await drawer.locator("summary", { hasText: "其他处理" }).click();
       await drawer.getByRole("button", { name: operation === "complete" ? "我已完成" : "不再需要", exact: true }).click();
       await page.locator('[data-context-kind="proposal"]').waitFor({ state: "visible" });
+      await drawer.getByText("提出请求：Agent codex-review", {exact: true}).waitFor();
       assert.equal(previews.at(-1).normalized_parameters.agent_id, "codex-delivery");
       assert.equal((await read(actionId)).status, "open", "Native preview writes nothing");
       await page.screenshot({ path: resolve(outputDir, `user-action-native-${registerDefault}-${operation}.png`), animations: "disabled" });
@@ -109,6 +128,36 @@ print(json.dumps({'port':s.server_port,'ids':ids}),flush=True); s.serve_forever(
       assert.equal((await read(actionId)).status, "done", "Reload preserves canonical completion");
     }
     assert.equal(applications, 2, "Exactly one confirmed write per request");
+    // The Goal's settings entry uses the same native machine transaction, not
+    // a browser-only model pick or an implicit Agent Loop start.
+    await page.locator(".personal-chat-model-menu > summary").click();
+    await page.getByRole("button", {name: "默认对话配置", exact: true}).click();
+    await page.getByLabel("Codex 配置来源", {exact: true}).selectOption("codex-gpt");
+    await page.getByLabel("对话模型", {exact: true}).fill("gpt-6.1-sol");
+    await page.getByLabel("推理强度", {exact: true}).selectOption("high");
+    await page.getByLabel("速度档", {exact: true}).fill("fast");
+    const inspect = async () => (await (await fetch(`${backend}/api/chat/machine-configuration`)).json()).machine_configuration;
+    await page.getByRole("button", {name: "预览变更", exact: true}).click();
+    await page.getByRole("button", {name: "应用已审阅预览", exact: true}).waitFor({state: "visible"});
+    assert.equal(await inspect(), null, "preview does not persist defaults");
+    await page.getByRole("button", {name: "应用已审阅预览", exact: true}).click();
+    await page.getByRole("button", {name: "预览回滚", exact: true}).waitFor();
+    assert.deepEqual((await inspect()).namespaces.codex_chat, {schema_version: "codex_chat_machine_defaults_v0",
+      codex_profile: "codex-gpt", model: "gpt-6.1-sol", reasoning_effort: "high", service_tier: "fast"});
+    assert.equal(context.api.turnRequests.length, 0, "configuration and replies never launch a Turn or Agent Loop");
+    await page.screenshot({path: resolve(outputDir, `codex-defaults-native-${registerDefault}.png`), animations: "disabled"});
+    await page.setViewportSize({width: 390, height: 844});
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "conversation settings fit a phone viewport");
+    await page.screenshot({path: resolve(outputDir, `codex-defaults-native-${registerDefault}-mobile.png`), animations: "disabled"});
+    await page.getByRole("button", {name: "预览回滚", exact: true}).click();
+    await page.getByRole("button", {name: "确认回滚", exact: true}).click();
+    await page.getByText("已恢复前一版机器策略，并通过校验。", {exact: true}).waitFor();
+    assert.equal(await inspect(), null, "native rollback restores absence instead of retaining a browser preference");
+    await page.getByRole("button", {name: "返回工作区", exact: true}).click();
+    await page.locator(".personal-chat-model-menu > summary").waitFor();
+    await page.waitForFunction(() => document.activeElement?.matches(".personal-chat-model-menu > summary"));
+    assert.ok(await page.locator(".personal-chat-model-menu > summary").evaluate(node => node === document.activeElement),
+      "Closing defaults returns keyboard focus to the model control, not a removed disclosure button");
   } finally {
     clearTimeout(timer); lines.close();
     if (context) await context.close();
@@ -129,7 +178,7 @@ export const attentionUserActionScenario = {
       await page.getByRole("button", { name: /LoopX 管家/ }).first().click();
       await page.getByTestId("personal-home-lane-needs_you").locator(".personal-home-goal-card").first().click();
       await page.getByRole("button", { name: /^任务$/ }).first().click();
-      await page.getByText(text, { exact: true }).first().click();
+      await page.locator('[data-goal-panel="tasks"]:not([hidden])').getByText(text, { exact: true }).click();
       await drawer.getByText(text, { exact: true }).first().waitFor({ state: "visible" });
     }
     try {
@@ -158,7 +207,7 @@ export const attentionUserActionScenario = {
       await page.getByRole("button", { name: "查看更新后的 Goal" }).click();
       assert.equal(api.durableWriteCount, writesBefore + 1, "Confirmation writes exactly once");
       await page.getByRole("button", { name: /^任务$/ }).first().click();
-      await page.getByText(idlessText, { exact: true }).first().waitFor({ state: "visible" });
+      await page.locator('[data-goal-panel="tasks"]:not([hidden])').getByText(idlessText, { exact: true }).waitFor({ state: "visible" });
       assert.equal(await page.getByText(actionText, { exact: true }).count(), 0, "The completed request leaves needs-you on readback");
 
       // Without a stable todo_id the drawer explains why and offers the conversation instead.
@@ -192,7 +241,7 @@ export const attentionUserActionScenario = {
             assert.equal(preview.normalized_parameters.todo_id, "todo-browser-user-action");
           }],
         ]) {
-          await fresh.page.getByText(actionText, { exact: true }).first().click();
+          await fresh.page.locator('[data-goal-panel="tasks"]:not([hidden])').getByText(actionText, { exact: true }).click();
           await freshDrawer.locator("summary", { hasText: "其他处理" }).click();
           await freshDrawer.getByRole("button", { name: label, exact: true }).click();
           await fresh.page.locator('[data-context-kind="proposal"]').waitFor({ state: "visible" });

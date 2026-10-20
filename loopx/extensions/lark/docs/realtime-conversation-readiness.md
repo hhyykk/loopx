@@ -99,6 +99,35 @@ model execution. Synthetic host/provider checks cover idle/hard DM timeouts
 and an injected commission timeout; a live-provider recovery drill remains
 part of the switch gate below.
 
+Failed private project and steward replies now present Core's classified error
+instead of the generic "failed or expired" instruction to send `/status`.
+Explicit app-server transport error variants become `upstream_transport_failure`.
+If an older host terminates with an unclassified error after a persisted typed
+`responseStreamDisconnected` retry, the reply reports that observed retry history;
+the terminal error remains unclassified. Arbitrary upstream prose is neither
+published nor used to guess policy, authentication or expiry. Partial answers
+remain incomplete, and the original Session and request are retained. This is
+error presentation, not automatic model replay or proof that an effect did not
+run; effect-aware recovery remains Core-owned. The existing model-capacity
+recovery guidance is unchanged.
+
+### Native reply references
+
+New ordinary replies in bound private conversations and group topics carry the
+referenced provider message through the existing shared TypeScript context
+projection. This changes the native input from a bare follow-up to the bounded
+reference plus the current request. The authenticated current envelope must
+match its source ancestry; another conversation, deleted content and unreadable
+references cannot supply quoted text. Visible posts/cards omit callback data.
+Missing or truncated context stays explicit, and quotes grant no authority.
+
+Controls are still selected from the current message alone; they add no parent
+lookup. The transport freezes a new ordinary reply's input before Core admission.
+Duplicate events reuse it, including after the parent changes; already admitted
+pre-upgrade requests retain their original input. Core still freshly checks
+bindings, grants and the original return route. Source/provider regression tests
+do not establish installed model interpretation or completion of a user approval.
+
 ### Private-message progress
 
 Private project and steward conversations present the original Turn's persisted

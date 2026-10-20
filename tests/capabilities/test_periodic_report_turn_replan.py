@@ -17,10 +17,7 @@ from loopx.capabilities.periodic_report.post_writeback_hook import (
 )
 from loopx.cli import main as cli_main
 from loopx.control_plane.coordination.local_authority import read_canonical_todos_if_promoted
-from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
-from loopx.control_plane.todos.active_state_todo_parser import parse_active_state_todos
 from tests.control_plane.canonical_authority_fixture import (
-    initialize_canonical_authority,
     isolate_sqlite_runtime,
 )
 from tests.test_loopx_turn_driver import _write_live_fixture
@@ -43,16 +40,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str):
     if provider == "sqlite":
         isolate_sqlite_runtime(tmp_path, monkeypatch)
     project, runtime, registry = _write_live_fixture(
-        tmp_path, todo_metadata_extra="no_followup=true"
-    )
-    state = project / ".codex/goals" / GOAL_ID / "ACTIVE_GOAL_STATE.md"
-    todos = parse_active_state_todos(state.read_text(encoding="utf-8"), item_limit=None)
-    projection = build_todo_runtime_shadow_projection(
-        goal_id=GOAL_ID, handoff_mode="soft_claim",
-        todos=todos["agent_todos"]["items"],
-    )
-    initialize_canonical_authority(
-        runtime, GOAL_ID, projection, state_path=state, provider=provider
+        tmp_path, todo_metadata_extra="no_followup=true", provider=provider
     )
     config = json.loads(registry.read_text(encoding="utf-8"))
     config["goals"][0]["control_plane"] = {

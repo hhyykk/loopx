@@ -3,9 +3,11 @@
 The `coordination.authority_shadow` / `file_one_way` observer is retired.
 Todo, handoff-mode and task-lease writes no longer re-read the Goal after commit
 or create a second observation store. Their primary semantics are unchanged.
-The transaction-bound `coordination.runtime_shadow` outbox remains the only
-writable shadow lineage; its existing bootstrap, source locks, byte witnesses,
-recovery and promotion checks remain mandatory.
+The retained `coordination.runtime_shadow` files are pre-cutoff migration and
+recovery evidence. Normal 2.0 writes require canonical authority and no longer
+feed a Markdown shadow lineage. Existing bootstrap, source locks, byte
+witnesses, recovery and promotion checks remain available for reviewed import
+and interrupted-operation recovery.
 
 This is an intentional behavior change for Goals that opted into the old
 observer. Unconfigured Goals remain default-off. A retained old setting is
@@ -60,6 +62,44 @@ Retained data remains readable by its existing format. Reverting this code
 can restart the old observer if its setting is still present, so clear the
 setting on installations that must not resume observation after rollback.
 No format rewrite or destructive data cleanup accompanies retirement.
+
+## Retained readback without source producers
+
+`authority-shadow status` reads retained outbox entries and candidate history
+through independent read-only modules. It remains available when the old source
+capture producers are absent. Pending prepared/committed files, cursor residue,
+invalid evidence and the original management binding remain visible. Residue
+counts are diagnostic hints: they do not authorize cleanup or prove delivery.
+A missing candidate stays missing; status never creates a replacement identity,
+repairs bytes, drains an outbox or grants a writer permission.
+
+The enabled `coordination-shadow inspect`, `qualify` and `read-candidate`
+commands likewise call `local_authority_shadow_readback.py` directly. Their
+complete source snapshot, default-off gate, bounded qualification and refusal
+results retain the same TS owners. Source and normal-wheel checks remove all
+four old producers and compare byte-stable observations, insufficient coverage,
+missing Todo, source drift, unreadable/missing store and subsequent recovery.
+The historical `runtime_shadow.py` imports remain aliases to the same functions.
+The retained reader loads inside the selected observation's error boundary,
+after the shadow opt-in check. Command registration, disabled shadow and
+independent cold-source inspection/import/recovery do not require that reader.
+If a required observation reader is absent, its command reports a non-executed
+structured error; it does not abort unrelated command registration or substitute
+a source producer. Reader availability does not enable capture.
+The shared TS qualifier now preserves `provider_protocol_violation` and
+`provider_read_unavailable` rather than mislabelling a failed provider read as
+`bootstrap_required`. Consequently a corrupt journal makes inspection fail,
+instead of reporting a missing baseline; qualification and candidate reads
+retain the provider refusal too. Missing and valid stores retain their existing
+behavior. Recovery restores the original bytes, without creating a new lineage.
+Bootstrap, rollback and promotion still load their supported management adapter;
+this reader exit grants no writer cutoff, import or promotion authority.
+
+The retained Python filesystem codecs preserve the existing wire and errors;
+candidate proof and drain effects remain in their TypeScript owners. Historical
+outbox drain and disposition retain their orchestration modules without
+reopening a business writer. Pending originals still require explicit
+reconciliation; historical readback does not authorize deletion.
 
 ## Why two matching reads were not a capture guarantee
 

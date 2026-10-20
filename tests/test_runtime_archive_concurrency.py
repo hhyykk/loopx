@@ -9,8 +9,10 @@ from typing import Any
 
 import pytest
 
+from loopx import file_lock as file_lock_module
 from loopx import runtime as runtime_module
 from loopx.control_plane.coordination.shadow_management import (
+    runtime_artifact_lock_target,
     shadow_maintenance_lock_target,
 )
 from loopx.control_plane.effect_runtime import (
@@ -20,7 +22,12 @@ from loopx.control_plane import effect_runtime as effect_runtime_module
 from loopx.control_plane.goals.first_party_host_admission import (
     FirstPartyHostGoalAdmission,
 )
+from loopx.control_plane.goals.source_session_recreation import (
+    RecreateGoalRequest,
+    recreate_goal_instance,
+)
 from loopx.control_plane.projects.registry_codec import (
+    load_project_registry,
     source_session_registry_transaction,
 )
 from loopx.control_plane.quota import spend_commit
@@ -623,3 +630,102 @@ def test_archive_rechecks_registry_membership_after_waiting_for_writer(
     assert isinstance(errors[0], ValueError)
     assert "goal exists in registry" in str(errors[0])
     assert source.is_dir()
+
+
+def test_archive_rejects_goal_instance_recreated_after_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    source = runtime_root / "goals" / GOAL_ID
+    source.mkdir(parents=True)
+    marker = source / "instance.txt"
+    marker.write_text("instance-a", encoding="utf-8")
+    source_registry = tmp_path / "project" / ".loopx" / "registry.json"
+    _write_source_registry(source_registry, runtime_root)
+    registry_path = runtime_root / "registry.global.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "registry_role": "global-local",
+                "common_runtime_root": str(runtime_root),
+                "goals": [
+                    {
+                        "id": GOAL_ID,
+                        "source_registry": str(source_registry),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    archive_preflight_complete = threading.Event()
+    continue_archive = threading.Event()
+    archive_results: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+    actual_runtime_lock = file_lock_module.exclusive_cross_runtime_file_lock
+
+    @contextmanager
+    def paused_runtime_artifact_lock(
+        path: Path,
+        **kwargs: Any,
+    ) -> Iterator[Path]:
+        if path == runtime_artifact_lock_target(runtime_root, GOAL_ID):
+            archive_preflight_complete.set()
+            if not continue_archive.wait(timeout=10):
+                raise TimeoutError("archive preflight barrier was not released")
+        with actual_runtime_lock(path, **kwargs) as lock_path:
+            yield lock_path
+
+    monkeypatch.setattr(
+        file_lock_module,
+        "exclusive_cross_runtime_file_lock",
+        paused_runtime_artifact_lock,
+    )
+
+    def archive() -> None:
+        try:
+            archive_results.append(
+                runtime_module.archive_runtime_goal(
+                    registry_path=registry_path,
+                    runtime_root_override=None,
+                    goal_id=GOAL_ID,
+                    archive_root=None,
+                    allow_registered=True,
+                    execute=True,
+                )
+            )
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=archive)
+    worker.start()
+    try:
+        assert archive_preflight_complete.wait(
+            timeout=5
+        ), f"archive failed before exact preflight: {errors!r}"
+        recreated = recreate_goal_instance(
+            RecreateGoalRequest(
+                registry_path=source_registry,
+                goal_id=GOAL_ID,
+                goal_instance_id=GOAL_INSTANCE_ID,
+                operation_id="recreate-during-runtime-archive",
+            )
+        )
+        instance_b = str(recreated["goal_ref"]["goal_instance_id"])
+        assert instance_b != GOAL_INSTANCE_ID
+        marker.write_text("instance-b", encoding="utf-8")
+    finally:
+        continue_archive.set()
+        worker.join(timeout=20)
+
+    assert not worker.is_alive()
+    assert archive_results == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert "goal instance changed during archive preflight" in str(errors[0])
+    current_goal = load_project_registry(source_registry)["goals"][0]
+    assert current_goal["goal_instance_id"] == instance_b
+    assert marker.read_text(encoding="utf-8") == "instance-b"
+    assert not (runtime_root / "archived-goals").exists()

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import AbstractContextManager
 import importlib.util
 import json
 import os
@@ -51,7 +52,19 @@ def previous_assets(previous: Path | None) -> list[str]:
     return assets
 
 
+def _build_lock() -> AbstractContextManager[Path]:
+    from loopx.file_lock import exclusive_file_lock
+
+    return exclusive_file_lock(ROOT / ".local/chat-bundle-build", timeout_seconds=300)
+
+
 def build(previous: Path | None, *, install: bool = False) -> None:
+    # npm ci and delivery publication share checkout-local mutable directories.
+    with _build_lock():
+        _build(previous, install=install)
+
+
+def _build(previous: Path | None, *, install: bool) -> None:
     dashboard = ROOT / "apps/presentation/dashboard"
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
     if not npm:
@@ -82,19 +95,29 @@ def build(previous: Path | None, *, install: bool = False) -> None:
             raise RuntimeError(
                 "source changed while building; retry without concurrent edits"
             )
-        revision = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True
-        )
-        source_revision = (
-            revision.stdout.strip()
-            if revision.returncode == 0
-            else os.environ.get("LOOPX_RESOLVED_SOURCE_GIT_COMMIT")
-        )
-        finish_delivery(staged, previous, current, before, source_revision)
+        finish_delivery(staged, previous, current, before, _source_revision())
     print(
         "Chat bundle built and verified; current and previous delivery assets retained."
     )
 
+
+
+def _source_revision() -> str | None:
+    """Resolve the built delivery's source revision.
+
+    Staged benchmark sources are git archives inside task containers that
+    often lack a git binary entirely; a missing executable must take the same
+    environment fallback as a failed rev-parse.
+    """
+    try:
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True
+        )
+    except FileNotFoundError:
+        return os.environ.get("LOOPX_RESOLVED_SOURCE_GIT_COMMIT")
+    if revision.returncode == 0:
+        return revision.stdout.strip()
+    return os.environ.get("LOOPX_RESOLVED_SOURCE_GIT_COMMIT")
 
 def finish_delivery(
     staged: Path,
@@ -161,10 +184,22 @@ def finish_delivery(
 
 
 def ensure(previous: Path | None = None) -> None:
+    # Keep a qualified, read-only archive usable without creating a lock directory.
+    try:
+        contract.validate_bundle(OUTPUT, source_root=ROOT)
+        if previous is None or previous.resolve() == OUTPUT.resolve():
+            return
+    except RuntimeError:
+        pass
+    with _build_lock():
+        _ensure(previous)
+
+
+def _ensure(previous: Path | None) -> None:
     try:
         manifest = contract.validate_bundle(OUTPUT, source_root=ROOT)
     except RuntimeError:
-        build(previous, install=True)
+        _build(previous, install=True)
         return
     if previous is None or previous.resolve() == OUTPUT.resolve():
         return
@@ -214,7 +249,21 @@ def release_build(tag: str, repository: str) -> None:
     ]
 
     def number(value: str) -> tuple[int, ...]:
-        return tuple(map(int, value.removeprefix("v").split(".")))
+        match = re.fullmatch(
+            r"v(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?",
+            value,
+        )
+        if match is None:
+            raise ValueError(f"invalid LoopX release tag: {value}")
+        major, minor, patch, prerelease, prerelease_number = match.groups()
+        prerelease_rank = {None: 3, "a": 0, "b": 1, "rc": 2}[prerelease]
+        return (
+            int(major),
+            int(minor),
+            int(patch),
+            prerelease_rank,
+            int(prerelease_number or 0),
+        )
 
     predecessors = [r for r in versions if number(r["tag_name"]) < number(tag)]
     if not predecessors:

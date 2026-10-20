@@ -1,4 +1,4 @@
-.TH LOOPX 1 "" "LoopX 1.3.1" "User Commands"
+.TH LOOPX 1 "" "LoopX 2.0.0" "User Commands"
 .SH NAME
 loopx \- control-plane helper for long-running agent work
 .SH SYNOPSIS
@@ -185,8 +185,8 @@ Preview, append, or read supervisor proposals and host execution receipts.
 \fBloopx upgrade\-plan\fR
 Plan default heartbeat upgrade propagation.
 .TP
-\fBloopx update [check|plan|apply]\fR
-Inspect installation ownership, then explicitly apply archive updates.
+\fBloopx update [check|plan|apply] / loopx upgrade\fR
+Inspect installation ownership, then explicitly apply archive updates, or run one command that upgrades the CLI and the installed macOS App.
 .TP
 \fBloopx project\-skill \-\-help\fR
 Install, inspect, or remove release\-owned skills in selected project agent hosts.
@@ -272,6 +272,15 @@ Plan or run catalog\-informed smoke profiles.
 .TP
 \fBloopx performance\-diagnosis \-\-help\fR
 Plan an explicit local capture or inspect an existing profile without executing or uploading it.
+.TP
+\fBloopx goal\-direction \-\-help\fR
+Inspect or explicitly configure a Goal material basis; writes require \-\-execute.
+.TP
+\fBloopx zcode\-goal \-\-help\fR
+Explicitly bind and inspect one managed ZCode CLI native Goal session.
+.TP
+\fBloopx research\-checkpoint \-\-help\fR
+Explicitly capture, verify, or adopt a sealed checkpoint through current Goal and native Host owners.
 .TP
 \fBloopx promotion\-readiness\fR
 Record release\-scoped canary readiness evidence in the shared runtime ledger.

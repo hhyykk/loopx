@@ -49,7 +49,7 @@ from .control_plane.agents.runtime_model import (
 )
 from .control_plane.agents.supervisor import normalize_peer_supervisor
 from .control_plane.agents.work_mode import normalize_agent_work_modes
-from .control_plane.coordination import runtime_shadow as shadow
+from .control_plane.coordination import configuration as shadow
 from .control_plane.coordination.configuration import normalize_goal_write_scope
 from .control_plane.operator_inbox_binding import local_private_config_digest
 from .control_plane.projects.registry_codec import (
@@ -438,6 +438,10 @@ def configure_goal(
     execution_turn_granularity: str | None = None,
     execution_replan_after_todos: int | None = None,
     execution_replan_after_turns: int | None = None,
+    execution_stride_strategy: str | None = None,
+    clear_execution_stride_strategy: bool = False,
+    execution_planning_horizon_goal: bool | None = None,
+    clear_execution_planning_horizon_goal: bool = False,
     clear_execution_replan_after_turns: bool = False,
     clear_execution_replan_after_todos: bool = False,
     self_repair_enabled: bool | None = None,
@@ -472,6 +476,8 @@ def configure_goal(
     explore_harness_enabled: bool | None = None,
     explore_harness_profile: str | None = None,
     clear_explore_harness_profile: bool = False,
+    explore_composition_mode: str | None = None,
+    explore_composition_scope_id: str | None = None,
     explore_graph_enabled: bool | None = None,
     explore_mode: str | None = None,
     registered_agents: list[str] | None = None,
@@ -512,6 +518,7 @@ def configure_goal(
     lark_kanban_heartbeat_sync: bool | None = None,
     reward_memory_config: str | None = None,
     reward_memory_agents: list[str] | None = None,
+    reward_memory_agent_id: str | None = None,
     clear_reward_memory_config: bool = False,
     execute: bool = False,
     _registry_transaction: ProjectRegistryTransaction | None = None,
@@ -769,6 +776,7 @@ def configure_goal(
         registered_agents=effective_registered_agents,
         requested_config_path=reward_memory_config,
         requested_agents=reward_memory_agents,
+        agent_id=reward_memory_agent_id,
         clear=clear_reward_memory_config,
         observed_at=_now_iso(),
         execute=execute,
@@ -826,6 +834,9 @@ def configure_goal(
         turn_granularity=execution_turn_granularity,
         replan_after_completed_todos=execution_replan_after_todos,
         replan_after_effective_turns=execution_replan_after_turns,
+        stride_strategy=execution_stride_strategy, clear_stride_strategy=clear_execution_stride_strategy,
+        planning_horizon_goal=execution_planning_horizon_goal,
+        clear_planning_horizon_goal=clear_execution_planning_horizon_goal,
         clear_replan_after_effective_turns=clear_execution_replan_after_turns,
         clear_replan_after_completed_todos=clear_execution_replan_after_todos,
     )
@@ -995,6 +1006,8 @@ def configure_goal(
         or explore_harness_enabled is not None
         or explore_harness_profile is not None
         or clear_explore_harness_profile
+        or explore_composition_mode is not None
+        or explore_composition_scope_id is not None
     ):
         spawn_policy = (
             goal.get("spawn_policy")
@@ -1020,6 +1033,8 @@ def configure_goal(
             explore_harness_enabled is not None
             or explore_harness_profile is not None
             or clear_explore_harness_profile
+            or explore_composition_mode is not None
+            or explore_composition_scope_id is not None
         ):
             explore_harness = (
                 spawn_policy.get("explore_harness")
@@ -1032,6 +1047,15 @@ def configure_goal(
                 explore_harness.pop("profile", None)
             elif explore_harness_profile is not None:
                 explore_harness["profile"] = explore_harness_profile
+            if explore_composition_mode is not None:
+                explore_harness["composition_mode"] = explore_composition_mode
+            if explore_composition_scope_id is not None:
+                if explore_composition_scope_id:
+                    explore_harness["composition_scope_id"] = explore_composition_scope_id
+                else:
+                    explore_harness.pop("composition_scope_id", None)
+            from .orchestration import compact_explore_harness_policy
+            compact_explore_harness_policy(explore_harness)
             if explore_harness:
                 spawn_policy["explore_harness"] = explore_harness
             else:

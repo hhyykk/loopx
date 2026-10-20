@@ -63,11 +63,24 @@ def _projection_goal_fixture(
     )
     runs_dir = tmp_path / "runtime" / "goals" / "goal-1" / "runs"
     runs_dir.mkdir(parents=True)
-    (runs_dir / "index.jsonl").write_text(
-        "".join(json.dumps(run) + "\n" for run in runs),
-        encoding="utf-8",
-    )
+    _write_projection_runs(tmp_path / "runtime", runs)
     return tmp_path / "runtime", registry_path
+
+
+def _projection_run_path(runtime_root: Path, position: int = 0) -> Path:
+    return runtime_root / "goals" / "goal-1" / "runs" / f"run-{position}.json"
+
+
+def _write_projection_runs(runtime_root: Path, runs: list[dict[str, object]]) -> None:
+    rows = []
+    for position, raw_run in enumerate(runs):
+        artifact = _projection_run_path(runtime_root, position)
+        row = {**raw_run, "json_path": str(artifact)}
+        artifact.write_text(json.dumps(row), encoding="utf-8")
+        rows.append(row)
+    (_projection_run_path(runtime_root).parent / "index.jsonl").write_text(
+        "".join(json.dumps(run) + "\n" for run in reversed(rows)), encoding="utf-8"
+    )
 
 
 def _successor_ack_run(
@@ -1365,13 +1378,33 @@ def test_todo_complete_survives_unreadable_periodic_report_machine_store(
                         "id": "goal-1",
                         "repo": str(tmp_path),
                         "state_file": "STATE.md",
-                        "agents": [{"id": "agent-a"}],
+                            "coordination": {
+                                "registered_agents": ["agent-a"],
+                                "agent_model": "peer_v1",
+                            },
                     }
                 ],
                 "common_runtime_root": str(runtime_root),
             }
         ),
         encoding="utf-8",
+    )
+    from canonical_authority_fixture import initialize_canonical_authority
+    from loopx.control_plane.coordination.runtime_shadow import (
+        build_todo_runtime_shadow_projection,
+    )
+    from loopx.todos import list_goal_todos
+
+    todos = list_goal_todos(registry_path=registry_path, goal_id="goal-1")["todos"]
+    initialize_canonical_authority(
+        runtime_root,
+        "goal-1",
+        build_todo_runtime_shadow_projection(
+            goal_id="goal-1",
+            todos=todos,
+            handoff_mode="soft_claim",
+        ),
+        state_path=state,
     )
     _write_unreadable_periodic_report_machine_store(runtime_root)
 
@@ -1397,7 +1430,7 @@ def test_todo_complete_survives_unreadable_periodic_report_machine_store(
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert exit_code == 0
+    assert exit_code == 0, json.dumps(payload, indent=2)
     assert payload["ok"] is True
     assert payload["completed"] is True
 
@@ -1423,7 +1456,10 @@ def test_periodic_report_projection_reduces_durable_successor_transition(
     )
 
     projection = build_periodic_report_post_writeback_projection(
-        payload={"state": {"path": str(tmp_path / "goal.md")}},
+        payload={
+            "state": {"path": str(tmp_path / "goal.md")},
+            "json_path": str(_projection_run_path(runtime_root)),
+        },
         registry_path=registry_path,
         runtime_root=runtime_root,
         goal_id="goal-1",
@@ -1434,6 +1470,35 @@ def test_periodic_report_projection_reduces_durable_successor_transition(
     assert receipt["transition"] == "successor_frontier_settled"
     assert receipt["frontier_identity"] == "frontier-2"
     assert projection["project_progress"]["observed_at"] == receipt["completed_at"]
+    assert build_periodic_report_post_writeback_projection(
+        payload={"state_file": str(tmp_path / "goal.md")},
+        registry_path=registry_path, runtime_root=runtime_root,
+        goal_id="goal-1", agent_id="agent-1",
+    ) == {}
+    assert build_periodic_report_post_writeback_projection(
+        payload={
+            "state_file": str(tmp_path / "goal.md"),
+            "json_path": str(_projection_run_path(runtime_root, 1)),
+        },
+        registry_path=registry_path, runtime_root=runtime_root,
+        goal_id="goal-1", agent_id="agent-1",
+    ) == {}
+    duplicate = {
+        **_successor_ack_run(),
+        "generated_at": "2026-08-30T12:00:00Z",
+        "json_path": str(_projection_run_path(runtime_root)),
+    }
+    index_path = _projection_run_path(runtime_root).parent / "index.jsonl"
+    with index_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(duplicate) + "\n")
+    assert build_periodic_report_post_writeback_projection(
+        payload={
+            "state_file": str(tmp_path / "goal.md"),
+            "json_path": str(_projection_run_path(runtime_root)),
+        },
+        registry_path=registry_path, runtime_root=runtime_root,
+        goal_id="goal-1", agent_id="agent-1",
+    ) == {}
 
 
 def test_periodic_report_projection_reduces_terminal_after_todo_completion(
@@ -1514,7 +1579,10 @@ def test_periodic_report_projection_evaluates_turn_capabilities_absent_and_prese
     )
 
     projection_absent = build_periodic_report_post_writeback_projection(
-        payload={"state_file": str(tmp_path / "goal.md")},
+        payload={
+            "state_file": str(tmp_path / "goal.md"),
+            "json_path": str(_projection_run_path(runtime_root)),
+        },
         registry_path=registry_path,
         runtime_root=runtime_root,
         goal_id="goal-1",
@@ -1531,6 +1599,7 @@ def test_periodic_report_projection_evaluates_turn_capabilities_absent_and_prese
     projection_present = build_periodic_report_post_writeback_projection(
         payload={
             "state_file": str(tmp_path / "goal.md"),
+            "json_path": str(_projection_run_path(runtime_root)),
             "available_capabilities": ["network"],
         },
         registry_path=registry_path,
@@ -1633,9 +1702,7 @@ def test_periodic_report_hook_accepts_projection_after_a_published_report(
     runtime_root, registry_path, state_path = _published_report_goal_fixtures(
         tmp_path, runs=runs
     )
-    ((runtime_root / "goals" / "goal-1" / "runs") / "index.jsonl").write_text(
-        "".join(json.dumps(run) + "\n" for run in runs), encoding="utf-8"
-    )
+    _write_projection_runs(runtime_root, runs)
     candidate = build_periodic_report_publication_candidate(
         goal_id="goal-1",
         agent_id="agent-1",
@@ -1653,7 +1720,10 @@ def test_periodic_report_hook_accepts_projection_after_a_published_report(
     )
 
     projection = build_periodic_report_post_writeback_projection(
-        payload={"state": {"path": str(state_path)}},
+        payload={
+            "state": {"path": str(state_path)},
+            "json_path": str(_projection_run_path(runtime_root)),
+        },
         registry_path=registry_path,
         runtime_root=runtime_root,
         goal_id="goal-1",
@@ -2250,7 +2320,10 @@ def test_periodic_report_projection_isolates_other_agent_ack_and_claimed_todos(
 
     # Agent B's ACK and Agent B's claimed Todo must NOT settle Agent A's stage.
     projection_a = build_periodic_report_post_writeback_projection(
-        payload={"state": {"path": str(state_path)}},
+        payload={
+            "state": {"path": str(state_path)},
+            "json_path": str(_projection_run_path(runtime_root)),
+        },
         registry_path=registry_path,
         runtime_root=runtime_root,
         goal_id="goal-1",
@@ -2273,10 +2346,7 @@ def test_periodic_report_projection_isolates_other_agent_ack_and_claimed_todos(
         json.loads(row)
         for row in (runs_dir / "index.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    (runs_dir / "index.jsonl").write_text(
-        "".join(json.dumps(run) + "\n" for run in [agent_a_ack, *prior_runs]),
-        encoding="utf-8",
-    )
+    _write_projection_runs(runtime_root, [agent_a_ack, *reversed(prior_runs)])
     state_path.write_text(
         """# Goal
 
@@ -2291,7 +2361,10 @@ def test_periodic_report_projection_isolates_other_agent_ack_and_claimed_todos(
     )
 
     projection_a_unclaimed = build_periodic_report_post_writeback_projection(
-        payload={"state": {"path": str(state_path)}},
+        payload={
+            "state": {"path": str(state_path)},
+            "json_path": str(_projection_run_path(runtime_root)),
+        },
         registry_path=registry_path,
         runtime_root=runtime_root,
         goal_id="goal-1",
@@ -2598,7 +2671,10 @@ def test_periodic_report_projection_carries_peer_lane_progress(
     )
 
     projection = build_periodic_report_post_writeback_projection(
-        payload={"state": {"path": str(tmp_path / "goal.md")}},
+        payload={
+            "state": {"path": str(tmp_path / "goal.md")},
+            "json_path": str(_projection_run_path(runtime_root)),
+        },
         registry_path=registry_path,
         runtime_root=runtime_root,
         goal_id="goal-1",
@@ -2640,7 +2716,10 @@ def test_periodic_report_projection_drops_facts_a_peer_already_delivered(
 
     def projection() -> dict[str, object]:
         return build_periodic_report_post_writeback_projection(
-            payload={"state": {"path": str(tmp_path / "goal.md")}},
+            payload={
+                "state": {"path": str(tmp_path / "goal.md")},
+                "json_path": str(_projection_run_path(runtime_root)),
+            },
             registry_path=registry_path,
             runtime_root=runtime_root,
             goal_id="goal-1",

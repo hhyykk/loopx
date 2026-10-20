@@ -15,18 +15,17 @@ from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_s
 REPO = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("provider", ["legacy", "file", "sqlite"])
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
 def test_priority_authoring_round_trip(tmp_path, monkeypatch, provider):
     isolate_sqlite_runtime(tmp_path, monkeypatch)
     project, runtime, registry = _write_fixture(tmp_path)
     state = next(project.rglob("ACTIVE_GOAL_STATE.md"))
-    if provider != "legacy":
-        projection = build_todo_runtime_shadow_projection(goal_id=GOAL_ID, handoff_mode="legacy", leases=[], todos=[{
-            "schema_version": "todo_item_v0", "todo_id": TODO_ID, "role": "agent", "status": "open", "done": False,
-            "text": "[P0] Existing higher priority", "priority": "P0", "title": "Existing higher priority",
-            "archive_state": "active", "source_section": "Agent Todo", "index": 1, "task_class": "advancement_task",
-        }])
-        initialize_canonical_authority(runtime, GOAL_ID, projection, state_path=state, provider=provider)
+    projection = build_todo_runtime_shadow_projection(goal_id=GOAL_ID, handoff_mode="soft_claim", leases=[], todos=[{
+        "schema_version": "todo_item_v0", "todo_id": TODO_ID, "role": "agent", "status": "open", "done": False,
+        "text": "[P0] Existing higher priority", "priority": "P0", "title": "Existing higher priority",
+        "archive_state": "active", "source_section": "Agent Todo", "index": 1, "task_class": "advancement_task",
+    }])
+    initialize_canonical_authority(runtime, GOAL_ID, projection, state_path=state, provider=provider)
 
     def cli(*args, success=True):
         run = subprocess.run([sys.executable, "-m", "loopx.cli", "--registry", str(registry),
@@ -55,16 +54,14 @@ def test_priority_authoring_round_trip(tmp_path, monkeypatch, provider):
     assert "[P3] Validate P0 parser prose" in state.read_text()
     cli("todo", "update", "--todo-id", todo_id, "--text", "New task title")
     assert read(todo_id)["priority"] == "P3"
-    edit = ["todo", "update", "--todo-id", todo_id, "--priority", "P4"]
-    if provider != "legacy":
-        edit += ["--update-operation-id", "priority-change-once"]
+    edit = ["todo", "update", "--todo-id", todo_id, "--priority", "P4",
+            "--update-operation-id", "priority-change-once"]
     changed = cli(*edit)
     assert changed["ok"]
-    if provider != "legacy":
-        replay = cli(*edit)
-        assert replay["status"] == "replayed"
-        cli("todo", "update", "--todo-id", todo_id, "--priority", "P0",
-            "--update-operation-id", "priority-change-once", success=False)
+    replay = cli(*edit)
+    assert replay["status"] == "replayed"
+    cli("todo", "update", "--todo-id", todo_id, "--priority", "P0",
+        "--update-operation-id", "priority-change-once", success=False)
     assert read(todo_id)["priority"] == "P4"
     before = state.read_bytes()
     cli("todo", "update", "--todo-id", todo_id, "--priority", "P0", "--text", "[P1] conflicting declarations", success=False)
@@ -73,8 +70,27 @@ def test_priority_authoring_round_trip(tmp_path, monkeypatch, provider):
     cli("todo", "update", "--todo-id", todo_id, "--clear-priority")
     assert read(todo_id).get("priority") is None
     assert "[P4] New task title" not in state.read_text()
-    unranked = cli("todo", "add", "--role", "agent", "--text", "Investigate P0 prose without declaring priority")
-    assert read(unranked["todo_id"]).get("priority") is None
+    ordinary = cli("todo", "add", "--role", "agent", "--text", "Investigate P0 prose without declaring priority")
+    assert read(ordinary["todo_id"])["priority"] == "P1"
     selected = cli("quota", "should-run", "--codex-app", "--agent-id", AGENT_ID,
-        "--todo-id", unranked["todo_id"], "--turn-instance-id", "priority-selection", "--scan-path", str(project))
+        "--todo-id", ordinary["todo_id"], "--turn-instance-id", "priority-selection", "--scan-path", str(project))
     assert selected["should_run"] is True
+    gate = cli("todo", "add", "--role", "user", "--task-class", "user_gate",
+        "--blocks-agent", AGENT_ID, "--text", "Choose the blocking release option")
+    assert read(gate["todo_id"])["priority"] == "P0"
+    blocker = cli("todo", "add", "--role", "agent", "--task-class", "blocker",
+        "--text", "Record the blocked dependency")
+    assert read(blocker["todo_id"])["priority"] == "P0"
+    blocked = cli("todo", "add", "--role", "agent", "--status", "blocked",
+        "--text", "Wait for the required dependency")
+    assert read(blocked["todo_id"])["priority"] == "P0"
+    cli("todo", "update", "--todo-id", todo_id, "--text", "Still explicitly unranked")
+    assert read(todo_id).get("priority") is None
+    create = ["todo", "add", "--role", "agent", "--text", "Default priority receipt",
+              "--operation-id", "default-priority-once"]
+    first = cli(*create)
+    assert read(first["todo_id"])["priority"] == "P1"
+    cli("todo", "update", "--todo-id", first["todo_id"], "--priority", "P4")
+    assert cli(*create)["status"] == "replayed"
+    assert read(first["todo_id"])["priority"] == "P4"
+    cli(*create, "--priority", "P0", success=False)

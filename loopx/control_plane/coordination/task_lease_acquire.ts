@@ -80,7 +80,9 @@ export async function executeCanonicalTaskLeaseAcquire(store: AuthorityStore, ra
     const decision = decideTaskLeaseAcquire({handoff_mode: mode!, registered_agents: input.registered_agents,
       ...facts, command: input});
     if (decision.outcome === "rejected" || decision.outcome === "conflict") {
-      return failed(decision.code, `canonical task lease acquire rejected: ${decision.code}`, {
+      return failed(decision.code, decision.code === "handoff_mode_retired"
+        ? "Legacy ownership cannot grant new execution; release retained leases and review handoff-mode plan-migration/migrate before acquiring again."
+        : `canonical task lease acquire rejected: ${decision.code}`, {
         ...(decision.code === "write_scope_conflict" ? {recommended_action:
           "Coordinate shared writes with the listed holders. For isolated code edits, use your own separate Git worktree and acquire with --write-worktree; file overlaps become integration advisories. A known same-checkout collision remains rejected. Never take over a foreign lease or use code-edit mode for shared runtime state."} : {}),
         handoff_mode: mode, expected_version: input.expected_version, actual_version: leaseVersion(facts.current),
@@ -93,7 +95,7 @@ export async function executeCanonicalTaskLeaseAcquire(store: AuthorityStore, ra
         {goal_acceptance_guard: acceptance});
     }
     const dependency = todoExecutionDependencyRejection(
-      indexCoordinationProjection(head.head, input.goal_id).todos, input.todo_id);
+      indexCoordinationProjection(head.head, input.goal_id).todos, input.todo_id, input.now);
     if (dependency !== null) return failed(dependency.code, dependency.reason,
       {resume_condition: dependency.condition});
     const changed = decision.outcome === "apply";

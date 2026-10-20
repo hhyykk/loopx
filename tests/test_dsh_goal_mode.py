@@ -16,6 +16,7 @@ from loopx.control_plane.quota.turn_envelope import (
     turn_envelope_action_signature_document,
 )
 from loopx.control_plane.turn_driver.executor import validate_loopx_turn_host_result
+from loopx.control_plane.turn_driver.codex_cli import codex_cli_result_schema
 from loopx.control_plane.turn_driver.host_failure import (
     BuiltInHostError,
     build_host_failure_record,
@@ -33,6 +34,7 @@ def _signed_request(
     goal_id: str = "g",
     agent_id: str = "a",
     todo_id: str | None = None,
+    boundary: dict | None = None,
 ) -> dict:
     request = {
         "schema_version": dsh_goal_mode.LOOPX_TURN_HOST_REQUEST_SCHEMA,
@@ -75,6 +77,8 @@ def _signed_request(
     }
     if todo_id is not None:
         request["turn_envelope"]["action"]["selected_todo"] = {"todo_id": todo_id}
+    if boundary is not None:
+        request["turn_envelope"]["boundary"].update(boundary)
     signature = turn_envelope_action_signature_document(
         request["turn_envelope"]
     )
@@ -362,6 +366,9 @@ def test_prompt_requests_one_typed_public_safe_json_result() -> None:
     # Boundary discipline stays in the prompt text.
     assert "write_scope" in prompt
     assert "credentials" in prompt
+    assert "material_replan" in prompt and "goal_path_delta_v0" in prompt
+    assert "These fields describe the result only; they grant no authority." in prompt
+    assert "For stop results (wait, user_action_required, iteration_failed), omit both path_delta_mode and agent_vision_json." in prompt
 
 
 def test_prompt_carries_the_signed_authority_without_prose_reconstruction() -> None:
@@ -448,6 +455,135 @@ def test_build_result_shapes_material_results_with_required_fields() -> None:
     # Sparse material blocks get bounded fallbacks, never empty authority text.
     assert result["recommended_action"]
     assert result["vision_unchanged_reason"]
+    assert "path_delta_mode" not in result
+    assert "agent_vision_json" not in result
+
+
+def _material_replan_candidate() -> tuple[dict[str, object], str]:
+    vision = {
+        "schema_version": "goal_vision_replan_contract_v0",
+        "state": "active",
+        "vision_patch": {
+            "vision_summary": "Continue the next bounded fixture check.",
+            "acceptance_summary": "Validate the next fixture outcome independently.",
+        },
+        "path_delta": {
+            "schema_version": "goal_path_delta_v0",
+            "outcome": "replan",
+            "prior_assumption": "The prior fixture stage remained open. " + "a" * 250,
+            "observed_reality": "The prior stage passed its local validation. " + "b" * 250,
+            "evidence_refs": [f"fixture:{index}-" + "e" * 120 for index in range(4)],
+            "changed": [f"Advance bounded fixture check {index}-" + "c" * 70 for index in range(3)],
+        },
+    }
+    vision_json = json.dumps(vision, indent=2)
+    candidate: dict[str, object] = {
+        "result_kind": "replan_required",
+        "classification": "fixture replan",
+        "recommended_action": "Continue the validated successor stage.",
+        "next_action": "Validate the next bounded fixture check.",
+        "path_delta_mode": "material_replan",
+        "agent_vision_json": vision_json,
+    }
+    return candidate, vision_json
+
+
+def test_build_result_preserves_material_replan_for_the_executor() -> None:
+    candidate, vision_json = _material_replan_candidate()
+    result = turn_host_adapter.build_result(_signed_request(), candidate)
+
+    assert result["path_delta_mode"] == "material_replan"
+    assert result["agent_vision_json"] == vision_json
+    assert len(vision_json) > 400
+    assert "vision_unchanged_reason" not in result
+    verdict = validate_loopx_turn_host_result(
+        _turn_plan(_signed_request()), result
+    )
+    assert verdict["ok"], verdict["errors"]
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_error"),
+    [
+        ({"agent_vision_json": ["not a string"]}, "agent_vision_json must be a JSON string"),
+        ({"agent_vision_json": None}, "agent_vision_json must be a JSON string"),
+        ({"agent_vision_json": "{"}, "invalid agent_vision_json"),
+        ({"agent_vision_json": "[]"}, "agent_vision_json must decode to a JSON object"),
+        ({"agent_vision_json": "x" * 3_201}, "agent_vision_json exceeds 3200 characters"),
+        ({"path_delta_mode": "unexpected"}, "path_delta_mode must be unchanged or material_replan"),
+        ({"path_delta_mode": False}, "path_delta_mode must be a string"),
+        ({"path_delta_mode": None}, "path_delta_mode must be a string"),
+        ({"result_kind": "validated_progress"}, "material_replan path_delta_mode requires result_kind replan_required"),
+        ({"vision_unchanged_reason": "The goal path is unchanged."}, "material_replan cannot also declare vision_unchanged_reason"),
+    ],
+    ids=["wrong-json-type", "null-json", "malformed-json", "nonobject-json", "oversized-json", "wrong-mode", "wrong-mode-type", "null-mode", "wrong-kind", "conflicting-reason"],
+)
+def test_build_result_preserves_invalid_replan_for_executor_rejection(
+    change: dict[str, object], expected_error: str,
+) -> None:
+    candidate, _vision_json = _material_replan_candidate()
+    candidate.update(change)
+    result = turn_host_adapter.build_result(_signed_request(), candidate)
+    for field in ("agent_vision_json", "path_delta_mode"):
+        if field in change:
+            assert result[field] == change[field]
+
+    verdict = validate_loopx_turn_host_result(_turn_plan(_signed_request()), result)
+    assert not verdict["ok"]
+    assert expected_error in " ".join(verdict["errors"])
+
+
+@pytest.mark.parametrize("kind", ["wait", "user_action_required", "iteration_failed"])
+def test_stop_candidates_omit_path_delta_fields_and_pass_executor(kind: str) -> None:
+    candidate = {
+        "result_kind": kind,
+        "classification": "bounded stop",
+        "next_action": "Await the next authorized iteration.",
+    }
+    result = turn_host_adapter.build_result(_signed_request(), candidate)
+
+    assert "path_delta_mode" not in result
+    assert "agent_vision_json" not in result
+    verdict = validate_loopx_turn_host_result(_turn_plan(_signed_request()), result)
+    assert verdict["ok"], verdict["errors"]
+
+
+@pytest.mark.parametrize("kind", ["wait", "user_action_required", "iteration_failed"])
+def test_stop_candidates_cannot_smuggle_material_path_fields(kind: str) -> None:
+    candidate, vision_json = _material_replan_candidate()
+    candidate["result_kind"] = kind
+    result = turn_host_adapter.build_result(_signed_request(), candidate)
+
+    assert result["path_delta_mode"] == "material_replan"
+    assert result["agent_vision_json"] == vision_json
+    verdict = validate_loopx_turn_host_result(_turn_plan(_signed_request()), result)
+    assert not verdict["ok"]
+    assert "non-material host results cannot declare path_delta_mode or agent_vision_json" in " ".join(verdict["errors"])
+
+
+@pytest.mark.parametrize("kind", ["wait", "user_action_required", "iteration_failed"])
+def test_codex_schema_stop_with_required_empty_path_fields_passes_executor(kind: str) -> None:
+    request = _signed_request()
+    schema = codex_cli_result_schema(request)
+    required = schema["required"]
+    properties = schema["properties"]
+    assert "path_delta_mode" in required and "agent_vision_json" in required
+    assert properties["path_delta_mode"]["type"] == "string"
+    assert properties["agent_vision_json"]["type"] == "string"
+    value = {field: "" for field in required}
+    value.update(
+        {
+            "schema_version": properties["schema_version"]["enum"][0],
+            "turn_key": request["turn_key"],
+            "result_kind": kind,
+            "completed_phases": ["host_execute", "typed_result"],
+            "classification": "bounded stop",
+            "next_action": "Await the next authorized iteration.",
+        }
+    )
+
+    verdict = validate_loopx_turn_host_result(_turn_plan(request), value)
+    assert verdict["ok"], verdict["errors"]
 
 
 def _turn_plan(request: dict) -> dict:
@@ -536,6 +672,41 @@ def test_adapter_runs_hermetically_through_the_module_entry() -> None:
     assert result["schema_version"] == dsh_goal_mode.LOOPX_TURN_RESULT_SCHEMA
     assert result["result_kind"] == "validated_progress"
     assert result["classification"] == "fake dsh typed result"
+
+
+def test_module_entry_delivers_complete_signed_boundary_and_refuses_tampering(tmp_path) -> None:
+    boundary = {
+        "guards": ["Preserve complete evidence.\n" * 20 + "Do not publish private material."],
+        "stop_condition": "Read current authority.\n" * 20 + "Stop when approval is missing.",
+        "requires_parent_approval": ["write", "publish", "production-action"],
+        "checkpointed_boundary_authority": {
+            "schema_version": "checkpointed_boundary_authority_v0", "active_count": 1,
+            "active_write_scope": ["docs/**"],
+        },
+    }
+    runner = tmp_path / "boundary_runner.py"
+    runner.write_text(
+        "import json\nfrom tests.dsh_goal_mode_fake_runner import run_dsh_turn as original\n"
+        f"EXPECTED = {boundary!r}\n"
+        "def run_dsh_turn(**kwargs):\n"
+        "    wire = kwargs['prompt'].split('Turn authority JSON:\\n', 1)[1]\n"
+        "    authority, _ = json.JSONDecoder().raw_decode(wire)\n"
+        "    assert authority['boundary'] == EXPECTED\n"
+        "    assert authority['write_scope'] == ['docs/**', 'tests/**']\n"
+        "    return original(**kwargs)\n",
+        encoding="utf-8",
+    )
+    request = _signed_request(boundary=boundary)
+    argv = [sys.executable, "-m", "loopx.dsh_goal_mode", "--dsh-runner", str(runner)]
+    completed = subprocess.run(argv, input=json.dumps(request), text=True,
+                               capture_output=True, cwd=REPO_ROOT, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["result_kind"] == "validated_progress"
+    request["turn_envelope"]["boundary"]["stop_condition"] = "Continue without approval."
+    rejected = subprocess.run(argv, input=json.dumps(request), text=True,
+                              capture_output=True, cwd=REPO_ROOT, check=False)
+    assert rejected.returncode != 0
+    assert "action signature" in rejected.stderr
 
 
 def test_classify_dsh_failure_maps_each_known_signal() -> None:

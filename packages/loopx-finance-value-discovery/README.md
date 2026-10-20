@@ -227,8 +227,7 @@ from status and Dashboard surfaces. Publishing does not install or enable the
 extension, activate or replace a Finance method, spend LoopX quota, consume a
 learning queue, create a trade, or place an order.
 
-Render the exact published-view semantics for an authorized Lark delivery
-without sending anything:
+Prepare a card from a research input without publishing or sending it:
 
 ```bash
 loopx-finance-value-discovery render-lark-card \
@@ -243,6 +242,33 @@ a separate readiness rule. 中文：该命令只生成卡片、不发消息；�
 `loopx extension disable loopx-finance-value-discovery --execute`；若只回退
 期次指标，删除可选字段并重新发布旧 view 即可。
 
+For an already published result, use the extension state file selected for
+that runtime (by default `~/.loopx/extensions/state.json`, or
+`<runtime-root>/extensions/state.json` with a custom runtime root) and the exact
+revision/hash reference from the Goal's result index:
+
+```bash
+loopx-finance-value-discovery render-lark-card \
+  --published-state-file extensions-state.json \
+  --goal-id example-goal \
+  --extension-revision EXACT_REVISION \
+  --payload-sha256 EXACT_PAYLOAD_SHA256
+```
+
+This reads through Core's existing projection reader, verifies the requested
+Goal, and includes the original source/version, publication and review dates,
+supersedes references, revision and payload digest. It does not rebuild the
+research, renew its review deadline or fall back to an input on failure. Wrong
+hashes, old revisions, another Goal, missing publication and disabled extensions
+fail before a card is returned. A missing review date stays `unknown`.
+`--surface-id` can select another declared Finance surface; the default is
+`investment-research`. The input and publication-reference modes are exclusive.
+
+中文：已发布成果使用原生状态文件与精确版本/摘要引用，卡片保留原 Goal、来源版本、
+复核期限和摘要；错误、停用或缺失时拒绝，不重建旧稿或延长时效。生成卡片仍不代表
+外部送达、读者采用或交易授权。旧 `--input-json` 入口继续兼容；停用仍用既有
+extension disable，回退用既有 `loopx extension rollback` 选择已保留版本。
+
 The Goal's **Files & Outputs** tab loads the published research only when
 opened. Chat and `serve-status` expose the same extension index and exact
 revision/hash readback. Only a public-safe view belonging to that Goal is
@@ -254,9 +280,12 @@ clocks, exact metric strings, counterevidence, event review conditions and
 artifact references, even when no source-period metrics exist. It rejects a
 research card exceeding 18,000 UTF-8 bytes rather than silently cutting its
 review basis. The existing source-period-only Python renderer remains available.
-For an exact published receipt, render its Core-validated `view` with
-`build_decision_research_lark_card`; rebuilding an input is not publication
-readback, and preparing a card is not sending or adopting a method.
+For an exact published receipt, use
+`build_published_decision_research_lark_card` or the publication-reference CLI
+above. `build_decision_research_lark_card(view)` remains a view-only renderer;
+rebuilding an input is not publication readback, and preparing a card is not
+sending or adopting a method. The same no-truncation limit includes the
+publication reference as well as the research text.
 
 中文：Goal 的“成果”页按需读取已发布的研究，绑定当前 Goal、扩展版本和内容摘要；
 读取失败或停用时清除旧内容。通知卡保留研究结论、反证、未知、原始时点和下一步，
@@ -303,6 +332,44 @@ encodes that method as an illustrative historical packet. It is not a current
 view on PayPal or any control company.
 
 ## Install And Run
+
+### Cumulative flow difference (candidate 0.8.11)
+
+To derive a tail flow, provide a cumulative total and its prefix. The new
+`assess-period-difference` operation requires the same subject, metric, unit and
+economic role, source-bound finite duration contexts with a common absolute
+start, an earlier prefix end, compatible filing versions, and producer-declared
+exact accuracy on both amounts. The synthetic example derives 95 − 60 = 35
+over July through September. It checks declarations, never source truth or PIT.
+
+```bash
+loopx-finance-value-discovery assess-period-difference \
+  --input-json packages/loopx-finance-value-discovery/examples/flow-difference-v1.json
+loopx extension run loopx-finance-value-discovery \
+  --input-json packages/loopx-finance-value-discovery/examples/flow-difference-v1.json \
+  --execute --format json
+```
+
+Both direct and schema-selected stdin use the same
+[Finance contract](CONTRACT.md#cumulative-flow-difference-extension-0811).
+Missing period/version/accuracy evidence keeps `derived_value` and
+`derived_period` null; a conditional `candidate_lexical_difference` remains a
+diagnostic. Missing amounts never become zero. Stocks, averages and ratios are
+refused even if their naive difference happens to match a desired result.
+Finite accuracy propagation, duration-weighted averages and EPS semantics are
+outside this v1. App/Lark result interaction and source-provider adoption remain
+companion work; this CLI/provider prerequisite is partial product delivery.
+
+Use the install/enable and disable commands below for explicit opt-in and
+restoration. To roll back, reinstall the prior pinned wheel and upgrade the
+runtime registration to its matching manifest. 0.8.10 rejects this new schema;
+existing period v1/v2, cash reconciliation and reducer inputs keep their routes.
+No default registration, account access, financial permission or trade changes.
+
+0.8.11 候选新增累计流量减前缀：只有同主体／指标／单位、共有绝对起点、
+兼容来源版本与已声明精确值齐备时，才输出尾段期间值。缺证继续保留 null，
+条件差额只作诊断；存量、平均量与比率不套用此算法。有限精度传播、时间加权、
+EPS、来源有效性／PIT 和 App/Lark 交互仍待对应 owner 验收。
 
 ### Disclosure and presentation basis (candidate 0.8.6)
 
@@ -489,3 +556,168 @@ The retired `finance_market_snapshot` value-connector selectors remain only as
 machine-readable migration tombstones for upgrades. They point to this
 extension but cannot execute it, register a capability, or install an absent
 provider implicitly.
+
+### Same-event funding cash (candidate 0.8.13)
+
+Assess two declared funding payments with explicit native periods, event,
+payment direction, quantity basis and currency. Different native periods can
+contribute to the same payment event; this does not compare naked rates.
+Forecast estimates and declared realized cash use separate fields. Missing
+second legs, event/period evidence, units or costs stay unknown; no trade or
+guaranteed carry is admitted. See the [closed Finance contract](CONTRACT.md#same-event-funding-cash-candidate-extension-0813).
+
+```sh
+loopx-finance-value-discovery assess-funding-event \
+  --input-json packages/loopx-finance-value-discovery/examples/funding-event-v1.json
+loopx extension run loopx-finance-value-discovery \
+  --input-json packages/loopx-finance-value-discovery/examples/funding-event-v1.json \
+  --execute --format json
+```
+
+The synthetic example's declared same-event net cash is -0.4 SYN despite
+different 1h/8h accrual periods. It authenticates neither source nor payment.
+Install/doctor and enable through the existing lifecycle above. Disable with
+`loopx extension disable loopx-finance-value-discovery --execute`; rollback to
+the pinned 0.8.12 wheel and matching manifest rejects the new input schema while
+preserving old inputs. The source-provider production consumer and financial
+utility remain separate qualifications.
+
+两腿分别声明原率、期间、事件、付收方向、数量与币种。同币且已明确结算于同一
+事件的现金可以相加，期间长度不同本身不拒绝；裸率不直接比较。未来预测的条件
+估计单列，realized net_cash 始终为空。缺腿、事件/期间、单位或费用不补零，
+合成样例及本地计算不证明来源、成交、PIT、金融效用或交易授权。
+
+### Funding research review (candidate 0.8.14)
+
+`finance_funding_event_research_input_v1` wraps the original event-pair input
+with the existing publication identity, version, supersedes and review deadline.
+It returns the complete `funding_assessment` and the existing Investment Research
+view, preserving each original leg, source digest/version/clocks, costs and holds.
+Conditional forecasts and declared realized cash remain separate; unknown is
+never displayed as zero. No scenario probability, source authentication or
+trading admission is inferred. Private/unsafe display text is refused.
+
+```sh
+loopx extension publish-projection loopx-finance-value-discovery investment-research \
+  --input-json packages/loopx-finance-value-discovery/examples/funding-research-v1.json \
+  --execute --format json
+loopx-finance-value-discovery render-lark-card \
+  --input-json packages/loopx-finance-value-discovery/examples/funding-research-v1.json
+```
+
+Open that Goal's **Results / 成果** tab to read the published assessment. For an
+exact published Lark draft, use the existing `--published-state-file`,
+`--goal-id`, `--extension-revision` and `--payload-sha256` flags from its receipt;
+wrong/stale references and disabled publications fail rather than choosing a
+replacement. Rendering prepares a card and sends nothing. Disable through the
+existing extension lifecycle; rollback to the pinned 0.8.13 wheel/manifest keeps
+old arithmetic/research inputs and refuses this new wrapper.
+
+同一原始资金费输入生成完整 assessment 与既有投研视图，成果页和 Lark 草稿
+复用同一发布引用。预测、声明已实现、费用未知及来源版本/时钟分开；不补零、
+不虚构概率，不据展示授予交易或金融准入。卡片只准备，不发送；错引用、
+已关闭或旧 revision 拒绝，恢复后按原 hash 重新读取。
+
+
+### Quantity stocks and signed flows (candidate 0.8.15)
+
+`assess-quantity` compares **opening stock + declared increases − declared
+decreases = closing stock** within one source artifact, instrument/class and
+ownership pool. Its unit is a quantity (`share`, `native_contract` or `item`)
+plus a scale; it never borrows the cash contract's `currency` field.
+
+```bash
+loopx-finance-value-discovery assess-quantity \
+  --input-json packages/loopx-finance-value-discovery/examples/quantity-reconciliation-v1.json
+# Installed extension/provider stdin uses the same schema and owner.
+loopx-finance-value-discovery < quantity-reconciliation-v1.json
+```
+
+The example explicitly declares a single pool, exact producer accuracy, complete
+two-flow coverage and source-row order: opening 100, increase 25, decrease 8,
+closing 117. These are synthetic declarations, not authenticated ownership.
+Each stock/flow carries its evidence reference, source digest/capture clock,
+identity, quantity unit/scale, value/accuracy and source ordinal. Flows also
+carry an explicit `increase` or `decrease`; a transaction code alone never
+selects a sign. The original input is retained in `operands`.
+
+Only compatible, ordered, unique and completely covered operands with
+producer-declared exact accuracy can return `quantity_reconciled=true`. Missing
+opening is retained; it is never inferred by subtracting flows from closing.
+Missing flow/value/direction/coverage yields an incomplete assessment. Unknown
+pool, class, version, unit, source or precision withholds a reconciled result.
+A different class/pool/unit/scale/source digest, repeated flow reference or
+invalid ordinal window also prevents combination. Finite decimals do not become
+exact because an integer was displayed. A mismatching exact closing balance is
+a conflict. Loaded zero and an explicitly covered zero-flow interval are valid.
+
+Candidate lexical arithmetic can be retained when accuracy or other evidence
+remains unproven, but the qualified result stays null. Quantities are at the
+same declared scale; there is no unit/class/rights conversion. Two reporting
+persons do not multiply a transaction: the source consumer must supply unique
+flow refs and establish the actual ownership scope. Source row order and
+capture clocks do not certify event time, earliest publication or PIT.
+
+This is the optional provider's CLI/stdin computation stage. Source adapters
+retain extraction, pool and coverage interpretation. Disable the isolated
+Finance node through `loopx extension disable loopx-finance-value-discovery
+--state-file <isolated-state> --execute`; a disabled native invocation refuses.
+An explicitly called local binary is separate from native activation. Preserve
+the previous revision and use the existing extension rollback/upgrade commands
+for controlled recovery. No default node or account is activated by this API.
+
+The existing numeric-accuracy owner now also supplies bounded Decimal parsing;
+legacy cash/stock commands retain their input and error contracts. This arithmetic stage does not interpret or authenticate sources, derive cash,
+or grant financial or trading permission. The review wrapper below supplies
+the existing App/Lark presentation; source-consumer and financial utility
+qualification remain separate.
+
+份额/合约数与货币分别建模，同类别与同持有池的数量核对不推导现金或交易权限。
+opening、覆盖、付收方向或精度未知时保留未知，不反推、不补零。合成示例通过
+只证明声明下的词法算术；来源认证、PIT、界面/卡片与实际采用另行验收。
+
+
+### Quantity research review (candidate 0.8.16)
+
+`finance_quantity_research_input_v1` wraps the original quantity input and an
+explicit review time, evidence cutoff, publication source/version, supersedes
+and review deadline. It returns the complete `quantity_assessment` plus the
+existing Investment Research view. Opening/closing stocks, every signed flow,
+identity/unit/accuracy, source digest and original capture time remain visible.
+Candidate arithmetic, reconciled closing and all holds remain distinct;
+missing is not zero, and a conflict never becomes a qualified closing.
+
+```sh
+loopx-finance-value-discovery < packages/loopx-finance-value-discovery/examples/quantity-research-v1.json
+loopx extension publish-projection loopx-finance-value-discovery investment-research \
+  --input-json packages/loopx-finance-value-discovery/examples/quantity-research-v1.json \
+  --execute --format json
+loopx-finance-value-discovery render-lark-card \
+  --input-json packages/loopx-finance-value-discovery/examples/quantity-research-v1.json
+```
+
+Open the selected Goal's **Results / 成果** tab, inspect the Quantity review
+and its original source/reference details, and use **Refresh / 刷新** after
+publication changes. The same revision/hash/deadline is used for a published
+Lark draft: pass its receipt to the existing `--published-state-file`, `--goal-id`,
+`--extension-revision` and `--payload-sha256` flags. Stale, wrong-Goal and disabled
+publications refuse; recovery reads the current reference rather than silently
+substituting a result. Card preparation sends nothing and does not renew a
+review deadline or grant source, investment, cash or trading admission.
+
+The complete review view supports at most **8 flows** within its existing
+12-layer and text limits; larger/unsafe views are refused without truncation.
+The arithmetic API still supports 256 flows. Exact long decimal results move
+to the arithmetic detail rather than being rounded into a metric cell. Lark's
+existing complete-card capacity may also refuse a long view; read the complete
+published result in App. Disable using the existing extension lifecycle, and
+retain the pinned 0.8.15 wheel/manifest for rollback: old quantity/cash/funding
+inputs remain valid, while that old release refuses the new review wrapper.
+No private source, account or raw provider response belongs in this public-safe
+view. Source mapping, independent consumer adoption and financial utility
+remain separate from presentation qualification.
+
+数量复核复用既有成果页与 Lark 发布引用；原始 operands、缺证、冲突及来源时钟
+完整保留。长精确数不截断、不四舍五入，超容量明确拒绝。关闭、旧引用与错 Goal
+不返回缓存结果；恢复后重新核对当前引用。展示、来源准入、经验采用与金融效用
+分别验收；卡片只准备不发送。

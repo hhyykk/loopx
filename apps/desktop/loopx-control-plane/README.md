@@ -12,34 +12,101 @@ desktop release workflow succeeds:
 - macOS: `.dmg` plus a zipped `.app` bundle;
 - Windows: `.msi` plus an NSIS `.exe` installer.
 
-On Apple Silicon macOS, the App checks its current official channel on launch,
-verifies a newer App's updater signature, installs it and restarts automatically.
+On Apple Silicon macOS, the App opens its qualified local runtime first, then
+checks its current official channel and downloads a newer App in the background.
+It verifies the updater signature and prepares the archive locally. The next
+normal open verifies that archive again and installs it before starting services;
+ordinary background preparation never replaces or restarts an active workspace.
 An offline or failed check keeps the installed App usable; it does not certify
 that the App is current. Main points to the latest complete signed build,
 not arbitrary Git HEAD. Builds without the updater need a one-time replacement.
 Windows preview retains manual CLI installation; browser/PWA users continue
 with `loopx update`.
 
+Background network requests do not hold service supervision. A slow or failed
+check/download cannot prevent local startup or recovery of an owned child.
+The existing update panel reports background progress or a prepared update;
+manual actions cancel/supersede background work and retain their original
+installation, restart, backup and rollback controls. A CLI-requested App upgrade
+remains an explicit transaction with its original channel and service-ready
+readback. A permission-restricted prepared installation stays on the verified
+current App; use the existing explicit update action for native authorization.
+The disposable cache is not an update authority: its signed bytes, channel,
+version order and sealed bundle version are checked again before replacement.
+Rejected cached signatures and verified-safe replacement failures keep local
+startup moving, with the failure retained in diagnostics. They do not display
+a stopped-startup state while services are connecting. An incomplete target,
+failed journal retirement or unknown installation failure still requires recovery.
+
 ## Updates And Recovery
+
+From a terminal, `loopx upgrade` coordinates the owning CLI installer and this
+App's signed updater, restarts the App and waits for native service readiness.
+Archive users can select Main with `loopx upgrade --ref main`; `--dry-run` is
+read-only. The terminal passes only a bounded request id and an official channel
+to the App. A private request receipt contains versions, source revisions,
+update phase and the qualified service runtime identity; it contains no Goal
+content or credentials. An update check failure remains a failed terminal
+upgrade even when the workspace can still open. Normal launches without that
+request perform their network check after local services are ready; an explicit
+terminal upgrade retains its thirty-second interactive check budget.
+The existing update panel shows the same native maintenance phases and recovery
+actions. Main is the latest complete signed build, which can lag Git HEAD.
 
 Startup automatically uses the newest qualified local runtime it can establish.
 It compares package versions; equal versions with source revisions use ancestry
 from the fixed official GitHub repository. Installation time and lexical SHA
 order never determine freshness. If the bounded check is offline, rate limited
-or revisions diverge, an independently installed CLI keeps working without a
-version selection screen or downgrade. An App-owned snapshot with the same
+or revisions diverge, a saved discovery path follows the current default CLI
+when both are snapshots of the same installation and share a release base.
+This follows the installer's completed promotion, without claiming unknown
+source ancestry is newer. A provably older default is not adopted; other
+installations remain independent. Neither case requires a version selection
+screen. An App-owned snapshot with the same
 release base can follow the current App's bundled snapshot when ancestry is
 unknown; this is maintenance of the App's own installation, not proof that one
 source revision is newer. A provably newer runtime remains selected. Both local HTTP services must expose the selected
 artifact's identity before the workspace opens.
 
+If anonymous GitHub ancestry lookup is unavailable, the App can reuse an
+existing GitHub CLI login for the same fixed public-repository GET. It never
+starts login or requests account permissions. Each tool has a three-second
+process deadline; missing, failed or unauthenticated `gh` leaves ancestry
+unknown. A successful non-ordering answer is not retried under another account.
+Core still owns wheel qualification; this read neither changes its identity
+rules nor grants Goal or account authority.
+
+The bundled runtime carries its Core package version from the archived wheel
+metadata. Native validation and ordering use Python's [PEP 440 version format](https://packaging.python.org/en/latest/specifications/version-specifiers/),
+including alpha, beta, release candidate, development, post-release and local
+versions. The original version string remains in the identity; parsing does not
+rewrite receipts or installation metadata. A stable package is newer than its
+same-base prerelease, so even an App-owned or installer-default fallback cannot
+downgrade it. Equal package versions still need source ancestry or the existing
+same-installation ownership rule. Invalid versions remain unavailable.
+
+Main App build numbers (`0.0.0-main.…`) identify the native shell; they are not
+compared with CLI package versions. Older bundle metadata retains its previous
+shell-version fallback. Only those historical Main shell versions use their
+release base for comparison; real Core prereleases keep their order. This
+correction requires an App update; updating the CLI alone cannot patch it.
+
 If the bundle is newer, or no selected CLI qualifies, the App prepares its
 bundled snapshot in its own data directory through the existing installer.
 This updates the CLI used by the App without replacing uv/pip/pipx's command or
 editing the user's shell profile. An optional failed upgrade retains a qualified
-previous runtime. Core's installation-only doctor qualifies non-editable wheel
+previous runtime. Every discovered CLI must answer Core's installation-only
+doctor successfully, including managed releases: a surviving `release.json`
+cannot qualify a broken executable. Core also qualifies non-editable wheel
 fingerprints: a local reuse fence, not publisher or source attestation. Older
 CLIs without that readback can use the automatic App-owned fallback.
+
+Wheel qualification has a separate ten-second subprocess deadline because it
+starts Core, checks the TypeScript runtime and hashes package contents. The
+one-second environment/version probes remain unchanged. A slow valid wheel can
+therefore qualify without asking the user to repair it; invalid or timed-out
+qualification still fails closed, and timed-out process groups are terminated
+and reaped. This does not speed up doctor or certify every cold-start workload.
 
 A launch-time `LOOPX_BIN` remains the developer's explicit pin. Development mode
 also accepts a source runtime without promoting an installation. A previously
@@ -65,6 +132,9 @@ The release workflow packages both layers from one Git revision.
 The installer and App-owned services use the same bounded tool search,
 including standard Homebrew locations on macOS, without loading interactive
 shell profiles. Finder launches therefore do not depend on terminal PATH setup.
+When preparing the first App-owned snapshot, an already selected managed CLI's
+recorded Python is reused if the App has no interpreter record of its own.
+This leaves that CLI's launcher and installation owner unchanged.
 Installation uses `loopx doctor --deep --installation-only`: package ownership,
 representative imports/commands/files and the TypeScript runtime semantic probe
 remain required, but existing Goal projects are not traversed. Native runtime
@@ -73,6 +143,10 @@ it cannot depend on a macOS Documents-folder consent prompt. Ordinary
 `loopx doctor` retains its full operator/integration diagnostics. Terminal
 installation still revalidates enabled extensions by default; the App sets
 `LOOPX_INSTALL_REVALIDATE_EXTENSIONS=0` for its bounded bootstrap.
+Runtime preparation isolates Git discovery to its verified export, so a
+developer's Git environment or a checkout enclosing `TMPDIR` cannot supply
+unrelated branch or dirty-state metadata. The bundled revision and digest
+remain the source of the installed snapshot's identity.
 Failed runtime preparation remains supervised, with at most three automatic
 install attempts per App process and at least 30 seconds between attempts.
 Existing recovery controls remain available after that budget is exhausted,
@@ -98,11 +172,42 @@ the bundled runtime and then reconnects the same window automatically; it no
 longer requires a second App restart. Reloading the WebView cannot terminate
 the native startup supervisor.
 
+On macOS, loss of the workspace's WebContent process re-arms that same native
+navigation owner. It retains the current same-origin page, including SPA
+history, and retries every two seconds until WebKit commits the document.
+Recovery does not restart services or submit a task. Slow committed documents
+are allowed to finish; boot pages retain the framework's reload behavior.
+This changes post-crash navigation only; other platforms keep their existing
+handoff policy.
+
+The opt-in macOS regression uses a hidden incognito window, a synthetic local
+server and a separate App identifier. It terminates only that window's own
+WebContent process, simulates a temporary backend failure and a slow response,
+and requires automatic return to the original route without write requests:
+
+```sh
+uv run --extra test python scripts/desktop_runtime_bundle.py
+cd apps/desktop/loopx-control-plane/src-tauri
+cargo run --example webcontent_recovery
+# Negative control: framework-only reload is expected to exit 1.
+cargo run --example webcontent_recovery -- --baseline
+```
+
+It reads no Goals or accounts and never targets an installed LoopX process.
+
+The fault injector uses a private WebKit process-id getter only in this example;
+production recovery uses the public Tauri termination hook.
+This controlled regression does not establish long-duration reliability or
+identify the cause of a past uninstrumented incident.
+
 Legacy update/rollback journals are resolved against the running App before
 startup. An incomplete App installation retains its recovery state; runtime
 freshness must prevent a journal from silently downgrading a newer CLI.
 Concurrent transactions and another install before restart remain rejected.
 macOS keeps a signature-verified previous App for **Restore previous version**;
+recovery can restore the original install path even when a failed update moved
+the App away entirely. If another installer recreates that path during recovery,
+rollback stops without replacing the concurrent installation.
 Goal data is not deleted or migrated backwards, so data-schema compatibility
 still governs rollback suitability. Older backups may consume disk space.
 
@@ -124,6 +229,38 @@ counter and expands Recovery & updates. Unchanged invalid selections are
 rechecked at most every 30 seconds; an explicit recovery action wakes the
 supervisor immediately. It returns to the loading shape as soon as the
 snapshot leaves the terminal phase (for example while an explicit repair runs).
+
+### Returning After A Normal Close
+
+The packaged App remembers the selected local Goal, view, Agent and Todo when
+its main window closes or the App quits. Reopening uses the newly allocated
+loopback origin and returns to that selection without another navigation step.
+Selecting **LoopX 管家** before closing instead returns to Manager next time.
+This restores a reading position; it never submits a message or starts work.
+
+The optional `workspace-location.json` in the App's private data directory
+contains only those selection identifiers. It stores no origin, raw URL, prompt,
+credentials or report/session query. Missing, corrupt or obsolete preferences
+fall back to the ordinary workspace; unknown views fall back to the frontend's
+default. Boot and foreign pages cannot overwrite a saved local selection.
+Remote status sources and host-granted workspace contexts are not restored:
+they reopen at local Manager, so their Goal identifiers cannot be replayed
+against the local source. Vite development navigation is unchanged. Explicit
+runtime repair retains its existing root handoff; WebContent crash recovery
+continues to retain the current in-process route.
+
+For native qualification, use a separately identified packaged App with the
+real backend: select a local Goal and Agent page, quit normally, reopen, and
+check the same selection on the new port. Also check window-close, an explicit
+return to Manager and a corrupt preference in that disposable App profile.
+Bind the disposable registry and its `common_runtime_root` at the QA launch
+entrypoint, and set `LOOPX_USAGE_PING=0` for all synthetic Core invocations:
+a caller-only environment can be lost when a window tool or the
+system relaunches the bundle. Verify the reopened process's data route before
+observing or operating it; never use the installed App as a fault fixture.
+Retain Session IDs and active-Turn readbacks before and after; navigation is
+not evidence that work was resumed or accepted. Cross-platform and sustained
+use require their own qualification.
 
 ## Known Issues
 
@@ -158,6 +295,14 @@ release secret; the App embeds the public key. PR validation has no signing
 secret. Updater signing does not provide Apple notarization. It also does not
 change Goal authority, grant capabilities, or stop running agents on behalf of
 the user. Services may briefly disconnect during reconciliation.
+
+The background feed check has a thirty-second deadline and is outside local
+workspace startup. A manual **Check for updates** allows 45 seconds for the same
+official feed, including redirects; the panel keeps showing its checking state
+while the existing workspace remains readable.
+A timeout remains an explicit retryable error, never a claim that the App is
+current. The separate 30-second download/signature-verification deadline and
+installation/recovery boundaries are unchanged.
 
 Published macOS preview artifacts use ad-hoc code signing to verify bundle
 integrity without requiring an Apple Developer account. They are not signed
@@ -212,19 +357,23 @@ restricted to loopback CORS and the existing preview/apply authority boundary.
 
 ## Coexistence With `loopx dashboard`
 
-The desktop shell and `loopx dashboard` share the same loopback services on
-`8766` and `8767`, and both entry points reuse an already-running matching
-LoopX service:
+The packaged App allocates its own private Status and Chat endpoints for each
+window. `loopx dashboard` keeps its CLI endpoints on `8766` and `8767`; either
+entrypoint can run without adopting or stopping the other's listeners. Vite
+development retains those CLI ports and its qualified-service reuse path.
 
-- Start `loopx dashboard` first, then open the desktop shell: the shell keeps
-  using the running status and Chat services and only opens the native window.
-- Start the desktop shell first, then run `loopx dashboard`: the command
-  detects the matching LoopX Chat service, prints its URL, and opens the
-  browser/PWA route without starting a second server.
+The packaged App watches its own direct service children. When one exits, it
+restarts that service on the same private endpoint with the same qualified
+runtime and identity, keeping the healthy peer running. Recovery attempts are
+at least two seconds apart. An occupied endpoint fails closed and is retried;
+the intervening listener is never adopted or stopped. A live but unresponsive
+child is outside this exit-recovery path.
 
-Either order works. Closing the desktop window stops only the service process
-groups it started; a Chat service started by `loopx dashboard` keeps running
-until that command is stopped.
+Recovery keeps an update check's error or available-update choice visible. It
+waits during maintenance and after an App replacement requires restart or leaves
+the App incomplete. The native shell sends no conversation input or replay;
+persisted Session and Turn recovery remain owned by Core. Closing the App stops
+only its own service process groups.
 
 ## Prerequisites
 
@@ -248,6 +397,50 @@ npm run dev
 
 ## Validation
 
+For a process-exit drill, use a separately identified packaged QA App whose
+launcher fixes a disposable empty registry and `LOOPX_USAGE_PING=0` before any
+Core command. Keep its qualified Core artifact immutable across baseline and
+candidate runs. Deny public network access only in that launcher, check for
+updates through the actual App, then terminate its exact owned Chat and Status
+children separately. Read back both HTTP identities, unchanged peer PID, exact
+registry, retained Session and update failure, then normal quit/reopen cleanup.
+Never substitute an installed App, real Goal or shared listener as a fixture.
+Bind isolation at the QA bundle's executable entrypoint, so a window tool or OS
+relaunch cannot drop a caller-only environment. The native services request
+`--global-registry`; `LOOPX_REGISTRY` only changes the project default and does
+not override that explicit selection. A QA-only CLI launcher must route through
+Core's explicit `--registry` and `--runtime-root` arguments instead of that flag.
+Fail closed when its fixture binding is absent. Before any UI operation or
+public capture, read both service identities, the actual registry/runtime route
+and the empty Goal set. A source mismatch invalidates the sample; retain it
+privately and stop rather than operating on or publishing the real workspace.
+Do not change the user's default registry or `HOME` to obtain isolation.
+This qualifies child-exit recovery, not an interrupted model Turn, an
+unresponsive process, a signed update installation or cross-OS operation.
+
+This empty-registry macOS QA capture follows separate real Chat and Status
+process exits. Both services recovered while the failed network update check
+stayed visible. It uses a separately frozen installed Core; it is not a
+single-revision release or official installation qualification.
+
+![Packaged QA after private service recovery, retaining the failed update check](docs/assets/native-service-recovery-qa.jpg)
+
+For the ancestry fallback, use that isolated packaged App and a qualified Core
+fixture. A QA-only invalid `CURL_CA_BUNDLE` can deny curl's public read while the
+existing `gh` still reads the real relation. Compare the old and candidate
+native binaries with the same corrupt preference and immutable Core fixture;
+read both service identities and the saved selection after the window opens.
+Also check that unavailable public transports retain a qualified runtime and
+that normal reopening preserves the disposable Session. Remove faults from the
+QA launcher afterwards; never change the system proxy or certificate store.
+
+The viewport below is a separately packaged macOS QA shell with an empty
+synthetic Goal registry. It records a successful workspace opening, not model
+execution, model-selection qualification or an installed-product upgrade. The
+ancestry change adds no new UI control or configuration step.
+
+![Packaged QA workspace with zero Goals](docs/assets/native-ancestry-qa.jpg)
+
 ```bash
 cd apps/desktop/loopx-control-plane/src-tauri
 cargo fmt --check
@@ -258,6 +451,108 @@ cd ..
 ./scripts/dashboard.sh build
 npm run build
 ```
+
+To qualify the native supervisor against an actual installed Core, first build
+the runtime bundle as above with `LOOPX_USAGE_PING=0`, then run from `src-tauri`:
+
+```sh
+qa_root="$(mktemp -d)"
+mkdir "$qa_root/state"
+printf '%s\n' '{"goals":[]}' > "$qa_root/state/registry.global.json"
+(
+  set -e
+  export LOOPX_USAGE_PING=0
+  export LOOPX_REGISTRY="$qa_root/state/registry.global.json"
+  export LOOPX_RUNTIME_ROOT="$qa_root/state"
+  export LOOPX_TEST_PRIVATE_RUNTIME="$qa_root/runtime"
+  export LOOPX_TEST_BUNDLE="$PWD/../runtime"
+  cargo test --lib real_private_installer_keeps_the_default_cli_owner -- --ignored --nocapture
+  cargo test --lib real_private_runtime_serves_and_rejects_stale_identity -- --ignored --nocapture
+)
+```
+
+Both opt-in tests require the telemetry opt-out before invoking Core. A
+disposable registry does not isolate machine-wide usage reporting; this
+synthetic run must not contribute adoption or installation telemetry. The
+opt-out applies only to this test invocation and leaves user consent unchanged.
+
+This installs only in the disposable root. The second test uses an explicit
+local launch pin to route the production supervisor's two services to its own
+fresh empty registry and data directory. It checks both artifact identities,
+serves the packaged Chat document, reads zero Goals/Sessions, stops and reopens
+the services, and rejects
+a stale expected identity without leaving owned listeners. It does not launch
+the installed App, run a model, or qualify automatic runtime selection, native
+window reopening, signed replacement or rendered UI. The incognito WebKit
+regression above covers its separate navigation failure boundary.
+
+On macOS, also qualify a released artifact using the opt-in checks below
+(run from `src-tauri`, replacing the paths with downloaded release artifacts).
+Keep the updater archive's `.sig` file beside it:
+
+```bash
+LOOPX_TEST_APP="/path/to/LoopX.app" cargo test --lib \
+  real_release_backup_restores_damage_and_rejects_tampering -- --ignored
+LOOPX_TEST_SIGNED_ARCHIVE="/path/to/LoopX.app.tar.gz" cargo test \
+  --test signed_bundle -- --ignored
+LOOPX_TEST_APP="/path/to/older/LoopX.app" \
+LOOPX_TEST_SIGNED_ARCHIVE="/path/to/LoopX.app.tar.gz" \
+LOOPX_TEST_INSTALL_PARENT="/Volumes/disposable-apfs-test-volume" cargo test --lib \
+  real_release_installs_on_another_volume_and_keeps_the_old_app -- --ignored
+LOOPX_TEST_APP="/path/to/older/LoopX.app" \
+LOOPX_TEST_SIGNED_ARCHIVE="/path/to/LoopX.app.tar.gz" \
+LOOPX_TEST_UNSUPPORTED_INSTALL_PARENT="/Volumes/disposable-hfs-test-volume" cargo test --lib \
+  real_release_keeps_old_app_when_volume_rejects_atomic_exchange -- --ignored
+```
+
+The first check copies the signed App into temporary directories, then exercises
+the production restore path after removing its executable, a sealed runtime
+resource, or the entire target bundle. It also rejects a tampered backup before
+journaling or replacement and checks that the source artifact remains intact.
+The second verifies the updater archive with the shipped public key and rejects
+modified bytes. The third requires a writable disposable APFS volume separate
+from the system temporary directory. It copies the source App into a temporary
+directory there, installs a distinct update through the production filesystem
+adapter, and verifies both the replacement and retained previous App. It then
+restores the pre-install backup through the production recovery adapter on that
+same target, checking the old identity, executable and signature, and that the
+rollback journal callback ran before replacement. The fourth requires
+a writable disposable HFS+ volume and a source App distinct from the update
+archive. It first confirms that the filesystem rejects atomic directory exchange,
+then verifies that the production installer fails while the original App's
+identity, executable and signature remain intact. The extracted candidate also
+remains intact; no sequential replacement is accepted. These checks never
+launch the App or write to an installed App or user data. They qualify the native
+replacement, recovery and signature boundaries; they do
+not replace packaged UI checks of download failure, restart, or runtime handoff.
+
+### Recover An Interrupted App Update
+
+On writable macOS installations, the signed update is extracted beside the
+installed App and its bundle integrity is verified before the same atomic
+exchange used by recovery. This also works when the App is on a different
+APFS volume from the system temporary directory. The previous App remains in
+the retained staging directory as well as the verified recovery backup. A
+failed extraction or exchange leaves the current App in place. Filesystems
+without atomic directory exchange, including HFS+, require manual App
+replacement; no delete-and-move fallback is used. Administrator-owned install
+directories retain the existing system authorization path. Windows installation
+and separately managed CLI selection are unchanged.
+
+If replacement leaves the App incomplete and a backup is available, the update
+panel exposes **Restore previous version** directly. Restore it, then choose
+**Restart to finish**. This removes two navigation disclosures from the failure
+path; choosing a healthy installation's rollback remains under Advanced options.
+The native updater still verifies the backup before replacement. An unavailable
+or invalid backup reports its cause without recommending an unavailable runtime
+repair. Restoring the App does not overwrite a separately managed CLI.
+
+| Previous recovery panel | Direct recovery action |
+| --- | --- |
+| ![Recovery hidden in Advanced options](docs/recovery-before.png) | ![Restore action beside the incomplete-installation message](docs/recovery-after.png) |
+
+These packaged-panel captures use synthetic native status for presentation
+comparison; they do not certify an installed update or an executing task's recovery.
 
 `npm run build` produces the configured platform bundles under
 `src-tauri/target/release/bundle/`. The release workflow builds macOS `.dmg`

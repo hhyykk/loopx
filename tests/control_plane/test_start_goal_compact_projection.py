@@ -34,6 +34,12 @@ AGENT_ID = "codex-guided-projection"
 GOAL_TEXT = "Ship a bounded public issue triage workflow."
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ambient_ssh_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_CLIENT", raising=False)
+
+
 def _write_connected_project(root: Path) -> Path:
     project = root / "project"
     state_file = project / ".codex" / "goals" / GOAL_ID / "ACTIVE_GOAL_STATE.md"
@@ -120,6 +126,38 @@ def _invoke_detail_command(command: str) -> dict[str, Any]:
     payload = json.loads(output.getvalue())
     assert isinstance(payload, dict)
     return payload
+
+
+def _invoke_start_goal_for_host(
+    project: Path,
+    host_surface: str,
+    *,
+    include_detail: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    args = [
+        "--format",
+        "json",
+        "start-goal",
+        "--guided",
+        "--project",
+        str(project),
+        "--goal-id",
+        GOAL_ID,
+        "--agent-id",
+        AGENT_ID,
+        "--host-surface",
+        host_surface,
+        "--goal-text",
+        GOAL_TEXT,
+    ]
+    if include_detail:
+        args.append("--include-command-pack-detail")
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exit_code = cli_main(args)
+    payload = json.loads(output.getvalue())
+    assert isinstance(payload, dict)
+    return exit_code, payload
 
 
 def _invoke_ark_start_goal_cli(
@@ -591,7 +629,8 @@ def test_issue_fix_goal_projects_capability_guard_without_todo_fields(
     assert "loopx issue-fix workflow-plan " in rendered
     assert "loopx issue-fix feasibility " in rendered
     assert "proceed: `loopx issue-fix feasibility " in rendered
-    assert len(rendered.replace(str(project), "<project>")) <= 3_600
+    # Full-body readback adds a routed command and authority/completeness guidance.
+    assert len(rendered.replace(str(project), "<project>")) <= 4_100
     todo_command = next(
         step["command_template"]
         for step in transaction["ordered_steps"]
@@ -872,7 +911,9 @@ def test_projection_materially_reduces_repetition_without_hiding_measurement(
     compact_json = json.dumps(compact, ensure_ascii=False, sort_keys=True)
     detailed_json = json.dumps(detailed, ensure_ascii=False, sort_keys=True)
 
-    assert len(compact_json) <= int(len(detailed_json) * 0.65)
+    # Exact-readback guidance is useful common content in both projections;
+    # retain the duplicate-content checks below rather than remove that guidance.
+    assert len(compact_json) <= int(len(detailed_json) * 0.66)
     compact_duplication = compact["packet_summary"]["duplication_measurement"]
     detailed_duplication = detailed["packet_summary"]["duplication_measurement"]
     assert compact_duplication["objective_content"]["duplicate_occurrences"] <= 11
@@ -1502,6 +1543,46 @@ def test_cli_codex_app_ssh_reuses_ambient_thread_binding(
     assert payload["guided_transaction"].get("blocked_by") is None
 
 
+def test_cli_codex_app_fails_closed_when_codex_thread_runs_over_ssh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _write_connected_project(tmp_path)
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-ssh-runtime")
+    monkeypatch.setenv("SSH_CONNECTION", "client 1000 server 22")
+    monkeypatch.setenv("SSH_CLIENT", "client 1000 22")
+
+    wrong_exit_code, rejected = _invoke_start_goal_for_host(project, "codex-app")
+    assert wrong_exit_code == 2
+    assert rejected["ok"] is False
+    assert rejected["error_code"] == "host_surface_environment_mismatch"
+    assert rejected["blocked_by"] == "host_surface_environment_mismatch"
+    assert rejected["safety_contract"] == {
+        "writes_registry": False,
+        "activates_host_loop": False,
+    }
+    assert rejected["host_surface_environment_gate"] == {
+        "schema_version": "loopx_host_surface_environment_gate_v0",
+        "state": "blocked",
+        "requested_host_surface": "codex-app",
+        "detected_runtime": "codex-app-over-ssh",
+        "required_host_surface": "codex-app-ssh",
+        "evidence_env_vars": ["CODEX_THREAD_ID", "SSH_CONNECTION", "SSH_CLIENT"],
+    }
+
+    correct_exit_code, accepted = _invoke_start_goal_for_host(
+        project,
+        "codex-app-ssh",
+        include_detail=True,
+    )
+    assert correct_exit_code == 0
+    activation = accepted["command_pack"]["host_loop_activation"]
+    assert activation["activation_method"] == "set_visible_goal"
+    thin_prompt_command = activation["commands"]["heartbeat_prompt"]
+    assert "--thin" in thin_prompt_command
+    assert "--runtime-profile codex_app_ssh_goal" in thin_prompt_command
+    assert "--codex-app" not in thin_prompt_command
+
+
 def test_cli_codex_app_ssh_unbound_ambient_thread_requires_lane_selection(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -2079,12 +2160,15 @@ def test_guided_takeover_with_runnable_frontier_projects_todo_delta(
     validate_shared_todo_options(add_args)
     validate_todo_add_options(add_args)
     # The takeover continues through the normal refresh/host-loop/quota tail.
-    assert step_ids.index("apply_todo_delta") < step_ids.index("refresh_state")
+    assert step_ids.index("apply_todo_delta") < step_ids.index("read_back_authored_todos") < step_ids.index("refresh_state")
     assert "quota_guard" in step_ids
     rendered = render_start_goal_guided_markdown(payload)
     assert "apply_todo_delta" in rendered
     assert "reuse" in rendered
     assert "todo_delta:" in rendered
+    readback = next(step for step in steps if step["id"] == "read_back_authored_todos")
+    assert readback["command_template"] in rendered
+    assert "todo_detail_projection.source_complete=true" in rendered
 
 
 def test_guided_takeover_without_runnable_frontier_keeps_unconditional_authoring(
@@ -2095,6 +2179,7 @@ def test_guided_takeover_without_runnable_frontier_keeps_unconditional_authoring
     step_ids = [step["id"] for step in payload["guided_transaction"]["ordered_steps"]]
     assert "write_ordered_todos" in step_ids
     assert "apply_todo_delta" not in step_ids
+    assert step_ids.index("write_ordered_todos") < step_ids.index("read_back_authored_todos") < step_ids.index("refresh_state")
 
 
 def _write_connected_project_with_blocked_agent_todo(root: Path) -> Path:

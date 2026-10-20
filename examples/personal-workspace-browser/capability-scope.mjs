@@ -50,6 +50,84 @@ export const capabilityScopeScenario = {
       await page.getByRole("button", { name: "预览变更", exact: true }).click();
       await page.getByText("锁定 revision 的变更预览", { exact: true }).waitFor();
       if (api.goalConfigurationRequests.at(-1)?.goal_id !== "research-monitor") throw new Error("Changed Goal was not used by preview");
+      await catalog.getByRole("button", { name: /探索 Harness/ }).click();
+      const explorationMode = page.getByRole("combobox", { name: /^探索模式/u });
+      await explorationMode.selectOption("planning");
+      const composition = page.getByRole("combobox", { name: /^组合策略/u });
+      await composition.selectOption("explicit_only");
+      await page.getByLabel(/^研究覆盖范围/u).fill("joint-scope");
+      await page.getByRole("button", { name: "预览变更", exact: true }).click();
+      await page.getByText("锁定 revision 的变更预览", { exact: true }).waitFor();
+      const preview = api.goalConfigurationRequests.at(-1);
+      if (preview?.goal_id !== "research-monitor" || preview?.configuration?.composition_mode !== "explicit_only"
+        || preview?.configuration?.composition_scope_id !== "joint-scope" || preview?.configuration?.mode !== "planning") throw new Error("Composition preview lost its Goal, activation or typed scope");
+      await composition.selectOption("disabled");
+      if (await page.locator(".personal-capability-preview").count()) throw new Error("Composition edit retained a stale preview");
+      await composition.selectOption("explicit_only");
+      await page.getByRole("button", { name: "预览变更", exact: true }).click();
+      await page.getByText("锁定 revision 的变更预览", { exact: true }).waitFor();
+      await Promise.all([
+        page.waitForResponse((response) => new URL(response.url()).pathname === "/api/chat/goal-configuration" && response.request().method() === "GET"),
+        page.getByRole("button", { name: "应用此预览", exact: true }).click(),
+      ]);
+      await catalog.getByRole("button", { name: /探索 Harness/ }).click();
+      if (await composition.inputValue() !== "explicit_only" || await page.getByLabel(/^研究覆盖范围/u).inputValue() !== "joint-scope"
+        || await explorationMode.inputValue() !== "planning") throw new Error("Applied composition configuration did not read back from its Goal");
+      await composition.selectOption("disabled");
+      await page.getByRole("button", { name: "预览变更", exact: true }).click();
+      await page.getByText("锁定 revision 的变更预览", { exact: true }).waitFor();
+      await Promise.all([
+        page.waitForResponse((response) => new URL(response.url()).pathname === "/api/chat/goal-configuration" && response.request().method() === "GET"),
+        page.getByRole("button", { name: "应用此预览", exact: true }).click(),
+      ]);
+      await catalog.getByRole("button", { name: /探索 Harness/ }).click();
+      if (await composition.inputValue() !== "disabled" || await page.getByLabel(/^研究覆盖范围/u).inputValue() !== "joint-scope"
+        || await explorationMode.inputValue() !== "planning") throw new Error("Disabling composition changed its Goal activation or scope");
+      const applied = api.goalConfigurationRequests.filter((request) => request.phase === "apply");
+      if (applied.length !== 2 || applied.some((request) => request.goal_id !== "research-monitor"
+        || request.capability_id !== "explore_harness" || request.expected_plan_revision !== "sha256:goal-plan-explore_harness")
+        || applied[0].configuration.composition_mode !== "explicit_only"
+        || applied[1].configuration.composition_mode !== "disabled") throw new Error("Composition apply lost its locked revision or target");
+      await page.screenshot({ path: resolve(outputDir, "capability-composition-desktop.png"), animations: "disabled" });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByLabel(/^研究覆盖范围/u).scrollIntoViewIfNeeded();
+      await page.getByLabel(/^研究覆盖范围/u).focus();
+      await page.screenshot({ path: resolve(outputDir, "capability-composition-mobile.png"), animations: "disabled" });
+      if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)) throw new Error("Composition controls overflow the narrow viewport");
+      await page.setViewportSize({ width: 1512, height: 982 });
+      // A failed sibling binding must not make an available private route look empty.
+      const memory = {enabled: true, binding_status: "unbound", effective_available: true,
+        registered_agents: ["reviewer", "writer"], enabled_agents: ["reviewer"], agent_bindings: [
+          {agent_id: "writer", binding_source: "agent", enabled: true, available: true, status: "available"},
+          {agent_id: "reviewer", binding_source: "goal", enabled: true, available: false, status: "config_invalid"},
+        ]};
+      api.goalMemoryConfigurations.set("research-monitor", memory);
+      await catalog.getByRole("button", {name: "记忆与资料", exact: true}).click();
+      const reloadMemory = () => Promise.all([
+        page.waitForResponse(response => new URL(response.url()).pathname === "/api/chat/goal-configuration" && response.request().method() === "GET"),
+        page.getByRole("button", {name: "重新读取配置", exact: true}).click(),
+      ]);
+      await reloadMemory();
+      await page.getByRole("tab", {name: "经验学习", exact: true}).click();
+      await page.getByRole("combobox", {name: "经验作用范围", exact: true}).selectOption("writer");
+      const memoryReadback = page.getByRole("region", {name: "Agent 记忆绑定读回", exact: true});
+      await memoryReadback.getByText(/独立绑定.*可用/u).waitFor();
+      await memoryReadback.scrollIntoViewIfNeeded();
+      if (await page.locator(".personal-memory-unbound").count()) throw new Error("An available Agent route is contradicted by a Goal-wide empty claim");
+      await page.screenshot({path: resolve(outputDir, "capability-memory-available-desktop.png"), animations: "disabled"});
+      await page.setViewportSize({width: 390, height: 844});
+      await catalog.getByRole("button", {name: "记忆与资料", exact: true}).scrollIntoViewIfNeeded();
+      await memoryReadback.scrollIntoViewIfNeeded();
+      await page.screenshot({path: resolve(outputDir, "capability-memory-available-mobile.png"), animations: "disabled"});
+      if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)) throw new Error("Memory scope overflows the narrow viewport");
+      await page.setViewportSize({width: 1512, height: 982});
+      api.goalMemoryConfigurations.set("research-monitor", {...memory, enabled: false, effective_available: false,
+        agent_bindings: memory.agent_bindings.map(row => ({...row, available: false, enabled: false, status: "disabled"}))});
+      await reloadMemory();
+      await page.locator(".personal-memory-unbound").waitFor({state: "visible"});
+      api.goalMemoryConfigurations.set("research-monitor", {...memory, effective_available: undefined, agent_bindings: []});
+      await reloadMemory();
+      await page.locator(".personal-memory-unbound").waitFor({state: "hidden"});
       await defaults.check();
       await page.getByRole("navigation", { name: "机器能力目录" }).waitFor();
       if (await page.locator(".personal-capability-preview").count()) throw new Error("A Goal preview crossed into device defaults");
@@ -57,7 +135,7 @@ export const capabilityScopeScenario = {
       await page.getByRole("heading", { level: 2, name: "周期报告", exact: true }).waitFor();
       if (await page.locator(".personal-capability-preview").count()) throw new Error("Returning revived a discarded preview");
       if (!reads.includes("product-release") || !reads.includes("research-monitor")) throw new Error("Target changes did not read their own configuration");
-      if (api.goalConfigurationRequests.some((r) => r.phase === "apply") || api.machineConfigurationRequests.some((r) => r.phase === "apply")) throw new Error("Navigation wrote configuration");
+      if (api.goalConfigurationRequests.filter((r) => r.phase === "apply").length !== 2 || api.machineConfigurationRequests.some((r) => r.phase === "apply")) throw new Error("Navigation wrote configuration");
       await page.screenshot({ path: resolve(outputDir, "capability-scope-goal.png"), animations: "disabled" });
       await page.setViewportSize({ width: 390, height: 844 });
       await target.focus();
@@ -70,6 +148,9 @@ export const capabilityScopeScenario = {
       if (!await goalScope.isChecked() || await target.inputValue() !== "product-release") throw new Error("Goal settings entry lost its target");
       if (context.errors.length) throw new Error(context.errors.join(" | "));
       return { coverageEntries: await context.close(), note: "One capability destination; explicit device/Goal scope; fresh target reads; no cross-scope drafts or writes; Goal entry preserved; desktop/mobile verified." };
-    } catch (error) { await context.close(); throw error; }
+    } catch (error) {
+      await page.screenshot({ path: resolve(outputDir, "capability-scope-failure.png"), animations: "disabled" });
+      await context.close(); throw error;
+    }
   },
 };

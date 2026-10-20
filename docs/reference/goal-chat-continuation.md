@@ -35,6 +35,29 @@ registered peer can coordinate work within one Goal. Both reuse the existing
 [delegation service](local-delegation.md), independently governed member Turns
 and TS task acceptance. A coordinator role alone grants no execution authority.
 
+## Source references in conversation answers
+
+Project, steward and collaboration answers share source-reference guidance.
+Repository-relative Markdown destinations do not identify an openable source in
+chat. For verified public repository content, the Agent should establish the
+canonical repository and revision it actually read, then cite an absolute
+permalink. A project name, an old link or the current remote branch is not enough
+to identify that revision. Private, ignored, unpublished or locally modified
+content must not be presented as that public version.
+
+Local artifact links are appropriate only where the receiving channel can
+resolve the authorized artifact. Otherwise the answer retains a plain file or
+section reference and names a material access/version gap. Making a citation
+clickable does not authorize publication or upload. This is authoring guidance,
+not a URL verifier: the channel renderer preserves authored destinations and
+delivery readback verifies what was sent, not source truth or recipient access.
+
+项目、管家和协作回复共用来源引用指导。聊天中的仓库相对路径不能作为可打开的
+来源网址；已核验的公开仓库内容应引用实际读取版本及正确仓库的绝对永久链接。
+私有、忽略、未发布或本地修改的内容不能冒充公开版本。只有接收渠道能解析已授权
+产物时才使用本地文件链接，否则保留文件／章节说明，并指出重要的访问或版本缺口。
+引用需要可用，不构成上传或发布授权；此指导不替代来源核验或渠道实际验收。
+
 ## Enable LoopX mode
 
 On a local managed Codex Goal conversation, choose **Enable LoopX** in the
@@ -126,6 +149,12 @@ messages; images use the ordinary conversation after pausing.
   in-flight requests can overshoot it and member usage is accounted separately.
 - Browser refresh reconnects to the existing local run. After service loss,
   reconnect restores and pauses the original native thread before resuming.
+  Stop and recovery verify non-active Goal state with a fresh host read after
+  requesting pause. If readback fails, disappears or remains active, the owned
+  transport is closed and the operation fails; an ACK is not a pause receipt.
+  Late native turn-start events are used only to interrupt that turn, never to
+  inject queued messages or resume context after Stop. Already-submitted effects
+  retain their original reconciliation and settlement obligations.
   The Chat hard timeout remains in force; this is not an unattended daemon.
 - When a delegated result is first accepted, the Chat service continues the
   lead once through the same admission as `resume`. The wake belongs to the
@@ -190,6 +219,9 @@ For a disposable mixed-team setup, use the
 升级底层线程；已有未结束的原生 Goal 时拒绝替换。以后恢复都沿用该线程。
 服务重启先恢复并暂停原线程；浏览器刷新不会另起运行。运行仍有硬超时，尚非
 无人值守 daemon。配置文件在未结束的 Goal 中保持摘要绑定，改变后需先协调处理。
+请求暂停后会重新读取宿主 Goal，确认已非 active；读回失败、目标消失或仍 active 时
+关闭自有连接并返回失败，ACK 不算暂停回执。Stop 后迟到的 start 事件仅用于中断对应
+回合，不再注入排队消息或恢复上下文；已提交效果仍保留原操作的对账和结算义务。
 
 成员结果首次被接受时，Chat 服务按与 `resume` 相同的准入规则继续协调员一次。
 唤醒绑定在「启动该操作的回合所属会话」上：同一 Goal 与身份下的其他会话不会被选为

@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { resolveTestPython } from "../../scripts/test-python.mjs";
 import { outputDir, repoRoot } from "./fixture.mjs";
-import { openWorkspacePage } from "./scenario-context.mjs";
+import { fetchWorkspaceBackend, openWorkspacePage } from "./scenario-context.mjs";
 
 const REASON = "Waiting for the upstream dataset export to be published";
 const CHANGED_REASON = "The replacement export requires independent validation";
@@ -40,10 +40,18 @@ def blocked(text, *extra):
 try:
     with_reason = blocked('Synthetic blocked readback', '--reason', reason)
     without_reason = blocked('Synthetic unexplained blocker')
+    def add_task(text):
+        return cli('todo', 'add', '--goal-id', 'goal-a', '--role', 'agent', '--text', text)['todo']['todo_id']
+    cyclic = add_task('Synthetic circular dependency')
+    prerequisite = add_task('Synthetic cycle prerequisite')
+    independent = add_task('Synthetic independent work')
+    for source, target in [(cyclic, prerequisite), (prerequisite, cyclic)]:
+        cli('todo', 'update', '--goal-id', 'goal-a', '--todo-id', source,
+            '--resume-when', 'todo_done:' + target, '--successor-todo-id', independent)
     server = ChatHTTPServer(('127.0.0.1', 0), ChatRequestHandler)
     server.registry_path, server.runtime_root, server.verbose = registry, runtime, False
     server.runtime_root_override, server.selected_goal_id, server.scan_roots, server.limit = runtime, 'goal-a', [], 10
-    print(json.dumps({'port': server.server_address[1], 'registry': str(registry), 'runtime': str(runtime), 'with_reason': with_reason, 'without_reason': without_reason}), flush=True)
+    print(json.dumps({'port': server.server_address[1], 'registry': str(registry), 'runtime': str(runtime), 'with_reason': with_reason, 'without_reason': without_reason, 'cyclic': cyclic, 'prerequisite': prerequisite, 'independent': independent}), flush=True)
     def terminate(*_): raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
     server.serve_forever()
@@ -92,14 +100,21 @@ export const blockedReasonReadbackScenario = {
         for (const mobile of [false, true]) {
           await authority.cli("todo", "update", "--goal-id", "goal-a", "--role", "agent", "--todo-id", authority.with_reason,
             "--status", "blocked", "--text", "Synthetic blocked readback", "--reason", REASON);
+          await authority.cli("todo", "update", "--goal-id", "goal-a", "--todo-id", authority.prerequisite,
+            "--resume-when", `todo_done:${authority.cyclic}`, "--successor-todo-id", authority.independent);
           let writes = 0;
           let omitReason = false;
+          let holdStatusRead = null;
           const context = await openWorkspacePage({ newPage: (options) => browser.newPage({ ...options, locale }) }, url, {
             collectCoverage, viewport: mobile ? { width: 390, height: 844 } : { width: 1512, height: 982 }, isMobile: mobile,
             beforeGoto: async (_api, page) => {
+              await page.route((target) => ["/extension-presentation-surfaces", "/extension-projection"].includes(target.pathname), async (route) => {
+                const response = await fetchWorkspaceBackend(route, authority.url);
+                await route.fulfill({ response });
+              });
               await page.route("**/status.json*", async (route) => {
                 if (new URL(route.request().url()).pathname !== "/status.json") { await route.fallback(); return; }
-                const response = await route.fetch({ url: `${authority.url}/status.json` });
+                const response = await fetchWorkspaceBackend(route, authority.url);
                 assert.equal(response.status(), 200);
                 const payload = await response.json();
                 // Missing optional fields are a transport counterexample,
@@ -112,14 +127,17 @@ export const blockedReasonReadbackScenario = {
                   };
                   omit(payload);
                 }
+                const heldRead = holdStatusRead;
+                holdStatusRead = null;
+                if (heldRead) await heldRead;
                 await route.fulfill({ response, json: payload });
               });
               await page.route("**/api/chat/todo/detail?*", async route => {
-                const response = await route.fetch({ url: `${authority.url}${new URL(route.request().url()).pathname}${new URL(route.request().url()).search}` });
+                const response = await fetchWorkspaceBackend(route, authority.url);
                 await route.fulfill({ response });
               });
               await page.route("**/api/chat/completed-todos?*", async route => {
-                const response = await route.fetch({ url: `${authority.url}${new URL(route.request().url()).pathname}${new URL(route.request().url()).search}` });
+                const response = await fetchWorkspaceBackend(route, authority.url);
                 await route.fulfill({ response });
               });
               page.on("request", (request) => { if (request.method() !== "GET" && /actions|todo/.test(request.url())) writes += 1; });
@@ -129,7 +147,7 @@ export const blockedReasonReadbackScenario = {
           const suffix = `${locale}-${mobile ? "mobile" : "desktop"}`;
           try {
             const openTodo = async (text) => {
-              const card = page.locator("button[aria-pressed]", { hasText: text });
+              const card = page.locator('[data-goal-panel="tasks"]:not([hidden]) .personal-task-board button[aria-pressed]', { hasText: text });
               if (await page.getByRole("dialog").isVisible()) {
                 await page.keyboard.press("Escape");
                 await page.getByRole("dialog").waitFor({ state: "hidden" });
@@ -146,14 +164,26 @@ export const blockedReasonReadbackScenario = {
             };
             const field = (drawer, label) => drawer.locator("dl > div", { has: page.locator("dt", { hasText: label }) }).locator("dd").innerText();
             const refresh = async () => {
+              // The Todo inspector is non-modal. Keyboard activation keeps it
+              // open even at widths where it overlaps the header control.
               await Promise.all([
                 page.waitForResponse(response => new URL(response.url()).pathname === "/status.json" && response.status() === 200),
-                page.getByRole("button", { name: locale === "en" ? "Refresh status" : "刷新状态", exact: true }).click(),
+                page.getByRole("button", { name: locale === "en" ? "Refresh status" : "刷新状态", exact: true }).press("Enter"),
               ]);
               await page.locator(".personal-refresh-control.is-done").waitFor();
             };
 
-            let drawer = await openTodo("Synthetic blocked readback");
+            let drawer = await openTodo("Synthetic circular dependency");
+            await drawer.screenshot({ path: resolve(outputDir, `dependency-cycle-${suffix}.png`) });
+            assert.equal(await field(drawer, locale === "en" ? "Resume state" : "恢复状态"),
+              locale === "en" ? "Circular dependency" : "循环依赖");
+            assert.equal(await drawer.evaluate(element => element.scrollWidth > element.clientWidth + 1), false);
+            await authority.cli("todo", "update", "--goal-id", "goal-a", "--todo-id", authority.prerequisite,
+              "--clear-resume-when", "--reason", "Reviewed obsolete back edge");
+            await refresh();
+            await drawer.getByText(locale === "en" ? "Waiting for condition" : "等待条件满足", {exact: true}).waitFor();
+            await drawer.screenshot({ path: resolve(outputDir, `dependency-cycle-repaired-${suffix}.png`) });
+            drawer = await openTodo("Synthetic blocked readback");
             await drawer.screenshot({ path: resolve(outputDir, `blocked-reason-${suffix}.png`) });
             await page.screenshot({ path: resolve(outputDir, `blocked-reason-viewport-${suffix}.png`) });
             const cause = drawer.getByRole("region", { name: locale === "en" ? "Why it is blocked" : "为何受阻" });
@@ -170,14 +200,28 @@ export const blockedReasonReadbackScenario = {
               await refresh();
               await cause.getByText(CHANGED_REASON, { exact: true }).waitFor({ timeout: 8_000 });
               assert.doesNotMatch(await cause.innerText(), new RegExp(REASON));
-              omitReason = true;
               await refresh();
+              omitReason = true;
+              let releaseRead;
+              holdStatusRead = new Promise(resolveRead => { releaseRead = resolveRead; });
+              const pendingRefresh = refresh();
+              try {
+                await page.locator(".personal-refresh-control.is-loading").waitFor();
+                // Cross the previous refresh's 1.8s feedback lifetime while
+                // the new real status response is held at the transport.
+                await page.waitForTimeout(1900);
+                assert.equal(await page.locator(".personal-refresh-control.is-loading").count(), 1,
+                  "An older feedback timer cannot clear a newer in-flight refresh");
+              } finally {
+                releaseRead();
+                await pendingRefresh;
+              }
               await cause.getByText(locale === "en" ? /No reason was recorded/ : /未记录原因/).waitFor();
               omitReason = false;
               await authority.cli("todo", "update", "--goal-id", "goal-a", "--role", "agent", "--todo-id", authority.with_reason,
                 "--status", "open", "--text", "Synthetic validated readback");
               await refresh();
-              await drawer.locator(".personal-task-inspector-summary h3", { hasText: "Synthetic validated readback" }).waitFor();
+              await drawer.locator(".personal-task-request .personal-md", { hasText: "Synthetic validated readback" }).waitFor();
               await drawer.locator(".personal-task-request [role]").waitFor({ state: "hidden" });
               assert.equal(await cause.count(), 0, "Resolved work must not retain its old blocked cause");
               assert.equal(await field(drawer, locale === "en" ? "Status" : "状态"), locale === "en" ? "Ready" : "待执行");

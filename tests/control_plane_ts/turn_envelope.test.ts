@@ -73,6 +73,93 @@ const protocolActionFields = {
   agent_action: "advance one bounded segment",
 };
 
+test("budget pressure retains complete independent planning context", () => {
+  const source = payload();
+  const context = {
+    schema_version: "loopx_agent_context_v0", phase: "before_plan",
+    scope: {goal_id: source.goal_id, agent_id: "agent-ts", todo_id: "todo-1"},
+    target: "coordinator", authority: "guidance_only", delivery: "projected",
+    contributions: [{hook_id: "fixture.planning", capability_id: "fixture-planning",
+      revision: "1", guidance: ["Inspect original evidence.\nKeep the complete acceptance tail."],
+      facts: {live_availability: "not_observed"}, source_refs: ["fixture:evidence"]}],
+    failures: [],
+  };
+  (source.interaction_contract as JsonObject).agent_context = context;
+  source.goal_boundary = {execution_profile: {padding: "x".repeat(8_000)}};
+  const original = structuredClone(source);
+  const envelope = buildTurnEnvelope({payload: source, protocol_action_fields: protocolActionFields,
+    scheduler_execution_args: ""});
+  assert.deepEqual(envelope.agent_context, context);
+  assert.equal((envelope.agent_context as JsonObject).detail_ref, undefined);
+  assert.equal((envelope.compaction as JsonObject).within_budget, false);
+  assert.deepEqual(quotaActionSignatureDocument(source, protocolActionFields),
+    turnEnvelopeActionSignatureDocument(envelope));
+  const signature = structuredClone(turnEnvelopeActionSignatureDocument(envelope));
+  ((envelope.agent_context as JsonObject).contributions as JsonObject[])[0].guidance = ["Skip evidence."];
+  assert.notDeepEqual(turnEnvelopeActionSignatureDocument(envelope), signature);
+  assert.deepEqual(source, original);
+});
+
+test("vision closeout obligations survive projection and signature mutation", () => {
+  const source = payload();
+  const audit = {
+    schema_version: "vision_continuation_audit_v0", required: true,
+    decision: "acceptance_gap_open", selected_todo_is_goal_completion: false,
+    closeout_allowed_without_evidence: false,
+    required_before_closeout: [
+      "inspect registered material before public research",
+      "preserve the original source and acceptance evidence " + "完整要求🧭 ".repeat(40),
+      "derive requirements", "record evidence", "check current authority",
+      "retain unsuccessful results", "continue when acceptance is unproven",
+    ],
+    recommended_action: "Inspect the original evidence first.\nIf acceptance remains unproven, " +
+      "keep the vision active and write a successor or replan trigger.",
+    authoritative_evidence_kinds: ["evaluation_outputs", "successor_state"],
+    not_satisfied_by: ["todo_completion_alone", "vision_checkpoint_alone"],
+    vision_gap_judge: {
+      schema_version: "vision_gap_judge_v0", done: false, decision: "continue",
+      reason: "Evidence remains incomplete.", done_only_when: [],
+      continue_when: ["evidence_is_missing_weak_or_stale"], otherwise: "continue",
+    },
+    acceptance_gaps: [{private_detail: "read from the original capture"}],
+  };
+  source.vision_continuation_audit = audit;
+  const before = structuredClone(source);
+  const envelope = buildTurnEnvelope({payload: source, protocol_action_fields: protocolActionFields,
+    scheduler_execution_args: "", captured_decision_path: "private capture/decision.json"});
+  const projected = (envelope.contract_capsule as JsonObject).vision_continuation_audit as JsonObject;
+  for (const field of ["required_before_closeout", "recommended_action", "vision_gap_judge",
+    "authoritative_evidence_kinds", "not_satisfied_by"] as const) {
+    assert.deepEqual(projected[field], audit[field]);
+  }
+  assert.equal(projected.acceptance_gaps, undefined);
+  assert.equal((envelope.detail_ref as JsonObject).full_decision, "cat -- 'private capture/decision.json'");
+  assert.deepEqual(source, before);
+  assert.deepEqual(quotaActionSignatureDocument(source, protocolActionFields),
+    turnEnvelopeActionSignatureDocument(envelope));
+  for (const mutate of [
+    (value: JsonObject) => { (value.required_before_closeout as string[]).pop(); },
+    (value: JsonObject) => { (value.required_before_closeout as string[]).reverse(); },
+    (value: JsonObject) => { value.recommended_action = "close the vision"; },
+    (value: JsonObject) => { (value.vision_gap_judge as JsonObject).done = true; },
+    (value: JsonObject) => { value.not_satisfied_by = []; },
+  ]) {
+    const changed = structuredClone(envelope);
+    mutate((changed.contract_capsule as JsonObject).vision_continuation_audit as JsonObject);
+    assert.notDeepEqual(turnEnvelopeActionSignatureDocument(changed),
+      turnEnvelopeActionSignatureDocument(envelope));
+  }
+  (projected.required_before_closeout as string[]).push("consumer edit");
+  assert.deepEqual(source, before);
+});
+
+test("absent vision audit retains the existing envelope shape", () => {
+  const source = payload();
+  const envelope = buildTurnEnvelope({payload: source, protocol_action_fields: protocolActionFields,
+    scheduler_execution_args: ""});
+  assert.equal((envelope.contract_capsule as JsonObject).vision_continuation_audit, undefined);
+});
+
 test("capability facts retain exact current and historical source fields", () => {
   for (const fields of [
     {required: ["network", "filesystem_write"], missing: ["network"]},
@@ -167,6 +254,24 @@ test("a projected successor preserves its original closeout guard in the compact
   assert.deepEqual(quotaActionSignatureDocument(source, protocolActionFields), turnEnvelopeActionSignatureDocument(envelope));
 });
 
+test("receipt-bound settlement recovery transports the original executable command intact", () => {
+  const source = payload();
+  const command = "loopx --runtime-root /" + "long-path/".repeat(50) +
+    " quota spend-slot --goal-id goal-turn-envelope --agent-id agent-ts --todo-id todo-1" +
+    " --turn-instance-id turn-original --execute";
+  const interaction = source.interaction_contract as JsonObject;
+  Object.assign(interaction.agent_channel as JsonObject, {delivery_allowed: false});
+  Object.assign(interaction.cli_channel as JsonObject, {next_cli_actions: [command], spend_allowed_now: true});
+  source.unsettled_host_turn_recovery = {schema_version: "unsettled_host_turn_recovery_v0",
+    scope: "current_turn", repair: "quota_spend", binding_kind: "todo", binding_id: "todo-1",
+    turn_instance_id: "turn-original"};
+  const envelope = buildTurnEnvelope({payload: source, protocol_action_fields: protocolActionFields,
+    scheduler_execution_args: ""});
+  assert.equal((envelope.action as JsonObject).delivery_allowed, false);
+  assert.deepEqual((envelope.writeback as JsonObject).next_cli_actions, [command]);
+  assert.deepEqual(quotaActionSignatureDocument(source, protocolActionFields), turnEnvelopeActionSignatureDocument(envelope));
+});
+
 test("large peer inventories retain scoped gates and signed detail without hiding tasks", () => {
   const source = payload();
   const items = Array.from({ length: 50 }, (_, i) => ({ todo_id: `todo_${i}`,
@@ -222,13 +327,59 @@ test("Turn preserves checkpointed scope approval without lifting other gates", (
   for (const inactive of [
     {schema_version: "checkpointed_boundary_authority_v0", active_count: 0, active_write_scope: []},
     {schema_version: "unknown", active_count: 1, active_write_scope: ["**"]},
-    {schema_version: "checkpointed_boundary_authority_v0", active_count: 1, active_write_scope: ["x".repeat(181)]},
+    {schema_version: "checkpointed_boundary_authority_v0", active_count: 1, active_write_scope: [null, ""]},
   ]) {
     scope.checkpointed_boundary_authority = inactive;
     assert.deepEqual(render().boundary, baseline.boundary);
   }
   delete scope.checkpointed_boundary_authority;
   assert.deepEqual(render(), baseline);
+});
+
+test("boundary obligations remain complete literals beyond display budgets", () => {
+  const source = payload();
+  const scopes = [...Array.from({length: 19}, (_, i) => `public/surface/${i}/**`),
+    `public/${"nested/".repeat(30)}two  spaces/**`, "tests/**"];
+  const boundary = source.goal_boundary as JsonObject;
+  Object.assign(boundary, {
+    write_scope: scopes,
+    available_capabilities: Array.from({length: 20}, (_, i) => `capability_${i}`),
+    requires_parent_approval: Array.from({length: 20}, (_, i) => `action_${i}`),
+    guards: [...Array.from({length: 9}, (_, i) => `Preserve evidence ${i}`),
+      "Keep the complete original evidence.\n".repeat(12) + "Stop before publishing private material."],
+    stop_condition: "Read the full original source.\n".repeat(14) + "Stop when owner approval is missing.",
+    checkpointed_boundary_authority: {
+      schema_version: "checkpointed_boundary_authority_v0", active_count: 2,
+      active_write_scope: scopes, entries: [{source: "private-decision-evidence"}],
+    },
+  });
+  const original = structuredClone(source);
+  const envelope = buildTurnEnvelope({payload: source,
+    protocol_action_fields: protocolActionFields, scheduler_execution_args: ""});
+  const projected = envelope.boundary as JsonObject;
+  for (const field of ["write_scope", "available_capabilities", "requires_parent_approval", "guards", "stop_condition"]) {
+    assert.deepEqual(projected[field], boundary[field], field);
+    const changedSource = structuredClone(source);
+    const changed = changedSource.goal_boundary as JsonObject;
+    if (Array.isArray(changed[field])) (changed[field] as unknown[]).pop();
+    else changed[field] = String(changed[field]).replace("Stop when owner approval is missing.", "Continue.");
+    assert.notDeepEqual(quotaActionSignatureDocument(changedSource, protocolActionFields),
+      turnEnvelopeActionSignatureDocument(envelope), field);
+  }
+  const approval = projected.checkpointed_boundary_authority as JsonObject;
+  assert.deepEqual(approval.active_write_scope, scopes);
+  assert.equal(approval.entries, undefined);
+  assert.deepEqual(source, original);
+  (projected.write_scope as string[]).pop();
+  assert.deepEqual(source, original);
+});
+
+test("explicit empty boundary lists remain distinguishable from absent facts", () => {
+  const source = payload();
+  source.goal_boundary = {write_scope: [], available_capabilities: [], requires_parent_approval: [], guards: [], stop_condition: ""};
+  const envelope = buildTurnEnvelope({payload: source,
+    protocol_action_fields: protocolActionFields, scheduler_execution_args: ""});
+  assert.deepEqual(envelope.boundary, {rule: "stay_in_scope_or_stop", ...source.goal_boundary as JsonObject});
 });
 
 test("required commands remain intact independently of additive hook prompt budgets", () => {
@@ -842,5 +993,38 @@ test("envelope never independently invents requirement reads from work or admiss
     const envelope = buildTurnEnvelope({payload: source, protocol_action_fields: protocolActionFields,
       scheduler_execution_args: ""});
     assert.deepEqual(envelope.required_reads, []);
+  }
+});
+
+
+test("native Turn capture binds the original observation without inventing admission", () => {
+  const decision = payload();
+  const envelope = buildTurnEnvelope({payload: decision, protocol_action_fields: protocolActionFields,
+    scheduler_execution_args: ""});
+  const request = {operation: "bind_capture", payload: decision, envelope,
+    turn_instance_id: "native-turn", turn_key: "sha256:" + "a".repeat(64),
+    captured_decision_path: "/tmp/native-turn/decision.json"};
+  const bound = evaluateTurnEnvelope(request);
+  assert.deepEqual(bound.action_signature, envelope.action_signature);
+  const capture = (bound.detail_ref as JsonObject).captured_decision as JsonObject;
+  assert.equal(capture.turn_instance_id, "native-turn");
+  assert.equal(capture.turn_key, request.turn_key);
+  assert.equal(decision.heartbeat_receipt, undefined);
+  assert.equal((bound.detail_ref as JsonObject).full_decision, "cat -- /tmp/native-turn/decision.json");
+  assert.deepEqual(evaluateTurnEnvelope({...request, envelope: bound}), bound);
+  for (const turn_key of ["a".repeat(64), "sha256:" + "A".repeat(64),
+      "sha256:" + "a".repeat(63), "sha256:" + "a".repeat(65), "sha256:" + "g".repeat(64)]) {
+    assert.throws(() => evaluateTurnEnvelope({...request, turn_key}),
+      /Turn decision capture does not match the original observation/);
+  }
+  for (const change of [{reason: "new source"}, {goal_id: "other"},
+    {agent_identity: {agent_id: "other"}}, {ok: false}]) {
+    assert.throws(() => evaluateTurnEnvelope({...request, payload: {...decision, ...change}}),
+      EffectRuntimeRequestError);
+  }
+  for (const change of [{turn_instance_id: "other-turn"}, {turn_key: "sha256:" + "b".repeat(64)},
+    {captured_decision_path: "/tmp/other.json"}]) {
+    assert.throws(() => evaluateTurnEnvelope({...request, envelope: bound, ...change}),
+      EffectRuntimeRequestError);
   }
 });

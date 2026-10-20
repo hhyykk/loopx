@@ -426,60 +426,57 @@ def _compact_action_portfolio(portfolio: dict[str, Any]) -> dict[str, Any]:
 def _compact_vision_continuation_audit(
     audit: dict[str, Any],
 ) -> dict[str, Any]:
-    retained_fields = (
-        "schema_version",
-        "required",
-        "agent_id",
-        "decision",
-        "selected_todo_is_goal_completion",
-        "closeout_allowed_without_evidence",
-        "trigger_count",
-        "trigger_kinds",
-        "required_before_closeout",
-        "recommended_action",
-        "outcome_checkpoint_diagnostics",
-    )
-    compact = {key: audit[key] for key in retained_fields if key in audit}
-    judge = audit.get("vision_gap_judge")
-    if isinstance(judge, dict):
-        retained_judge_fields = (
-            "schema_version",
-            "done",
-            "decision",
-            "reason",
-            "evidence_read_instruction",
-        )
-        compact["vision_gap_judge"] = {
-            key: judge[key] for key in retained_judge_fields if key in judge
-        }
-    omitted_fields = sorted(set(audit) - set(compact))
+    # This is an executable decision contract, including the evidence and
+    # continuation rules in its prose. Keep it complete once; identical
+    # nested copies can reference this in-response owner below.
+    compact = dict(audit)
     compact["payload_compaction"] = {
         "schema_version": QUOTA_CLI_VISION_COMPACTION_SCHEMA_VERSION,
         "mode": "compact_hot_path",
-        "omitted_fields": omitted_fields,
+        "omitted_fields": [],
         "full_detail_cold_path": QUOTA_CLI_VISION_DETAIL_COMMAND,
     }
     return compact
 
 
-def _compact_replan_action_packet(packet: dict[str, Any]) -> dict[str, Any]:
-    """Keep the executable writeback summary hot and move its schema cold."""
+def _reference_inline_replan_authoring(
+    packet: dict[str, Any], *, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Reference an identical executable input already present in this response."""
 
     writeback = packet.get("writeback_contract")
     if not isinstance(writeback, dict) or not isinstance(
         writeback.get("vision_authoring"), dict
     ):
         return packet
+    interaction = payload.get("interaction_contract")
+    cli = interaction.get("cli_channel") if isinstance(interaction, dict) else None
+    plan = cli.get("settlement_plan") if isinstance(cli, dict) else None
+    steps = plan.get("ordered_steps") if isinstance(plan, dict) else None
+    if not isinstance(steps, list):
+        return packet
+    index = next(
+        (index for index, step in enumerate(steps)
+         if isinstance(step, dict) and step.get("kind") == "durable_writeback"
+         and step.get("vision_authoring") == writeback["vision_authoring"]),
+        None,
+    )
+    if index is None:
+        return packet
+    reference = (
+        "$.interaction_contract.cli_channel.settlement_plan.ordered_steps"
+        f"[{index}].vision_authoring"
+    )
     compact_writeback = dict(writeback)
     compact_writeback.pop("vision_authoring")
-    compact_writeback["vision_authoring_detail_ref"] = QUOTA_CLI_VISION_DETAIL_COMMAND
+    compact_writeback["vision_authoring_ref"] = reference
     compact = dict(packet)
     compact["writeback_contract"] = compact_writeback
     compact["payload_compaction"] = {
         "schema_version": QUOTA_CLI_REPLAN_ACTION_COMPACTION_SCHEMA_VERSION,
         "mode": "compact_hot_path",
         "compacted_fields": ["writeback_contract.vision_authoring"],
-        "full_detail_cold_path": QUOTA_CLI_VISION_DETAIL_COMMAND,
+        "projection_ref": reference,
     }
     return compact
 
@@ -759,7 +756,9 @@ def compact_quota_should_run_cli_payload(
         )
     replan_action = payload.get("replan_action_packet")
     if not include_vision_detail and isinstance(replan_action, dict):
-        compact_replan_action = _compact_replan_action_packet(replan_action)
+        compact_replan_action = _reference_inline_replan_authoring(
+            replan_action, payload=compact
+        )
         if compact_replan_action is not replan_action:
             compact = dict(compact)
             compact["replan_action_packet"] = compact_replan_action

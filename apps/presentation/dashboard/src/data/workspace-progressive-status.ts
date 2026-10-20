@@ -1,25 +1,51 @@
 import { z } from "zod";
 import { parseStatusPayload, type StatusPayload } from "./status";
+import { goalSubtree } from "../features/personal-workspace/goal-hierarchy";
 
+/** The source facts a discovery read can state without opening runtime state; older services omit it. */
+const directoryContractSchema = z.object({
+  ok: z.boolean(),
+  summary: z.object({ errors: z.number(), warnings: z.number(), checks: z.number() }),
+  errors: z.array(z.string()),
+  warnings: z.array(z.string()),
+  checks: z.array(z.string()).optional().default([]),
+});
 const directorySchema = z.object({
   ok: z.literal(true),
   schema_version: z.literal("loopx_workspace_directory_v1"),
   registry_revision: z.string(),
   goals: z.array(z.object({
     id: z.string(),
+    parent_goal_id: z.string().nullable().optional().catch(null),
+    source_access: z.object({namespace: z.string(), label: z.string(), read_only: z.literal(true)}).optional(),
     display_name: z.string(),
     activation_state: z.enum(["active", "stopped"]),
     registry_member: z.literal(true),
   })),
+  contract: directoryContractSchema.optional(),
 });
 export type WorkspaceDirectory = z.infer<typeof directorySchema>;
-export type WorkspaceLoadError = "timeout" | "network" | "service" | "access" | "revision" | "scope" | "invalid";
+export type WorkspaceLoadError = "timeout" | "network" | "service" | "source" | "access" | "revision" | "scope" | "invalid";
 export type WorkspaceReadScope = "all" | "missing";
 export type WorkspaceProgress = {
   directory: WorkspaceDirectory;
   snapshots: Record<string, StatusPayload>;
   errors: Record<string, WorkspaceLoadError>;
 };
+
+/** Narrow only this source's discovered Goals before reading their state.
+ * Organization is not an access grant: an absent root stays absent, and the
+ * existing source membership/revision checks still validate every response. */
+export function scopeWorkspaceDirectory(
+  directory: WorkspaceDirectory,
+  rootGoalId?: string | null,
+): WorkspaceDirectory {
+  if (!rootGoalId) return directory;
+  const included = new Set(goalSubtree(directory.goals.map(goal => ({
+    goalId: goal.id, parentGoalId: goal.parent_goal_id,
+  })), rootGoalId).map(goal => goal.goalId));
+  return { ...directory, goals: directory.goals.filter(goal => included.has(goal.id)) };
+}
 
 /**
  * Snapshots a same-source read may keep visible while it reconciles.
@@ -43,6 +69,8 @@ export function reusableGoalSnapshots(
     const snapshot = previous.snapshots[goal.id];
     if (!earlier || !snapshot || invalidated.has(goal.id)) return [];
     if (earlier.display_name !== goal.display_name
+      || earlier.source_access?.namespace !== goal.source_access?.namespace
+      || earlier.parent_goal_id !== goal.parent_goal_id
       || earlier.activation_state !== goal.activation_state) return [];
     return [[goal.id, snapshot]];
   }));
@@ -87,7 +115,8 @@ export function directoryStatusPayload(directory: WorkspaceDirectory): StatusPay
   return parseStatusPayload({
     ok: true, registry: "", runtime_root: "", goal_count: directory.goals.length,
     run_count: 0, local_dashboard_api: {},
-    contract: { ok: true, summary: { errors: 0, warnings: 0, checks: 0 }, errors: [], warnings: [] },
+    // A fresh install's directory names its missing registry; the first-Goal home shows that reason.
+    contract: directory.contract ?? { ok: true, summary: { errors: 0, warnings: 0, checks: 0 }, errors: [], warnings: [] },
     attention_queue: { available: false, item_count: 0, needs_user_or_controller: 0,
       needs_codex: 0, watching_external_evidence: 0, items: [] },
     run_history: { available: false, goal_count: directory.goals.length, run_count: 0,
@@ -95,7 +124,7 @@ export function directoryStatusPayload(directory: WorkspaceDirectory): StatusPay
   });
 }
 
-async function statusFailure(response: Response, signal: AbortSignal): Promise<"access" | "service"> {
+async function statusFailure(response: Response, signal: AbortSignal): Promise<"access" | "source" | "service"> {
   if (!response.body) return "service";
   const reader = response.body.getReader();
   const cancel = () => { void reader.cancel().catch(() => {}); };
@@ -114,9 +143,12 @@ async function statusFailure(response: Response, signal: AbortSignal): Promise<"
       size += value.byteLength;
     }
     const payload: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(0, size)));
-    return payload !== null && typeof payload === "object" && !Array.isArray(payload)
-      && "error_code" in payload && payload.error_code === "workspace_status_access_denied"
-      ? "access" : "service";
+    if (payload !== null && typeof payload === "object" && !Array.isArray(payload)
+      && "error_code" in payload) {
+      if (payload.error_code === "workspace_status_access_denied") return "access";
+      if (payload.error_code === "goal_source_unavailable") return "source";
+    }
+    return "service";
   } catch {
     // Parsing/transport errors after 5xx headers stay service errors; aborts keep their meaning.
     signal.throwIfAborted();

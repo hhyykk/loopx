@@ -83,7 +83,7 @@ lease 转交或 shared-intent 修改权限。这是 R3 的有界切片，不代�
 
 | 现有 owner | 源码 / 事实 | 含义 |
 | --- | --- | --- |
-| 管家身份与配置 | `loopx/chat_manager.py`：`open_manager_session`、`manager_workspace`、`manager_model_config` | 稳定全局角色、按受众派生的私人工作区、`resume_latest`；Codex 默认 `gpt-6-astra` / `high` |
+| 管家身份与配置 | `loopx/chat_manager.py`：`open_manager_session`、`manager_workspace`、`manager_model_config` | 稳定全局角色、按受众派生的私人工作区、`resume_latest`；Codex 默认 `gpt-6.1-sol` / `xhigh` |
 | 宿主执行 | `loopx/chat_agent.py`：`_turn_prompt`、`CodexChatAgentSession.start`；`loopx/chat_runtime.py` 的 adapter 创建与恢复 | 已有 app-server start/resume；planning 使用 read-only sandbox、never approval；该路径仅额外注入 manager read 动态工具 |
 | 管家行为限制 | `MANAGER_AGENT_OBJECTIVE` 和 planning prompt | 限制 shell、任意仓库阅读和写操作；除意图委托之外，持久修改走 preview/apply 提案 |
 | 会话恢复 | `loopx/chat_runtime.py` | 兼容时恢复保存的 upstream 身份；上下文版本、受众变化可迫使新建线程。不能据此宣称每次线上请求都成功 resume |
@@ -641,7 +641,7 @@ M0 盘点真实字段和 producer；以下是迁移验收底线，不代表已�
 | A20 | 压缩和有界投影遗漏重要否决路线或未结问题 | 覆盖说明暴露遗漏；有权限下钻恢复必要上下文或记录真实缺口；不无限放大 TurnEnvelope、不丢义务、不误报交接完成；前端/飞书/CLI 展示同一真实恢复和结果 |
 | A21 | 主人通过 Chat 和飞书分别提出简单问题、长篇取证问题 | 简单回答直接；长篇回答含可读结论、完整 Markdown 报告、来源/版本链接和有界缺口。前端将模型 HTML 视为惰性文本；飞书不截断结论或悄悄丢掉报告。两类回答不强制套同一段落模板 |
 | A22 | 工具/进度事件、重连、SSE 重放与延迟的最终答复 | 当前阶段和宿主真实公开活动可见；按事件身份去重，保留完整最终答复，不重启 Turn；失败与没有可显示活动均如实呈现 |
-| A23 | 中断和纠偏活跃 Turn；旧按钮、重复入口、完成竞态及不支持的 adapter | 停止只影响指定 Turn 并回报真实结果；纠偏进入本轮或有回执地排入后续回合；不发生无声丢失、停止后续 Turn、重复模型执行或误停 worker |
+| A23 | 中断和纠偏活跃 Turn；旧按钮、重复入口、完成竞态及不支持的 adapter | 停止只影响指定 Turn 并回报实际结果。纠偏保留原 Turn 和 ingress 身份，过期/不可用目标须拒绝。后续 queue 投递必须已有允许的 fallback 或新的显式选择，并保留真实且有区别的回执；不得无声丢失、改投、重复启动模型或取消无关 worker |
 | A24 | 管家在已停止、仅注册、过期、模型不适配的干扰候选中，将产品请求路由到负责的活跃 Agent | 依据新鲜的职责、授权、运行时可达性、容量和 profile 适配选定接收者；其评估、工作和有证据的最终结论恰好一次回到原前端/飞书对话；只有候选发现或收件箱送达不能通过 |
 
 先跑确定性转移/兼容测试，再真实安装 runtime 验证，再用无副作用合成任务和已授权私人 canary 做前端/飞书回环。记录源码/runtime 版本和回执。包含移动端飞书、打包前端渲染/读回；后端单测不等于 A10。provider 送达不确定、离线失败必须验，不只有成功路径。
@@ -654,6 +654,34 @@ M0 盘点真实字段和 producer；以下是迁移验收底线，不代表已�
 
 使用现有服务恢复和 receipt pump，不为每类请求创建管家业务 automation。配置/故障通过已有 CLI、capability settings、管家对话展示。诊断区分模型失败、工具/策略拒绝、状态冲突、接收方不可达、格式/传输失败。
 
+**Provider 配置拒绝：** 结构化 Responses `invalid_request_error` 的 JSON 包装即使
+省略 HTTP 状态，仍应识别为请求拒绝；冲突或格式错误的状态不能建立该分类。
+Chat 提示核对模型、账号和 provider，不发布上游原文，也不自动重放请求。
+桌面自己启动的 Chat 默认使用标准 Codex 目录，除非显式指定专用 Chat override，
+避免无关终端的 provider 配置替换默认账号。CLI 与 LaunchAgent 的目录优先级、
+原 Session 身份、显式 Runtime 选择及 provider 权限仍归已有 owner。
+模型发现与执行读取同一原生目录。引导设置中切换执行器会清空原模型/档位覆盖，
+由已有 backend 解析默认值；持久变更仍须通过原来的预览与应用。
+这一有界修复不代表持续运行或所有 provider/model 组合已资格化。
+
+**回合绑定的 steering（A23）：** 浏览器保存、派发和重放全过程保持请求指定的
+Session、精确 Turn、不变文本与 ingress 身份。当前前端发送前要求持久重试信息
+回读成功，存储不可用时保留可编辑草稿。投递未知时沿原目标重试，确认未送达则
+遵循既有恢复规则。Backend/provider ACK 不证明 Host 消费时点或模型改变了动作。
+按所选 Host 的[实际输入边界](agent-session-execution-modes-v0.zh-CN.md)
+验证工具执行、压缩和终结中的纠正，保留[请求/fallback/生效投递语义](desktop-execution-frontends-v0.md#agent-scoped-bot-ingress-modes)。
+精确 steer 不得悄悄变成后续 Turn 的新任务。
+
+对同一长任务逐段取证：ingress 证明排队受理，Host 回执证明送达，实际下一请求
+证明输入消费，后续工作/产物证明采用，配置的 validator 证明验收。未观测阶段保留
+unknown，UI 不从此前 ACK 推断后续事实。A23 回读沿既有 owner 保留这些区别，
+不新增统一生命周期 writer。有依据地保留当前路线不是投递失败。
+
+纠正或交接后接续还遵循[当前 Goal/criterion/source 依据](shared-goal-alignment-and-governed-amendment-v0.zh-CN.md#38-失效证据与受影响消费者)。
+收到上下文、adopt note 和恢复 journal 都不认证接收方下一决定。保留原操作恢复，
+再按当前依据准入新工作，回读实际产物并返回原入口。本地 Chat 路径不替代其他 Host
+或 Lark 的资格验证。
+
 **实时 IM 入口（S1/S5/S10）：** 分开验收长连接收信、持久准入、host 执行和可见回报。
 一个回答阻塞时，另一个请求或纠正仍须得到有界、真实的准入反馈；Core 已支持 queue/steering
 不能替代 Lark consumer 的验证。持续 Session、临时进度、精确权限决策和明确的媒体可用性
@@ -661,6 +689,24 @@ M0 盘点真实字段和 producer；以下是迁移验收底线，不代表已�
 bundled provider 的[就绪指南](../../../loopx/extensions/lark/docs/realtime-conversation-readiness.md)
 记录有界跨会话处理和仍待完成的替代验收；私聊开通、普通非 Goal 对话、流式回显与媒体输入，
 须等固定版本的已安装旅程通过后才能宣称就绪。
+
+群回复的来源验证先并发读取新鲜消息 envelope 和 App 身份，再检查 canonical topic root。
+这消除了两次读取的串行 IO 依赖，但不缓存任何观察，也不提前读取事件提供的祖先关系。
+每次向外操作仍受 root mention、当前 grant 与原回复 receipt 约束。仅来源检查的耗时
+不能证明入口反馈、完整回答延迟或已安装实时旅程已通过。
+
+**模型容量失败（S5/S10）：** Codex adapter 把 typed `serverOverloaded` 终结错误保留为
+`server_overloaded`，上游任意 prose 不能建立该分类。启用后的 Codex app-server Chat Turn
+现在默认对这个精确 typed 过载做有界同请求续接：同一 worker 内，Session、Turn、请求、
+grant、配置与 active claim 均未变，且完整最新 Turn 与 item 读回证明本轮没有执行工具或
+效果后，LoopX 可以用线性退避重新投递原请求，最多三次重试，每次续接前再读回一次。每次
+重试都在退避前先写入 Turn 事件账本，因此剩余额度可跨重启/压缩保留，新 worker 不会重开
+starting/terminal Turn 来重置它。未知 provider code、任何工具或效果证据、额外输入或
+steering、停止、权限/配置/claim 变化，以及不可读或不确定的历史都失败关闭：保留既有
+typed 失败与繁忙/连接说明，耗尽时同样保留终结结果，不重放不确定的尝试。原 Session、
+Turn 与投递回执仍是权威；这不新增模型 fallback、provider 替换或线程替换，也不证明
+provider 可用性或此前无副作用。Lark 私聊与管家回复仍显示安全的模型繁忙说明，并要求
+用户先核对已有结果再决定稍后重试；可重试通知仍等待真实终结结果。
 
 **产品边界：** Bot 是实时会话入口，不是另一个管家。普通项目对话和与选定既有 Agent
 直接交流，无需团队拆解或新增 Goal/Todo；需要长期承诺、协调和验收时，管家是显式接收者。
@@ -683,6 +729,15 @@ skills，不再附带管家的 Goal 发现、草稿或 context delegation 指令
 | 接着 | 首次私聊与显式角色选择接续正确会话，忙碌工作及时报告持久准入或拒绝 | Chat Session/Turn 与 typed ingress 拥有连续性、受众及 queue/steering；普通对话无需用户先造 Goal Topic，角色名本身不授予权限 |
 | 再做 | 每个宣称支持的 host 都能显示进度、接收图/文件和处理权限答复 | 既有 event/attachment/operation owner；有界临时卡片、明确不支持的媒体、认证后的精确 operation 回调，以及只重试投递的恢复 |
 | 切换门槛 | 安装态 provider/host 旅程经得住重连、重复事件、取消和投递不可用 | 固定版本，跑实际入口和回读；验收后才退役旧 bridge，每个 App 保持唯一 consumer，不复制凭据或 session |
+
+**请求发布与返回准备（S1/S3、A8/A9/A24）：** Inbox 条目可见前，先持久化并回读
+可信原对话返回路由；路由写入或回读失败不能暴露工作。只有路由而没有条目时，
+原请求可安全重试。Manager 和 peer 入口共用既有 TypeScript 请求 owner 判断原始
+内容和重放。升级产生的新接收说明不改变请求身份，必须保留已存说明；peer 发布
+中断后，用原操作中的说明补齐缺失条目。来源、语义 brief、接收方、Goal 实例或
+已选路由改变仍冲突。适配器保留原授权、锁、返回准备及逐字节存储回读，不新增
+请求库、修订互斥或执行授权。验证实际入口、即时接收、发布中断和重启后的原对话
+返回；这些证据不建立 worker 选择、实际执行或完整 A24 资格。
 
 ## 11. 规范性里程碑
 

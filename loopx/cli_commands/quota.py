@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from .quota_capture import bind_capture_selection_transport, capture_decision, prepare_decision_capture
+from .quota_capture import bind_capture_selection_transport, capture_decision, handoff_decision, prepare_decision_capture
 from ..usage_goal import observe_quota_result
 
 from ..capabilities.explore.composition_frontier import (
@@ -34,6 +34,7 @@ from ..control_plane.quota.error_codes import (
     CloseoutQueryUnavailableError,
     HeartbeatReceiptIdentityConflictError,
     QuotaCommandValidationError,
+    QuotaDecisionTransportError,
 )
 from ..control_plane.quota.heartbeat_receipt import (
     attach_uncommitted_heartbeat_receipt,
@@ -91,6 +92,7 @@ from .quota_context import (
 )
 from .quota_failure_report import (
     QUOTA_EVENT_KINDS,
+    quota_decision_transport_failure_payload,
     quota_failure_payload,
     quota_validation_failure_payload,
     should_log_quota,
@@ -195,6 +197,7 @@ def _record_automatic_heartbeat_stall(
     runtime_root_arg: str | None,
     context: QuotaCommandContext,
     interaction_projection_hooks: tuple[InteractionProjectionHookRegistration, ...],
+    turn_start_hook_dispatch: Mapping[str, object] | None,
     action_selection: RequestedQuotaActionSelection,
     cache_metadata: object,
     goal_ref: Mapping[str, object] | None,
@@ -270,6 +273,7 @@ def _record_automatic_heartbeat_stall(
         ),
         turn_instance_id=turn_id,
         interaction_projection_hooks=interaction_projection_hooks,
+        turn_start_hook_dispatch=turn_start_hook_dispatch,
         goal_ref=goal_ref,
     )
     rebuilt["heartbeat_stall_writeback"] = {
@@ -457,7 +461,19 @@ def _emit_quota_result(
             started_at=usage_quota_started,
         )
     bind_capture_selection_transport(payload, args)
-    capture_decision(capture_directory, payload)
+    try:
+        capture_decision(capture_directory, payload)
+        if payload.get("ok") is True:
+            handoff_decision(capture_directory, getattr(args, "decision_handoff_socket", None))
+    except QuotaDecisionTransportError as exc:
+        # The guard already ran. Report that typed fact with the durable receipt
+        # and saved decision, never a new collection failure that could replace
+        # the capture (an inline reentry runs inside the caller's guard).
+        failure = quota_decision_transport_failure_payload(
+            args, payload, exc, capture_directory=capture_directory,
+        )
+        print_payload(failure, args.format, _quota_renderer(args))
+        return 1
     payload = _project_quota_cli_payload(
         payload, args, detail_sections,
         context.scheduler_context if context is not None else None,
@@ -502,6 +518,7 @@ def handle_quota_command(
         if capture_directory is None and (
             getattr(args, "decision_output_dir", None) is not None
             or getattr(args, "decision_output_root", None) is not None
+            or getattr(args, "decision_handoff_socket", None) is not None
         ):
             validate_quota_command_context_request(args)
             capture_directory = prepare_decision_capture(args)
@@ -652,6 +669,7 @@ def handle_quota_command(
                         runtime_root_arg=runtime_root_arg,
                         context=context,
                         interaction_projection_hooks=interaction_projection_hooks,
+                        turn_start_hook_dispatch=turn_start_hook_dispatch,
                         action_selection=action_selection,
                         cache_metadata=cache_metadata,
                         goal_ref=goal_ref,

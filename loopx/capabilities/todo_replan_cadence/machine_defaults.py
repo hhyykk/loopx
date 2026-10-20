@@ -9,6 +9,7 @@ from pathlib import Path
 from ...control_plane.goals.goal_vision_policy import (
     DEFAULT_EFFECTIVE_TURN_REPLAN_THRESHOLD,
     normalize_completed_todo_replan_threshold,
+    normalize_effective_turn_replan_threshold,
 )
 from ..machine_configuration.contract import (
     MACHINE_CONFIGURATION_SCHEMA,
@@ -26,6 +27,7 @@ class ReplanCadenceUnit(str, Enum):
 
 
 TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V1 = "todo_replan_cadence_machine_defaults_v1"
+TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V2 = "todo_replan_cadence_machine_defaults_v2"
 
 
 def normalize_replan_cadence_configuration(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -34,7 +36,7 @@ def normalize_replan_cadence_configuration(raw: Mapping[str, Any]) -> dict[str, 
             "count_unit": ReplanCadenceUnit.COMPLETED_TODOS.value,
             "count": normalize_completed_todo_replan_threshold(raw["completed_todos"]),
         }
-    if set(raw) != {"count_unit", "count"}:
+    if not {"count_unit", "count"} <= set(raw) or set(raw) - {"count_unit", "count", "stride_strategy", "planning_horizon_goal"}:
         raise ValueError("review cadence requires count_unit and count")
     try:
         unit = ReplanCadenceUnit(raw["count_unit"])
@@ -45,9 +47,17 @@ def normalize_replan_cadence_configuration(raw: Mapping[str, Any]) -> dict[str, 
     count = raw["count"]
     if unit is ReplanCadenceUnit.COMPLETED_TODOS:
         count = normalize_completed_todo_replan_threshold(count)
-    elif type(count) is not int or not 1 <= count <= 5:
-        raise ValueError("effective Turn count must be an integer from 1 to 5")
-    return {"count_unit": unit.value, "count": count}
+    else:
+        count = normalize_effective_turn_replan_threshold(count)
+    result = {"count_unit": unit.value, "count": count}
+    if "stride_strategy" in raw:
+        from ...control_plane.work_items.stride_policy_codec import normalize_stride_strategy
+        result["stride_strategy"] = normalize_stride_strategy(raw["stride_strategy"])
+    if "planning_horizon_goal" in raw:
+        if not isinstance(raw["planning_horizon_goal"], bool):
+            raise ValueError("planning_horizon_goal must be a boolean")
+        result["planning_horizon_goal"] = raw["planning_horizon_goal"]
+    return result
 
 
 def normalize_todo_replan_cadence_machine_defaults(
@@ -63,10 +73,15 @@ def normalize_todo_replan_cadence_machine_defaults(
                 raw.get("completed_todos")
             ),
         }
-    if version != TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V1:
-        raise ValueError("todo_replan_cadence must use a supported v0 or v1 schema")
-    if set(raw) != {"schema_version", "count_unit", "count"}:
-        raise ValueError("v1 review cadence requires count_unit and count")
+    if version not in (TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V1, TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V2):
+        raise ValueError("todo_replan_cadence must use a supported v0, v1 or v2 schema")
+    expected = {"schema_version", "count_unit", "count"}
+    if version == TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V2:
+        expected.add("stride_strategy")
+        if "planning_horizon_goal" in raw:
+            expected.add("planning_horizon_goal")
+    if set(raw) != expected:
+        raise ValueError("review configuration fields do not match its schema version")
     return {
         "schema_version": version,
         **normalize_replan_cadence_configuration(
@@ -99,21 +114,24 @@ def todo_replan_cadence_machine_configuration_namespace() -> (
             {
                 TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_SCHEMA,
                 TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V1,
+                TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V2,
             }
         ),
         normalize=normalize_todo_replan_cadence_machine_defaults,
         project_public=lambda value: dict(value),
         apply_public_update=lambda _current, update: dict(update),
-        title="Goal review cadence",
+        title="Goal review and stride",
         description=(
             "Live review threshold for Goals without an explicit cadence override. "
-            "Defaults to five settled work Turns; completed Todos remain an explicit option. "
+            "Defaults to six settled work Turns; completed Todos remain an explicit option. "
+            "The optional versioned stride strategy is disabled by default; enabled fresh Vision reviews require a bounded structured proposal. "
             "It does not create "
             "turns, spend quota, or grant authority."
         ),
         default_configuration={
-            "schema_version": TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V1,
+            "schema_version": TODO_REPLAN_CADENCE_MACHINE_DEFAULTS_V2,
             **default_replan_cadence_configuration(),
+            "stride_strategy": "off",
         },
     )
 
@@ -163,6 +181,10 @@ def apply_todo_replan_cadence_machine_default(
         else "replan_after_completed_todos"
     )
     profile[field] = cadence["count"]
+    if "stride_strategy" not in profile and cadence.get("stride_strategy", "off") != "off":
+        profile["stride_strategy"] = cadence["stride_strategy"]
+    if "planning_horizon_goal" not in profile and "planning_horizon_goal" in cadence:
+        profile["planning_horizon_goal"] = cadence["planning_horizon_goal"]
     projected["execution_profile"] = profile
     return projected
 

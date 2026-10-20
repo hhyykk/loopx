@@ -2,6 +2,13 @@
 
 状态：受支持的 optional capability；harness 执行契约默认关闭。
 
+普通结果写回可附带可选 `execution_observation`（`explore_execution_observation_v0`）：
+候选 SHA-256、输入版本、计划/实际方法标识、改向原因、实测耗时/上限、搜索次数、
+结束原因与证据引用。未测量项显式为 null；版本和引用必须与所属 finding 一致。
+已释放结果的 `result_ref` 必须有匹配的 `result_candidate_sha256`。该记录是来源证据，
+不认证执行真实性或收益；finding、replan 和既有研究历程详情保留相同信息，缺省仍兼容
+旧事件。参见[本地探针生产路径](../../../benchmark/runtime/RESEARCH_LOOP.md)。
+
 ## 概览
 
 LoopX Explore 是面向长程探索目标（软件研究、安全攻击面测绘、领域调研）的受支持、默认关闭的可选能力。它把“到处看看”变成有界、可观测、有门控的流程，包含三根支柱：
@@ -110,6 +117,37 @@ loopx explore graph \
 `--explore-result-json <result.json>`。捕获可复用证据是可选行为，不是结算义务；
 普通工作无需附件，off 模式不增加附件提示或证据要求。
 
+在实质实验结论或路线变化时，在**同一次结果写回**里维护原问题，不另开历史整理轮次。
+复用稳定 `node_id` 与逐字一致的 question/applicability；完整附件和 path-delta 附件均可加：
+
+```json
+{
+  "question_update": {"status": "resolved"},
+  "relations": [{
+    "to_node": "uniform-estimate",
+    "edge_type": "depends_on",
+    "summary": "迁移该结果需要已单独建立的一致估计。"
+  }]
+}
+```
+
+这只是已填附件的可选片段。有限问题的答案为失败时，也可 `resolved`，同时保留
+finding 的 `refuted`。明确停止路线才 `dead_end`；未决工作保留 `open/exploring`。
+`blocked` 必须在 question_update 中说明 `blocked_reason`。答案、适用限制与下一判别
+沿用现有 interpretation/path_delta；finding 标签与分数不自动决定问题状态。
+
+既有问题仅其记录 owner 可通过此入口维护；原题目、范围、parent、tags、证据与全部
+findings 保留。最多四条关系从当前问题指向本 Goal 已有节点，复用原关系类型；拒绝
+自连、重复、悬空及 depends_on/subtopic_of 循环。先后发生不证明依赖或收益，不修改其他节点。
+问题、finding 与关系由原日志锁一次追加；并发图漂移会拒绝本批并要求重试。
+Todo 关联保留既有可恢复边界与 claim/lease 证明；恢复旧批次只补缺失关联，不覆盖后来的问题状态。
+
+省略两字段保持原行为：新问题为 open，后续 finding 不改变状态。新证据需要时显式重开；
+旧 open 事件重放不能重开。下轮 turn-context 在完整作用域 finding 旁显示当前
+`question_status`、阻塞原因与最多三条关联；省略数量、过长手工关系摘要的截断会披露，
+状态/关系变化使旧分页修订失效。原 graph/presentation 继续消费相同持久节点/边形状，
+不新增远端 sink 写入，也不要求普通工作做整理。
+
 对于 **`hard_lease` 下仍开放的 Todo**，让任务租约保持有效，直到
 `refresh-state` 与图/Todo 关联交付返回 `explore_result_delivery.ok=true` 后再释放。
 提前释放会让附件预检在主写回提交前拒绝；重试前重新进入正常的
@@ -122,7 +160,13 @@ loopx explore graph \
 `explore_result_delivery.retryable=true` 为准，重放**同一条** refresh 命令完成交付，
 不要通过更改附件重写原 Turn。用 `loopx explore turn-context --goal-id <id>
 --agent-id <agent>` 与 `loopx explore summary --goal-id <id>` 读回；读到证据不证明
-模型已经采纳。完整附件与作用域规则见[英文契约](README.md#results-from-ordinary-work-writeback)。
+模型已经采纳。Todo 持久关联不再受八条上限约束，增量写入与精确读取保留全部
+有效且去重的节点 ID。每轮紧凑视图对每个分支只展示最多八条请求/未知 ID，
+并给出明确省略数；`plan_command` 现在调用 `todo-branch-plan` 展开同一 Todo
+审计，不再跳到不同的 worker 分组计划。带版本的结果分页
+可读取全部作用域结论。展示预算不删除关联、不漏算负面证据风险，也不阻塞
+合法写回。变化只涉及启用后的证据捕获及显式 Todo 关联编辑；普通工作与
+能力关闭时的 hook 行为保持不变。完整附件与作用域规则见[英文契约](README.md#results-from-ordinary-work-writeback)。
 
 ## 可选 Todo 分支规划
 

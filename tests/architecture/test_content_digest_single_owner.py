@@ -158,8 +158,10 @@ CONSUMER_MODULES = (
     "loopx.capabilities.benchmark_toolkit.behavior_finding",
     "loopx.capabilities.benchmark_toolkit.continuation",
     "loopx.capabilities.benchmark_toolkit.factorial_contrast",
+    "loopx.capabilities.benchmark_toolkit.integrity",
     "loopx.capabilities.benchmark_toolkit.runtime_continuity",
     "loopx.capabilities.benchmark_toolkit.study_projection",
+    "loopx.capabilities.benchmark_toolkit.trajectory_assessment_store",
     "loopx.capabilities.content_ops.item_lifecycle",
     "loopx.capabilities.deep_research.runtime",
     "loopx.capabilities.issue_fix.outcome_projection",
@@ -181,8 +183,9 @@ CONSUMER_MODULES = (
     "loopx.control_plane.collaboration.inbox",
     "loopx.control_plane.collaboration.links",
     "loopx.control_plane.collaboration.peers",
+    "loopx.control_plane.collaboration.request_control_source",
     "loopx.control_plane.collaboration.result_files",
-    "loopx.control_plane.coordination.local_authority_shadow_outbox",
+    "loopx.control_plane.coordination.local_authority_shadow_history",
     "loopx.control_plane.coordination.shadow_management",
     "loopx.control_plane.digest_envelope",
     "loopx.control_plane.effect_runtime",
@@ -190,6 +193,7 @@ CONSUMER_MODULES = (
     "loopx.control_plane.goals.deletion_service",
     "loopx.control_plane.goals.goal_amendment_proposal",
     "loopx.control_plane.projects.registry_codec",
+    "loopx.control_plane.status.goal_source",
     "loopx.control_plane.testing.cli_output_semantics",
     "loopx.control_plane.testing.release_commit_qualification",
     "loopx.control_plane.todos.completion_result",
@@ -197,19 +201,34 @@ CONSUMER_MODULES = (
     "loopx.control_plane.todos.completion_validation",
     "loopx.control_plane.todos.completion_validation_store",
     "loopx.control_plane.todos.machine_section_projection",
+    "loopx.control_plane.turn_driver.codex_sessions",
+    "loopx.control_plane.turn_driver.operation_requests",
     "loopx.control_plane.work_items.governed_transition_proposal",
     "loopx.control_plane.work_items.progress_review_policy",
-    "loopx.control_plane.work_items.task_lease",
     "loopx.domain_packs.issue_fix",
     "loopx.extensions.lark.document_comment_provider",
     "loopx.extensions.openviking_semantic_preference.history_export",
     "loopx.extensions.presentation",
+    "loopx.hosts.checkpoint_retention",
+    "loopx.hosts.codex_checkpoint",
     "loopx.presentation.chat_bundle",
+    "loopx.presentation.static_site",
 )
 
-# A consumer that hands `re` a pattern this file cannot fold. Pinned empty: folding reads
-# every construction in every consumer today, so adding an entry has to be argued.
-UNREADABLE_CONSUMER_CONSTRUCTIONS: dict[str, str] = {}
+# A consumer that hands `re` a pattern this file cannot fold. Folding reads
+# every construction except the declared readers, each fenced below.
+UNREADABLE_CONSUMER_CONSTRUCTIONS: dict[str, str] = {
+    "loopx.capabilities.benchmark_toolkit.integrity": (
+        "_marker_present matches an escaped caller-supplied filename/token inside "
+        "command text with explicit basename boundaries; it does not validate a "
+        "whole-value digest. Its sole dynamic regex is fenced to that reader."
+    ),
+    "loopx.control_plane.testing.cli_output_semantics": (
+        "authoring_input_observations matches an escaped, local literal instruction "
+        "inside a complete Markdown Todo line, not a whole-value digest. A focused "
+        "fence pins its sole unreadable call, surrounding grammar and literal input."
+    ),
+}
 
 # Reading `.pattern` off the owner and recompiling it states the decision a second time
 # while showing the scan no shape at all. Pinned empty; widening it is a review event.
@@ -551,7 +570,7 @@ def _whole_value_shape(text: Any) -> str | None:
     return None
 
 
-def _owner_import_map(tree: ast.AST) -> dict[str, str | None]:
+def _owner_import_map(nodes: tuple[ast.AST, ...]) -> dict[str, str | None]:
     """local name -> canonical export name, over imports of the owner module only.
 
     `None` marks a binding this file cannot attribute: a wildcard import, the module object
@@ -559,7 +578,7 @@ def _owner_import_map(tree: ast.AST) -> dict[str, str | None]:
     """
 
     imported: dict[str, str | None] = {}
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if module != "content_digest" and not module.endswith(
@@ -578,7 +597,7 @@ def _owner_import_map(tree: ast.AST) -> dict[str, str | None]:
     return imported
 
 
-def _loaded_names(tree: ast.AST) -> set[str]:
+def _loaded_names(nodes: tuple[ast.AST, ...]) -> set[str]:
     """Names this module reads, with the import clauses themselves excluded.
 
     This is what catches a consumer that keeps `BARE_SHA256_PATTERN` imported while
@@ -587,7 +606,7 @@ def _loaded_names(tree: ast.AST) -> set[str]:
     """
 
     loaded: set[str] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
@@ -601,11 +620,11 @@ def _loaded_names(tree: ast.AST) -> set[str]:
     return loaded
 
 
-def _shape_statements(tree: ast.AST, root: _Scope) -> list[dict[str, Any]]:
+def _shape_statements(nodes: tuple[ast.AST, ...], root: _Scope) -> list[dict[str, Any]]:
     """Every whole-value digest shape this module states, by value, not by spelling."""
 
     found: dict[tuple[int, str], dict[str, Any]] = {}
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             text = _fold_text(node, root)
             shape = _whole_value_shape(text)
@@ -630,12 +649,12 @@ def _shape_statements(tree: ast.AST, root: _Scope) -> list[dict[str, Any]]:
     return sorted(found.values(), key=lambda site: (site["line"], str(site["value"])))
 
 
-def _re_names_bound(tree: ast.AST) -> tuple[set[str], set[str]]:
+def _re_names_bound(nodes: tuple[ast.AST, ...]) -> tuple[set[str], set[str]]:
     """(names bound to the `re` module, names bound to one of its pattern functions)."""
 
     modules: set[str] = set()
     functions: set[str] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "re" or alias.name.endswith(".re"):
@@ -648,7 +667,9 @@ def _re_names_bound(tree: ast.AST) -> tuple[set[str], set[str]]:
     return modules, functions
 
 
-def _regex_constructions(tree: ast.AST, root: _Scope) -> list[dict[str, Any]]:
+def _regex_constructions(
+    nodes: tuple[ast.AST, ...], root: _Scope
+) -> list[dict[str, Any]]:
     """Every regex construction, and the value it is handed when that can be read.
 
     Constructions only: `re.<name>(...)`, a bare `<name>(...)` bound by `from re import
@@ -657,9 +678,9 @@ def _regex_constructions(tree: ast.AST, root: _Scope) -> list[dict[str, Any]]:
     those would sweep in every field read in the package.
     """
 
-    modules, functions = _re_names_bound(tree)
+    modules, functions = _re_names_bound(nodes)
     found: list[dict[str, Any]] = []
-    for node in ast.walk(tree):
+    for node in nodes:
         if not isinstance(node, ast.Call) or not node.args:
             continue
         callable_node = node.func
@@ -701,12 +722,12 @@ def _regex_constructions(tree: ast.AST, root: _Scope) -> list[dict[str, Any]]:
     return found
 
 
-def _owner_text_reads(tree: ast.AST) -> list[int]:
+def _owner_text_reads(nodes: tuple[ast.AST, ...]) -> list[int]:
     """Lines reading `.pattern` / `.source` / `.flags` off a name bound to the owner."""
 
-    imported = _owner_import_map(tree)
+    imported = _owner_import_map(nodes)
     lines = []
-    for node in ast.walk(tree):
+    for node in nodes:
         if (
             isinstance(node, ast.Attribute)
             and node.attr in {"pattern", "source", "flags"}
@@ -719,16 +740,26 @@ def _owner_text_reads(tree: ast.AST) -> list[int]:
 
 def _analyse(source: str, name: str = "<module>") -> dict[str, Any]:
     tree = ast.parse(source, filename=name)
+    # Reuse the same breadth-first order within this module only. Keep repeated
+    # node identities and release the snapshot with the temporary syntax tree.
+    nodes = tuple(ast.walk(tree))
     root = _collect_scopes(tree)
-    return {
-        "tree": tree,
-        "root": root,
-        "statements": _shape_statements(tree, root),
-        "constructions": _regex_constructions(tree, root),
-        "owner_imports": _owner_import_map(tree),
-        "owner_text_reads": _owner_text_reads(tree),
-        "loaded": _loaded_names(tree),
-    }
+    try:
+        return {
+            "statements": _shape_statements(nodes, root),
+            "constructions": _regex_constructions(nodes, root),
+            "owner_imports": _owner_import_map(nodes),
+            "owner_text_reads": _owner_text_reads(nodes),
+            "loaded": _loaded_names(nodes),
+        }
+    finally:
+        # Readers are finished. Break AST -> scope -> binding -> AST cycles;
+        # retaining them makes later collections traverse whole source trees.
+        for node in nodes:
+            scope = getattr(node, _SCOPE_ATTRIBUTE, None)
+            if scope is not None:
+                scope.names.clear()
+                delattr(node, _SCOPE_ATTRIBUTE)
 
 
 _REPO_SCAN: list[dict[str, Any]] | None = None
@@ -737,8 +768,8 @@ _REPO_SCAN: list[dict[str, Any]] | None = None
 def _repo_scan() -> list[dict[str, Any]]:
     """One pass over every module under `loopx/`, shared by all four layers.
 
-    1,167 modules parse and analyse in about four seconds, so this runs once per test
-    session rather than once per layer, and no layer is given a different view of the tree.
+    Cache the consumed read model once per session, not the temporary syntax trees,
+    scopes or raw source. Every layer still sees the same complete analysed snapshot.
     """
 
     global _REPO_SCAN
@@ -752,7 +783,6 @@ def _repo_scan() -> list[dict[str, Any]]:
             source = path.read_text(encoding="utf-8")
             entry = _analyse(source, str(path))
             entry["path"] = path
-            entry["source"] = source
             entry["relative"] = f"loopx/{path.relative_to(PACKAGE_ROOT).as_posix()}"
             parts = list(path.relative_to(PACKAGE_ROOT.parent).parts)
             parts[-1] = parts[-1][: -len(".py")]
@@ -1207,6 +1237,35 @@ def test_every_declared_unreadable_consumer_site_is_still_there() -> None:
         assert unreadable, f"{dotted} has no unreadable construction left to declare"
 
 
+def test_cli_output_dynamic_prose_pattern_is_fenced_to_its_literal_question() -> None:
+    dotted = "loopx.control_plane.testing.cli_output_semantics"
+    module = importlib.import_module(dotted)
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    reader = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "authoring_input_observations")
+    calls = [node for node in ast.walk(reader) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+             and (node.func.value.id, node.func.attr) == ("re", "search")]
+    assert len(calls) == 1
+    unreadable = [site for site in _module_of(dotted)["constructions"] if not site["readable"]]
+    assert [site["line"] for site in unreadable] == [calls[0].lineno]
+    # Fixed surrounding Markdown grammar makes this a full prose observation,
+    # never a whole-value digest validator. The escaped middle must stay local
+    # literal text, not owner.pattern, a parameter or a provider's regex.
+    pattern = calls[0].args[0]
+    assert isinstance(pattern, ast.BinOp) and isinstance(pattern.op, ast.Add)
+    assert isinstance(pattern.right, ast.Constant) and pattern.right.value == "$"
+    assert isinstance(pattern.left, ast.BinOp) and isinstance(pattern.left.op, ast.Add)
+    assert isinstance(pattern.left.left, ast.Constant)
+    assert pattern.left.left.value == r"^3\. Todos: [^\n]*"
+    escaped = pattern.left.right
+    assert ast.unparse(escaped) == "re.escape(first_delivery_guidance)"
+    literal = next(node.value for node in reader.body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "first_delivery_guidance"
+                           for target in node.targets))
+    assert isinstance(literal, ast.Constant) and isinstance(literal.value, str) and literal.value
+
+
 # --- layer 4: behaviour, per spelling and per surface -------------------------------------
 
 
@@ -1538,6 +1597,37 @@ def test_inbox_linked_references_keep_their_two_shapes(tmp_path: Path) -> None:
     )
 
 
+def test_turn_agenda_addresses_keep_the_bare_digest_contract(tmp_path: Path) -> None:
+    from loopx.control_plane.collaboration.inbox import ENTRY_SCHEMA, _hash, read_inbox_transaction
+
+    target = {"goal_id": "digest-fixture", "agent_id": "worker"}
+    folder = tmp_path / ".local" / "manager-context" / "entries" / _hash(target)
+    folder.mkdir(parents=True)
+    rejected = (HEX64.upper(), HEX64[:-1], HEX64 + "0", "g" * 64,
+                "sha256-" + HEX64, HEX64 + ".stop")
+    # Keep each spelling separate on case-insensitive filesystems: an uppercase
+    # negative must not overwrite a valid lowercase request's record bytes.
+    for stem, accepted in [*((item, True) for item in BARE_ACCEPTS),
+                           *((item, False) for item in rejected)]:
+        for path in folder.iterdir():
+            path.unlink()
+        (folder / f"{stem}.json").write_text(json.dumps({
+            "schema_version": ENTRY_SCHEMA, **target, "request_id": stem,
+            "source_id": "synthetic-source", "message": "Inspect the fixture.",
+        }), encoding="utf-8")
+        (folder / f"{HEX64}.txt").write_text("{}", encoding="utf-8")
+        before = {path.name: path.read_bytes() for path in folder.iterdir()}
+        result = read_inbox_transaction(tmp_path, {
+            "operation": "turn_context", **target,
+            "read_command": "loopx manager-inbox read",
+        })["unfinished_delegations"]
+        assert {item["request_id"] for item in result["items"]} == ({stem} if accepted else set())
+        assert result["incoming_count"] == int(accepted)
+        assert result["scan_complete"] is True
+        assert result["unavailable_count"] == 0
+        assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
+
+
 def test_outcome_projection_fingerprint_requires_the_envelope() -> None:
     from loopx.capabilities.issue_fix import outcome_projection
 
@@ -1569,3 +1659,49 @@ def test_chat_bundle_source_digest_uses_the_owner_bare_shape() -> None:
     from loopx.presentation import chat_bundle
 
     assert chat_bundle.BARE_SHA256_PATTERN is BARE_SHA256_PATTERN
+
+
+@pytest.mark.parametrize("digest", (*BARE_ACCEPTS, *BARE_REJECTS))
+def test_benchmark_task_authorization_keeps_the_bare_digest_contract(
+    digest: str,
+) -> None:
+    from loopx.capabilities.benchmark_toolkit.integrity import (
+        BENCHMARK_TASK_ENVIRONMENT_ACCESS_SCHEMA_VERSION,
+        _validated_task_environment_access,
+    )
+
+    access = {
+        "schema_version": BENCHMARK_TASK_ENVIRONMENT_ACCESS_SCHEMA_VERSION,
+        "authorization_id": "digest-contract-fixture",
+        "authorization_sha256": digest,
+        "authority": "benchmark_task",
+        "purpose": "task_submission",
+        "namespace": "TASKCAP_",
+        "variable_names": ["TASKCAP_TOKEN"],
+    }
+    if digest in BARE_ACCEPTS:
+        normalized = _validated_task_environment_access(access)
+        assert normalized is not None
+        assert normalized["authorization_sha256"] == digest
+    else:
+        with pytest.raises(
+            ValueError,
+            match="benchmark_task_environment_access_authorization_sha256_invalid",
+        ):
+            _validated_task_environment_access(access)
+
+
+def test_benchmark_dynamic_regex_exemption_stays_in_the_marker_reader() -> None:
+    analysis = _module_of("loopx.capabilities.benchmark_toolkit.integrity")
+    unreadable = [item for item in analysis["constructions"] if not item["readable"]]
+    source = (PACKAGE_ROOT / "capabilities/benchmark_toolkit/integrity.py").read_text(
+        encoding="utf-8"
+    )
+    marker_reader = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_marker_present"
+    )
+    assert len(unreadable) == 1, "the marker exception must not hide another matcher"
+    assert marker_reader.lineno <= unreadable[0]["line"] <= marker_reader.end_lineno
+    assert unreadable[0]["construction"] == "search", "not a whole-value reader"

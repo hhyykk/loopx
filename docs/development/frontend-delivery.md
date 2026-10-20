@@ -6,6 +6,150 @@ validation only; resolving a source merge followed by a build produces one
 coherent HTML/JavaScript/CSS set. Do not concatenate competing HTML entrypoints or
 asset-retention manifests when resolving an older PR.
 
+For owner-authorized reads of existing runtimes, shared access lives in
+`loopx.control_plane.status.goal_source`. Native status and Explore owners retain
+their semantics; this Python IO provider adds neither decisions nor lifecycle
+authority. Connection (`local` or a configured `ssh` alias) is independent of
+environment (`host` or a container pinned by its full physical id), so a remote
+container uses the same reader. It never starts a container, tunnel or worker.
+
+The thin presentation adapter
+`python -m loopx.presentation.runtime_workspace --sources <manifest>` serves the
+packaged Goal workspace. The Agent prepares a private JSON array of sources:
+
+```json
+[
+  {
+    "id": "research", "label": "Research",
+    "connection": {"kind": "local"},
+    "environment": {"kind": "host"},
+    "scope": {"all_registered": true},
+    "registry": "/runtime/registry.json", "runtime_root": "/runtime/state",
+    "cli": "/runtime/bin/loopx", "python": "/runtime/bin/python",
+    "path": "/runtime/bin:/usr/bin:/bin"
+  }
+]
+```
+
+Use `connection: {"kind": "ssh", "host_alias": "configured-alias"}` for SSH;
+the alias must remain in the existing SSH catalog. Use
+`environment: {"kind": "container", "container_id": "<full 64-character id>"}`
+for a container. `scope: {"goal_id": "original-goal"}` restricts the source to
+one Goal; `all_registered` allows the native registered Goal list without copying
+its registry. Source paths are absolute in the selected environment. The reader
+requires this explicit connection/environment/scope model; there is no alternate
+manifest format or implicit scope conversion.
+
+Startup JSON returns working workspace URLs, `access_url` and a source namespace.
+The existing source selector offers the prepared readers. Keep these manifests
+and actual source captures private. Before staging or updating the PR,
+compare every source, validation script and visual-evidence path with the
+selected Todo's declared write scopes; place presentation evidence inside the
+existing authorized surface rather than assuming all docs/examples are covered.
+Build Chat first or supply
+`--assets-dir`; stop the adapter to remove its temporary readers.
+
+App, CLI and Agents can use the same loopback read API: `GET /api/goal-source`
+describes identity, scope and supported operations; `/goals`, `/status` and
+`/history` below it require `source_namespace`, with optional `goal_id` and history
+`cursor`. Status is wrapped as `status`; Goal lists and history use `items`.
+The CLI client shares this transport:
+
+```sh
+python -m loopx.control_plane.status.goal_source goals --endpoint <prepared-status-url>
+python -m loopx.control_plane.status.goal_source history --endpoint <prepared-status-url> --goal-id <original-goal>
+```
+
+Retain the returned pinned status URL/namespace on subsequent reads, including
+history cursors. A stale identity returns an error even if a new reader reuses
+the port. The App binds an initial relative `/status.json` entry to its prepared
+identity once, preserving ordinary local/SSH behavior outside these readers.
+Its existing status/history aliases use this same reader, not separate IO.
+
+These are read transports, not connected execution Goals or a second registry.
+Native status and complete validated Explore history stay scoped to the physical
+source, including identical Goal ids in different containers. Status has a
+two-second per-reader cache; history uses bounded server-local snapshots. A failed
+read or removed SSH alias invalidates saved status/pages. Unavailable sources
+fail visibly without replacement; refreshing retries.
+The main view keeps the selected source's failure and retry visible on narrow
+screens, with technical detail collapsed. Other sources' cached Goal contents
+are withheld on failure; retry targets the failed selection, not the last
+successful reader.
+Switching prepared readers clears source-local question and analysis selections;
+Back restores the previous reader's URL and its own selection.
+By default all mutation endpoints are denied. A read-only source does not imply an
+analysis pack, model execution, adoption or validated benefit; analysis remains
+unavailable until its existing owner binds the appropriate source pack and the
+operator explicitly enables [local analysis](../reference/trajectory-assessment.md#existing-isolated-goal-sources).
+That separate local provider uses the original source Goal id and a
+source-namespace-isolated store; it creates no Goal mirror or source mutations.
+The adapter uses one local Python process with one HTTP listener/thread per
+prepared source. Cache misses invoke the source's native status CLI or bounded
+log read; no lower CPU, process or IO cost is implied. Local host/container
+readback and SSH command composition are separate validation boundaries; a
+composed command test does not prove a live remote host/container journey.
+
+### Native App source Goals
+
+A prepared reader or a separately served workspace is an access adapter. It
+does not complete a request to use the installed LoopX App. For that request,
+the App's normal Chat service must discover the original Goals through its
+persisted directory, keep them beneath the requested parent, and use the same
+origin for status, native Task/history reads and explicit analysis. A browser
+URL, local-storage source switch or empty local analysis Goal is not a substitute.
+Qualify the running installed App and service identities, parent-to-child
+navigation, original evidence, analysis readback, source failure and reopening.
+Keep backend, browser-renderer and native WebView evidence distinct.
+
+The registry's `goal_source_links` contains only owner-configured references:
+`parent_goal_id` plus the existing explicit source object above, scoped to one
+original Goal. It creates no execution Goal, state document, worker or copied
+registry entry. The TypeScript presentation owner validates the local parent
+and unambiguous original identity; the existing source reader performs IO.
+`POST /api/chat/goal-sources` admits that connection through the normal loopback
+owner boundary after verifying original membership; `GET` reads safe descriptors.
+The same POST removes a link when given `parent_goal_id`, `goal_id` and its
+current `source_namespace`; removal preserves the original Goal and local
+analysis artifacts and refuses a stale physical identity.
+An Agent prepares the connection within the owner's authority. Do not require
+the owner to discover runtime paths, write a manifest or copy a tunnel command.
+Links survive ordinary registry synchronization and App restart. Ambiguous Goal
+ids, unknown parents and source replacement are refused instead of borrowing
+another Goal's state. Native execution/configuration remains on the original
+runtime; the local App does not acquire those writes through a display link.
+
+Each linked Goal carries `source_access` in the workspace projection. Its
+original Goal id, tasks, explicit graph edges and native measurements remain
+intact; the local link owns only parent organization. Source identity pins
+history and analysis requests. First-layer reads invoke no model. Optional
+second-layer artifacts use the existing toolkit store beneath the local
+runtime's `goal-sources/<physical-namespace>` and remain bound to that original
+Goal. Every model start/retry revalidates original membership without the display
+cache. Source loss must stay local to the affected Goal and must not launch a
+model or strand the rest of the App. Native liveness, causal value and missing
+relations cannot be supplied by the local parent or an analysis result.
+
+Use the link's display label consistently after native status loads, while
+preserving the original Goal objective, id and Tasks. Two runs can have the
+same native title; loading their evidence must not erase their distinguishing
+labels. Read-only linked Goals offer no local stop, resume or delete control.
+An unavailable source has a source-specific error and an explicit retry,
+without repeating ordinary service-restart retries or affecting other Goals.
+
+When a disposable source has stopped, an owner-authorized retained runtime can
+remain the original historical source. Verify its original registry membership,
+canonical store identity and complete native history through the existing reader
+before replacing the lost connection. Read the retained registry/runtime in place;
+do not create or rename an execution Goal, restart a solver, or rewrite its state
+to make the display work. Label the link as historical, preserve the source bytes,
+and retain the old namespace's artifacts. Admit the replacement through the same
+source-link owner; its new physical namespace must invalidate old cursors and
+analysis selection. Re-register an existing evidence pack only after verifying
+its original run/window, hashes and literal excerpts. Neither recovery nor
+registration starts analysis or turns an old native measurement into a current
+or countable study result.
+
 ## Task-first delivery / 从用户任务开始
 
 Use the existing task/PR delivery brief, not a second checklist or approval form.
@@ -32,11 +176,25 @@ frontend-only decisions or a setting for a capability with no persistent policy.
 Carry the same task through these steps:
 
 1. **Compare the journey.** Write the current and proposed user steps in the
-   existing before/after evidence. Count required navigation, information the
-   user must repeat, questions, confirmations and recovery effort. Explain the
-   information, authority or unavoidable prerequisite supplied by each required
-   step; remove a step that supplies none. This is a comparison, not a universal
-   click limit. Keep necessary scoped consent and explicit effect confirmation;
+   existing before/after evidence, anchored to the original request rather than
+   a configuration task invented from the proposed implementation. Compare
+   no change and a smaller lawful route, including preparation the Agent can
+   already perform. Separate missing intent or owner-only authorization from
+   lookup, identifiers, formatting and other preparation. Count total navigation,
+   repeated information, questions, confirmations and recovery effort. Justifying
+   each control individually cannot establish that this whole human workflow is
+   necessary. Default to one required interaction from the original intent to a usable
+   result, or zero additional interactions when the intent and authority already
+   exist. Account for every required statement, choice or confirmation, including
+   preparation outside the UI; one final button does not make a multi-round task
+   one-round. Justify each additional round by a missing fact, consequential
+   choice or authority boundary, not feature value alone. Record navigation,
+   copying, waiting and recovery separately; voluntary refinement does not raise
+   the ordinary-path budget. These are design defaults, not a click-count gate.
+   Remove work the Agent can prepare under existing authority and
+   reuse prior scoped authorization. This is a comparison, not a universal click
+   limit or a ban on legitimate technical configuration. Keep necessary scoped
+   consent and explicit effect confirmation;
    make optional refinement optional. A complete conversational draft should not
    require a second form just to repeat the same facts.
 2. **Choose the owner and composition.** Reuse the existing typed state and
@@ -45,6 +203,10 @@ Carry the same task through these steps:
    individual cards. Navigation follows user purpose; clearly show the target
    and source of a setting. Do not expose storage scopes as competing pages or
    list controls that cannot apply to the selected target.
+   Inventory repeated scope/method/limitation copy across the whole view. Follow
+   [explanations on demand](design.md#explanations-on-demand): keep results and
+   consequential qualifiers visible, share optional contextual help by region,
+   and reuse existing provenance details instead of adding footnotes to each card.
 3. **Implement and challenge.** Use the smallest meaningful regression derived
    from the accepted outcome. Select realistic populated data and one negative
    or recovery path likely to falsify the claim: multiple owners, out-of-order
@@ -57,11 +219,16 @@ Carry the same task through these steps:
    back the result. Validate affected narrow/keyboard/language behavior. Pair
    browser fixtures with the real owning backend when they replace the rule
    being claimed. Use disposable synthetic state; do not alter active Goals.
+   For contextual help, verify hover-to-panel continuity, keyboard focus/Escape,
+   touch dismissal and narrow positioning. Confirm that opening help causes no
+   operation and that failures/unknowns remain legible with every help closed.
    Record source/build identity and fixture boundaries. Source preview, packaged
    browser, installed App and real model each prove different things.
 5. **Review the task before the diff narrative.** The review capability's
    `problem_context.outcome_impact.user_experience` references the same journey
-   and validation, then asks what remains wrong even if every test passes.
+   and validation. Independently check that the author's task matches the original
+   request and challenge the full human workload against the smaller lawful
+   route, then ask what remains wrong even if every test passes.
    Reused evidence needs its revision and unchanged assumptions. A material
    unsupported claim remains unproven. A necessary confirmation can be accepted
    with its authority basis; green CI cannot justify redundant confirmation.
@@ -74,8 +241,19 @@ Carry the same task through these steps:
 Public PR evidence should fit in the existing summary/validation: one short
 before/after journey, a screenshot or clip for the affected visual composition,
 and the state readback plus tested revision and limits. Keep private messages,
-local paths and raw run logs out. The existing public first-screen preview gate
-still applies; do not add user approvals for routine implementation decisions.
+local paths and raw run logs out. Put the first viewport directly in the PR
+description, including its source/build boundary and a preview link when
+available; evidence only in chat or a PR comment is insufficient. Follow
+[First-Screen Review Evidence](../../AGENTS.md#first-screen-review-evidence).
+Routine authorized refinements and new commits do not require another user
+confirmation; ask only for a missing consequential decision or an explicitly
+reserved presentation approval. Keep merge/install/release authority separate.
+
+For Goal workspace composition, render before and after on the synthetic
+showcase workspace (`LOOPX_PERSONAL_WORKSPACE_SCENARIO=goal-showcase node
+examples/personal-workspace-browser-smoke.mjs`) and answer the
+[craft review](design.md#craft-review) from those screenshots. Placeholder
+fixtures prove behavior; they are not a basis for judging composition.
 
 **Evaluation cadence:** ordinary work runs offline regressions and affected
 browser/backend checks. Paid model interpretation and review-decision probes
@@ -86,7 +264,9 @@ probe is not a pass. See [release readiness](../product/release-readiness.md).
 中文要点：先定义用户想完成的事，再比较最短合法路径；复用已有授权与状态归属，
 减少重填、重复确认和页面跳转。以真实构建页面、代表性数据和状态回读验收，区分
 模拟边界、打包验证和安装生效。评审先挑战交互成本与证据，再解释代码；平时不跑
-付费模型评测，不用测试数量或 PR 合并代替用户任务完成。
+付费模型评测，不用测试数量或 PR 合并代替用户任务完成。Goal 工作区的构图改动用
+`goal-showcase` 合成展示数据截取前后对比图，并按 design.md 的 Craft review 逐项
+回答；占位 fixture 只证明行为，不作为判断构图的依据。
 
 ## Source development and updates
 
@@ -124,13 +304,52 @@ can require a rebuild. Text inputs normalize CRLF so a CI-built bundle remains
 valid on Windows; delivered bytes are always hashed exactly. This is integrity
 and freshness metadata, not a signature or a replacement for release attestations.
 
+### Load boundaries
+
+The workspace route is what every visit opens, so it loads eagerly. Settings
+and its editors, the contributor projection page, the benchmark study page and
+the answer report page are dynamic imports: each is its own chunk fetched the
+first time it is shown, behind a visible loading status. Keep new secondary
+surfaces behind the same kind of boundary rather than adding them to the entry
+chunk, and keep a surface eager when a scenario pins the timing of its first
+read (team results must list exactly once when a configured team appears). The bundle manifest records every chunk,
+and the one-upgrade asset retention already covers an old tab importing a
+deferred chunk after a delivery.
+
+### Goal sidebar order
+
+Goal dragging and keyboard move controls save presentation order through
+`/api/chat/sidebar-goal-order` into the private runtime's
+`presentation/sidebar-goal-order-v1.json`. Local App, browser and CLI-launched
+Chat servers that share that runtime read the same preference after a port
+change, restart or runtime upgrade. Status sources retain separate orders;
+missing or stopped Goal ids remain in the saved list. This changes display
+order only, without changing Goal priority, lifecycle or execution.
+
+The existing TypeScript ordering functions remain the semantic owner. The
+Python presentation adapter validates and atomically stores the list under a
+file lock; it is not a capability configuration namespace. Existing same-origin
+browser preferences migrate only when the durable source has no value. An old
+origin's inaccessible browser storage cannot be recovered automatically. Read
+or save failure keeps the current page usable and displays unsaved feedback;
+another move retries. Reverting to an older runtime preserves the private file,
+although that runtime continues to use its browser-local preference.
+
+The packaged `navigation-sorting` browser scenario uses synthetic workspace
+records with the real HTTP preference owner. It checks pointer/keyboard moves,
+refresh, service restart on another port, delayed hydration, rapid moves,
+failure/retry and browser-cache migration. It does not certify native WebView
+crash recovery or an already-installed App's adoption of a proposed PR.
+
 ## PR qualification and releases
 
 PR CI builds and verifies a clean bundle once, then uploads
 `chat-bundle-<checkout SHA>`. Consumers download that one artifact, and
-`chat-bundle-browser` exercises its actual pages in a browser in parallel. The
-`checks` aggregate requires that browser lane, so `merge-gate` cannot pass on
-an artifact that failed browser qualification. Both frontend-only and
+`chat-bundle-browser` exercises its actual pages in a browser across three
+parallel shards of the scenario catalog (`LOOPX_PERSONAL_WORKSPACE_SHARD`), with
+the companion team, craft, upgrade and ZCode smokes spread over the shards. The
+`checks` aggregate requires every shard, so `merge-gate` cannot pass on an
+artifact that failed browser qualification. Both frontend-only and
 mixed/backend PRs pass through this producer. On pull requests the checkout SHA is GitHub's tested merge commit, which
 may differ from the branch head. Generated-file Git cleanliness is no longer a
 qualification gate. Browser, integrity and workflow gates remain required.

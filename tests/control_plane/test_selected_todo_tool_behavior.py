@@ -5,7 +5,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from loopx.control_plane.testing.doubao_model_behavior_actor import (
+    DOUBAO_2_1_PRO_MODEL,
+    DoubaoActorTransportError,
+)
 from loopx.control_plane.testing.model_tool_behavior import (
+    DoubaoExecToolClient,
     QUOTA_FIRST_TOOL_INSTRUCTION,
     scripted_exec_tool_response as _tool_response,
 )
@@ -15,7 +22,65 @@ from loopx.control_plane.testing.selected_todo_tool_behavior import (
     STALE_DONE_PRIMARY_TODO_ID,
     DoubaoSelectedTodoToolBehaviorActor,
     _build_fixture,
+    _classify_tool_command,
+    _execute_selected_read,
+    bounded_workspace_read_plan,
 )
+
+
+def test_serial_host_rejects_a_batch_before_any_command_is_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, Any]] = []
+
+    def transport(**kwargs: Any) -> Mapping[str, Any]:
+        requests.append(json.loads(kwargs["body"]))
+        response = _tool_response("first", "printf first")
+        second = _tool_response("second", "printf second")
+        response["choices"][0]["message"]["tool_calls"].extend(
+            second["choices"][0]["message"]["tool_calls"]
+        )
+        return response
+
+    def unexpected_classification(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("a rejected batch must not reach the shell host")
+
+    monkeypatch.setattr(
+        "loopx.control_plane.testing.selected_todo_tool_behavior._classify_tool_command",
+        unexpected_classification,
+    )
+    with pytest.raises(DoubaoActorTransportError) as error:
+        DoubaoSelectedTodoToolBehaviorActor(
+            api_key="test-only-placeholder", transport=transport,
+        ).qualify(
+            qualification_id="serial-tool-host-rejects-batch",
+            fixture_root=tmp_path / "actor",
+        )
+    assert error.value.error_code == "provider_invalid_tool_call"
+    assert len(requests) == 1
+    assert requests[0]["tools"][0]["function"]["parameters"]["required"] == ["cmd"]
+    assert "at most one tool call" in requests[0]["tools"][0]["function"]["description"]
+
+
+def test_specialized_tool_preserves_the_shared_host_and_argument_contract() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def transport(**kwargs: Any) -> Mapping[str, Any]:
+        requests.append(json.loads(kwargs["body"]))
+        return _tool_response("selected", "printf selected")
+
+    client = DoubaoExecToolClient(
+        api_key="test-only-placeholder", model=DOUBAO_2_1_PRO_MODEL,
+        timeout_seconds=1, transport=transport,
+    )
+    step = client.next_step([], tool_description="Inspect the current Goal vision.")
+    tool = requests[0]["tools"][0]["function"]
+    assert tool["name"] == "exec_command"
+    assert tool["parameters"]["additionalProperties"] is False
+    assert "at most one tool call" in tool["description"]
+    assert "Inspect the current Goal vision." in tool["description"]
+    assert step.tool_call is not None
+    assert step.tool_call.command == "printf selected"
 
 
 def test_real_tool_loop_executes_action_selected_by_real_quota(
@@ -591,15 +656,23 @@ def test_tool_loop_allows_bounded_state_and_fallback_discovery(
     ]
 
 
+@pytest.mark.parametrize("cat_options", ["", "-- "])
+@pytest.mark.parametrize("batch_read", [False, True])
 def test_tool_loop_treats_fixture_state_read_as_metadata(
     tmp_path: Path,
+    cat_options: str,
+    batch_read: bool,
 ) -> None:
     fixture = _build_fixture(tmp_path / "oracle")
     state_path = ".codex/goals/portfolio-goal/ACTIVE_GOAL_STATE.md"
     commands = [
         fixture.quota_guard_command.replace('"${LOOPX_TURN:?}"', "turn-001"),
-        f"sed -n 1,120p {state_path}",
-        f"cat fixture/selected-lane.json && head -n 40 {state_path}",
+        f"cat {cat_options}{state_path}" if cat_options else f"sed -n 1,120p {state_path}",
+        (
+            f"cat {cat_options}{state_path} fixture/selected-lane.json"
+            if batch_read
+            else f"cat {cat_options}fixture/selected-lane.json && head -n 40 {state_path}"
+        ),
     ]
     call_count = 0
 
@@ -623,6 +696,41 @@ def test_tool_loop_treats_fixture_state_read_as_metadata(
         "workspace_read",
         "selected_action",
     ]
+
+
+@pytest.mark.parametrize("command", [
+    "cat --",
+    "cat -- /etc/passwd",
+    "cat -- fixture/selected-lane.json /etc/passwd",
+    "cat -- ../outside.json",
+    "cat -- fixture/selected-lane.json ../outside.json",
+    "cat -- fixture/selected-lane.json > output.json",
+    "cat -n -- fixture/selected-lane.json",
+    "cat -- " + " ".join(["fixture/selected-lane.json"] * 9),
+    "false || cat -- fixture/selected-lane.json .loopx/registry.json",
+])
+def test_end_of_options_does_not_expand_bounded_read_authority(
+    tmp_path: Path, command: str,
+) -> None:
+    fixture = _build_fixture(tmp_path)
+    assert bounded_workspace_read_plan(command, fixture=fixture) is None
+
+
+def test_batch_read_does_not_grant_selected_sibling_authority(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    command = "cat -- fixture/selected-lane.json fixture/deferred-lane.json"
+    assert _classify_tool_command(command, fixture=fixture, quota_observed=True) == (
+        "wrong_selected_todo_target", None,
+    )
+
+
+def test_batch_read_failure_cannot_be_masked_by_selected_file(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    (fixture.project_root / ".loopx" / "registry.json").unlink()
+    with pytest.raises(RuntimeError, match="bounded read plan failed"):
+        _execute_selected_read(
+            "cat -- .loopx/registry.json fixture/selected-lane.json", fixture=fixture,
+        )
 
 
 def test_tool_loop_allows_bounded_hermetic_registry_preview(

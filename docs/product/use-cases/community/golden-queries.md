@@ -50,6 +50,30 @@ a public article with an image, and two distinct group/Topic contexts. Pin the
 source used to judge an answer; do not freeze a historical answer as permanently
 current. Repeat on another platform only when that platform is in the rollout.
 
+For short repository questions such as CQ06, retain the requested source
+verification while checking that discovery stays focused: find current docs
+and the owning reader, read relevant sections together, and avoid rereading
+unchanged instructions or unrelated implementation. Record model/tool round
+counts and tool elapsed times separately from end-to-end reply latency.
+Repeated model rounds or token totals do not identify a CPU hotspot. A focused
+read strategy is a candidate optimization until the same original question,
+version, host, permissions and concurrent Topic workload demonstrate an
+improvement; it cannot relax the response budget below.
+
+Judge source references in the final group reply after presentation and privacy
+redaction. A correct model answer containing host-local file links can lose its
+citations during delivery; those hidden links are not usable public evidence.
+Resolve allowed public references to the verified version and relevant lines,
+or state the evidence limitation. Keep private paths redacted rather than
+making them visible to satisfy the citation check.
+
+Before attributing a shadow result to the product, compare its effective prompt,
+project objective, answer guidance, history and tool grants with the original
+Core Turn. Matching the model and sandbox alone is insufficient. A direct
+adapter probe that omits Core context can demonstrate a probe failure without
+demonstrating a live reply regression. Keep that distinction in the evidence;
+even a faithful native probe does not qualify provider receipt or Topic timing.
+
 Use the real installed host and provider in a private pilot before public entry.
 Two pilot group contexts exercise separation without requiring premature entry
 into the target developer groups. Mocked transport, a configured App, unit tests,
@@ -78,7 +102,7 @@ Do not score the mere presence of a tool call: inspect the answer and its result
 | ID | Natural request / 自然请求 | Observable acceptance |
 | --- | --- | --- |
 | CQ01 | 我已经用 Codex 做项目了，LoopX 能多解决什么？给一个能试的小例子，也说说现在的限制。 | Explains the division between host execution and persistent coordination, provides a small version-supported journey, and distinguishes shipped behavior from roadmap. A short answer invents no Goal. |
-| CQ02 | 我主要想跟踪开源项目、定期整理资料，偶尔修代码。哪些部分适合 LoopX，哪些直接用现有工具更简单？ | Maps requirements to supported paths, costs and limits; can recommend a simpler path. Does not assume every task needs a team or a new daemon. Any proposed external service has a concrete reason. |
+| CQ02 | 我主要想跟踪开源项目、定期整理资料，偶尔修代码。哪些部分适合 LoopX，哪些直接用现有工具更简单？ | Maps requirements to supported paths, costs and limits, including setup/maintenance effort and recurring execution/scheduling costs without invented prices or savings; can recommend a simpler path. Does not assume every task needs a team or a new daemon. Any proposed external service has a concrete reason. |
 | CQ03 | Goal、Todo、Session 和 Agent 分别管什么？为什么还需要 lease 和 quota？用一次中断后继续工作的例子解释。 | Checks current public docs/source, connects the concepts through one coherent journey, and distinguishes scheduling, ownership, conversation and completion evidence. Does not equate a nonempty evidence reference with a proven result. |
 | CQ04 | 我已有一个 LoopX 安装，想升级但保留原来的目标和配置。怎么查安装来源、升级和回退？ | Gives the supported commands for the supplied platform/version, checks CLI ownership and preserves state. No overlapping installation, blind reinstall or destructive reset. This guidance case changes no member machine. |
 | CQ05 | 这条发布说明说支持多 Agent 协作：我装的这个版本已经有了吗，还是只在 main？[版本与公开发布链接] | Compares the supplied installed release with public release/source facts; distinguishes merged, packaged, installed and live-qualified. No fabricated release date or inference from a PR title alone. |

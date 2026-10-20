@@ -444,7 +444,7 @@ def _build_state_refresh_output_projections(
             field: agent_vision.get(field)
             for field in (
                 "schema_version", "agent_id", "state", "vision_patch",
-                "todo_delta", "fallback_declarations", "vision_budget",
+                "todo_delta", "fallback_declarations", "stride_decision", "vision_budget",
             )
         }
         if isinstance(agent_vision.get("path_delta"), dict):
@@ -547,6 +547,8 @@ def render_state_refresh_markdown(payload: dict[str, Any]) -> str:
         )
     if payload.get("error"):
         lines.append(f"- error: {payload.get('error')}")
+        if payload.get("error_detail"):
+            lines.append(f"- detail: {payload['error_detail']}")
         return "\n".join(lines)
 
     repair_delta = (
@@ -828,7 +830,7 @@ def refresh_state_run(
         operation="refresh-state",
         lock_legacy_index=not dry_run,
         handoff_legacy_index=not dry_run,
-    ) as source_admission:
+    ) as source_admission, ExitStack() as research_write_guard:
         settlement_identity = None
         settlement_result = None
         delivery_workspace_causality = None
@@ -947,8 +949,20 @@ def refresh_state_run(
             project_override=project,
             state_file_override=state_file,
         )
+        harness = ((registry_goal or {}).get("spawn_policy") or {}).get("explore_harness") or {}
+        capability_guard = (
+            (settlement_readback.semantic_replan_guard or {}).get("selected_capability_guard")
+            if settlement_readback is not None else None
+        )
+        if (harness.get("enabled") is True and harness.get("composition_mode") == "explicit_only") or capability_guard is not None:
+            from .capabilities.explore.result_log import explore_result_log_path
+            research_write_guard.enter_context(exclusive_file_lock(
+                explore_result_log_path(runtime_root, safe_goal_id),
+                agent_id=normalized_agent_id or None, operation="research-writeback",
+            ))
         planning_source = load_refresh_planning_source(
-            runtime_root, safe_goal_id, resolved_state_file, require_display=False
+            runtime_root, safe_goal_id, resolved_state_file, require_display=False,
+            registry_path=next_action_source_registry,
         )
         state_text, planning_events, todo_fields = (
             planning_source.state_text, planning_source.events, planning_source.todo_fields,
@@ -1012,6 +1026,9 @@ def refresh_state_run(
                 goal_id=safe_goal_id,
                 agent_id=normalized_agent_id,
             )
+        effective_replan_goal = resolve_todo_replan_cadence_goal(
+            registry_goal or {"id": safe_goal_id}, runtime_root,
+        )
         if agent_vision_packet is not None:
             agent_vision = prepare_vision_refresh(
                 agent_vision_packet,
@@ -1020,6 +1037,10 @@ def refresh_state_run(
                 existing_agent_vision=existing_agent_vision,
                 merge_patch=merge_agent_vision_patch,
                 require_path_delta_for_durable_change=autonomous_replan_recorded,
+                allow_terminal_stride_path=(
+                    (effective_replan_goal.get("execution_profile") or {}).get("stride_strategy")
+                    == "evidence_conditioned_v1"
+                ),
             )
         generated_at = now_local()
         # Next Action is now an actor/Todo-bound recommendation in the existing
@@ -1054,7 +1075,26 @@ def refresh_state_run(
             and settlement_readback.semantic_replan_guard is not None
             else {}
         )
+        from .capabilities.explore.research_frontier import prepare_research_replan_evidence
+        capability_evidence = prepare_research_replan_evidence(
+            runtime_root=runtime_root, goal_id=safe_goal_id,
+            agent_id=normalized_agent_id, registry_goal=registry_goal, state_text=state_text,
+            capability_guard=settlement_replan_guard.get("selected_capability_guard"),
+        )
+        def read_explore_context(read_goal_id: str, read_agent_id: str | None):
+            from .capabilities.explore.turn_context import read_replan_explore_context
+
+            return read_replan_explore_context(
+                source_status={"registry": str(registry_path), "runtime_root": str(runtime_root)},
+                goal_id=read_goal_id, agent_id=read_agent_id,
+                review_pages=((agent_vision or {}).get("stride_decision") or {}).get(
+                    "explore_review", {}).get("result_pages"))
+
         replan_qualification = qualify_refresh_replan_writeback(
+            replan_explore_reader=read_explore_context,
+            replan_source_route={"registry": str(registry_path), "runtime_root": str(runtime_root)},
+            capability_evidence=capability_evidence,
+            guard_capability=settlement_replan_guard.get("selected_capability_guard"),
             todo_fields=todo_fields,
             autonomous_replan_recorded=autonomous_replan_recorded,
             requested_delta_kinds=normalized_repair_delta_kinds,
@@ -1067,6 +1107,7 @@ def refresh_state_run(
             settlement_guard_scoped=(
                 settlement_replan_guard.get("scope") == "turn_guard"
             ),
+            receipt_bound_guard_recorded_at=(settlement_readback.heartbeat_receipt or {}).get("recorded_at") if settlement_readback else None,
             settlement_guard_semantic_replan_obligation_id=(
                 settlement_replan_guard.get("selected_obligation_id")
                 if isinstance(
@@ -1078,11 +1119,9 @@ def refresh_state_run(
             state_text=state_text,
             goal_id=safe_goal_id,
             progress_observation=normalized_progress_observation,
-            registry_goal=registry_goal,
+            registry_goal=effective_replan_goal,
             effective_turn_cadence=effective_turn_cadence_context(
-                resolve_todo_replan_cadence_goal(
-                    registry_goal or {"id": safe_goal_id}, runtime_root,
-                ), runtime_root,
+                effective_replan_goal, runtime_root,
                 registry_path=registry_path, goal_ref=goal_ref,
                 source_admission=source_admission,
             ),
@@ -1185,6 +1224,15 @@ def refresh_state_run(
             turn_scoped_settlement_qualified
             and workspace_requirement != "not_required"
             and not checkpoint_supplement
+            # The TS settlement owner qualified an unavailable observation or
+            # an already blocked lifecycle, with no delivery, Todo mutation or
+            # quota debit. Recording it needs no producing git worktree.
+            and not (
+                isinstance(blocked_retry, dict)
+                and blocked_retry.get("schema_version") in {
+                    "quota_monitor_unavailable_v0", "quota_blocked_lifecycle_v0",
+                }
+            )
         ):
             delivery_workspace = capture_delivery_workspace(
                 current_path=delivery_workspace_path,
@@ -1377,7 +1425,8 @@ def refresh_state_run(
                 if current_goal is None:
                     raise ValueError("Next Action source Goal disappeared; reread status")
                 current_planning = load_refresh_planning_source(
-                    runtime_root, safe_goal_id, resolved_state_file, require_display=False)
+                    runtime_root, safe_goal_id, resolved_state_file, require_display=False,
+                    registry_path=next_action_source_registry)
                 resolve_refresh_recommendation(current_text,
                     todo_fields=current_planning.todo_fields, agent_id=normalized_agent_id or None,
                     settlement_identity=settlement_identity.as_dict() if settlement_identity else None,

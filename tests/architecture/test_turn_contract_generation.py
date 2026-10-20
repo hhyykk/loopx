@@ -105,6 +105,18 @@ def test_generator_check_is_deterministic_and_does_not_repair(tmp_path, monkeypa
     assert path.read_text() == "stale\n"
 
 
+def test_contract_digest_ignores_checkout_line_endings(tmp_path, monkeypatch):
+    # A Windows checkout may still carry CRLF when the guard reads the contract.
+    crlf_contract = tmp_path / generator.CONTRACT_PATH.name
+    contract_text = generator.CONTRACT_PATH.read_text(encoding="utf-8")
+    crlf_contract.write_bytes(contract_text.replace("\n", "\r\n").encode("utf-8"))
+    monkeypatch.setattr(generator, "CONTRACT_PATH", crlf_contract)
+    assert generator.build_artifacts() == {
+        generator.PYTHON_PATH: generator.PYTHON_PATH.read_text(encoding="utf-8"),
+        generator.TYPESCRIPT_PATH: generator.TYPESCRIPT_PATH.read_text(encoding="utf-8"),
+    }
+
+
 def test_typescript_settlement_reexports_generated_result_set():
     result = subprocess.run(
         [
@@ -260,9 +272,12 @@ def test_new_independent_twin_cannot_hide_behind_generated_pair(monkeypatch):
     )
     assert counts is not None
     raw, generated, maintained, budget = map(int, counts.groups())
-    # Source-verified bindings may grow as decision owners converge. The
-    # independently maintained twin budget remains the frozen limit below.
-    assert generated >= 1
+    # Require both reviewed generators while allowing later verified pairs.
+    from scripts.generate_semantic_bindings import verified_generated_paths as semantic_generated_paths
+
+    assert "loopx/control_plane/turn_driver/turn_contract_generated.py" in generator.verified_generated_paths()
+    assert "loopx/control_plane/content_digest.py" in semantic_generated_paths()
+    assert generated >= 2
     assert raw == maintained + generated
     from loopx.semantics.inventory import SourceFile
 

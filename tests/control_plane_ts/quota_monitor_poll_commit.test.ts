@@ -8,14 +8,76 @@ import test from "node:test";
 
 import {
   evaluateQuotaMonitorPollCommit,
+  hasMonitorPollTransaction,
   QUOTA_MONITOR_POLL_COMMIT_REQUEST_SCHEMA,
   QUOTA_LEASED_MONITOR_POLL_COMMIT_REQUEST_SCHEMA,
 } from "../../loopx/control_plane/quota/monitor_poll_commit.ts";
 import { EffectRuntimeRequestError } from "../../loopx/control_plane/effect_runtime_errors.ts";
 import { resolveTestPython } from "../../scripts/test-python.mjs";
 import { monitorPollRequestHash } from "../../loopx/control_plane/coordination/todo_monitor_poll.ts";
+import { settlementIdentity } from "../../loopx/control_plane/effect_program.ts";
+import type { QuotaAccountingOwner } from "../../loopx/control_plane/quota/source_admission.ts";
+import { parseExactGoalRef } from "../../loopx/control_plane/goals/goal_instance_identity.ts";
 
 const goalId = "monitor-native-goal";
+
+test("competing closeout reads pending and durable transactions under their Goal owner", async t => {
+  const runtime = await tempRuntime(t);
+  const agent = "codex-main-control", todo = "todo_public_monitor", turn = "owner-scoped-poll";
+  const identity = settlementIdentity({goal_id: goalId, agent_id: agent, todo_id: todo, turn_instance_id: turn});
+  const effect = `quota-monitor-poll:${goalId}:${agent}:${turn}:todo:${todo}`;
+  const params = request({phase: "preflight", runtime_root: runtime, execute: true,
+    effect_id: effect, turn_instance_id: turn, observation: observation({todo_id: todo, result_hash: "observed"})});
+  assert.equal((await evaluateQuotaMonitorPollCommit(params)).status, "provider_required");
+  const runs = join(runtime, "goals", goalId, "runs");
+  const token = createHash("sha256").update(effect).digest("hex").slice(0, 24);
+  const path = join(runs, ".transactions", "quota-monitor-poll", `${token}.json`);
+  const pending = JSON.parse(await readFile(path, "utf8"));
+  const refA = {goal_id: goalId, goal_instance_id: `ginst_${"a".repeat(32)}`};
+  const refB = {goal_id: goalId, goal_instance_id: `ginst_${"b".repeat(32)}`};
+  const owner = (wire: typeof refA): QuotaAccountingOwner => {
+    const parsed = parseExactGoalRef(wire);
+    assert.equal(parsed.kind, "parsed");
+    if (parsed.kind !== "parsed") throw new Error("fixture GoalRef rejected");
+    const goalRef = parsed.value;
+    return {kind: "exact_source", goalRef,
+    admission: {registryPath: join(runtime, "registry.json"), plannedGoalRef: goalRef, authority: {},
+      locks: [{role: "run_index", target: join(runs, "index.jsonl"), pid: process.pid, token: "fixture"},
+        {role: "source_guard", target: join(runtime, "guard"), pid: process.pid, token: "fixture"}]}};
+  };
+  assert.equal(await hasMonitorPollTransaction(runtime, identity, {kind: "alias"}), true);
+  // Provider actor metadata does not change the pending accounting Agent.
+  const alternateActor = {...pending, provider_plan: {...pending.provider_plan, agent_id: "other-observer"}};
+  await writeFile(path, JSON.stringify(alternateActor));
+  assert.equal(await hasMonitorPollTransaction(runtime, identity, {kind: "alias"}), true);
+  await writeFile(path, JSON.stringify({...alternateActor,
+    admitted_decision: {...pending.admitted_decision, agent_id: "other-accounting-agent"}}));
+  await assert.rejects(hasMonitorPollTransaction(runtime, identity, {kind: "alias"}), /accounting identity/);
+  const legacyActor = {...alternateActor, schema_version: "quota_monitor_poll_commit_receipt_v0"};
+  delete legacyActor.admitted_decision;
+  await writeFile(path, JSON.stringify(legacyActor));
+  assert.equal(await hasMonitorPollTransaction(runtime, identity, {kind: "alias"}), true);
+  await writeFile(path, JSON.stringify(pending));
+  await assert.rejects(hasMonitorPollTransaction(runtime, identity, owner(refB)), /lacks GoalRef scope/);
+  for (const goalRef of [refA, refB]) {
+    await writeFile(path, JSON.stringify({...pending, goal_ref: goalRef}));
+    assert.equal(await hasMonitorPollTransaction(runtime, identity, owner(refA)), goalRef === refA);
+    assert.equal(await hasMonitorPollTransaction(runtime, identity, owner(refB)), goalRef === refB);
+    assert.equal(await hasMonitorPollTransaction(runtime, identity, {kind: "alias"}), false);
+  }
+  for (const status of ["prepared", "committed"]) {
+    const receipt = {...pending, schema_version: "quota_monitor_poll_commit_receipt_v0", status,
+      json_path: join(runs, `synthetic-quota-monitor-poll-${token}.json`),
+      markdown_path: join(runs, `synthetic-quota-monitor-poll-${token}.md`), record: {},
+      index_record: {goal_id: goalId, agent_id: agent, todo_id: todo, goal_ref: refA},
+      markdown: "Synthetic observation", payload: {}};
+    await writeFile(path, JSON.stringify(receipt));
+    assert.equal(await hasMonitorPollTransaction(runtime, identity, owner(refA)), true);
+    assert.equal(await hasMonitorPollTransaction(runtime, identity, owner(refB)), false);
+    await writeFile(path, JSON.stringify({...receipt, index_record: {...receipt.index_record, todo_id: "todo_other_monitor"}}));
+    assert.equal(await hasMonitorPollTransaction(runtime, identity, owner(refA)), false);
+  }
+});
 
 function decision(
   extra: Record<string, unknown> = {},
@@ -379,8 +441,8 @@ test("Todo commit journals provider intent before writeback and resumes exactly 
   const preflight = await evaluateQuotaMonitorPollCommit(params);
   assert.equal(preflight.status, "provider_required");
   assert.deepEqual(preflight.provider_plan, {
-    legacy_batch_version: 1,
     schema_version: "monitor_poll_todo_provider_plan_v0",
+    gate_scope_guard: true,
     monitor_effect_id: "quota-monitor-poll:todo-turn",
     goal_id: goalId,
     generated_at: "2026-08-27T12:00:00+08:00",
@@ -524,7 +586,7 @@ test("Todo commit fences the full material successor receipt", async (t) => {
       target_key: "public-release:42",
       result_hash: "approved-42",
       material_change: true,
-      next_agent_todo: "Advance the approved release.",
+      next_agent_todo: "[P1] Advance the approved release.",
       next_action_kind: "ADVANCE_RELEASE",
       next_task_repository: "https://github.com/owner/repo.git",
       next_required_capabilities: ["filesystem-write"],
@@ -537,6 +599,7 @@ test("Todo commit fences the full material successor receipt", async (t) => {
 
   const successor = {
     todo_id: "todo_successor001",
+    priority: "P1",
     role: "agent",
     task_class: "advancement_task",
     action_kind: "advance_release",
@@ -564,7 +627,7 @@ test("Todo commit fences the full material successor receipt", async (t) => {
     todo_update: { ok: true },
     next_todos: [{
       ...successor,
-      todo: "Advance the approved release.",
+      todo: "[P1] Advance the approved release.",
     }],
     successor_receipts: [successor],
   };
@@ -592,7 +655,7 @@ test("Todo commit fences the full material successor receipt", async (t) => {
         ...providerReceipt,
         next_todos: [{
           ...successor,
-          todo: "Advance the approved release.",
+          todo: "[P1] Advance the approved release.",
           target_key: "public-release:42:other",
         }],
       },
@@ -600,6 +663,11 @@ test("Todo commit fences the full material successor receipt", async (t) => {
     /agent next_todo target_key must match provider plan/,
   );
 
+  for (const priority of ["P0", null]) {
+    await assert.rejects(() => evaluateQuotaMonitorPollCommit({...params, phase: "commit",
+      provider_receipt: {...providerReceipt, successor_receipts: [{...successor, priority}]}}),
+    /successor priority must match/);
+  }
   const written = await evaluateQuotaMonitorPollCommit({
     ...params,
     phase: "commit",
@@ -668,7 +736,7 @@ test("Todo commit rejects injected defaults in the material successor route", as
       todo_id: "todo_public_monitor",
       result_hash: "approved-default",
       material_change: true,
-      next_agent_todo: "Advance the approved release.",
+      next_agent_todo: "[P1] Advance the approved release.",
       next_action_kind: "advance_release",
     }),
   });
@@ -677,6 +745,7 @@ test("Todo commit rejects injected defaults in the material successor route", as
     .update("approved-default", "utf8").digest("hex").slice(0, 16)}`;
   const successor = {
     todo_id: "todo_successor002",
+    priority: "P1",
     role: "agent",
     task_class: "advancement_task",
     action_kind: "advance_release",
@@ -699,7 +768,7 @@ test("Todo commit rejects injected defaults in the material successor route", as
     next_due_at: null,
     cadence: null,
     todo_update: {},
-    next_todos: [{ ...successor, todo: "Advance the approved release." }],
+    next_todos: [{ ...successor, todo: "[P1] Advance the approved release." }],
     successor_receipts: [successor],
   };
 
@@ -720,7 +789,7 @@ test("Todo commit rejects injected defaults in the material successor route", as
           next_todos: [{
             ...successor,
             ...mutation,
-            todo: "Advance the approved release.",
+            todo: "[P1] Advance the approved release.",
           }],
         },
       }),

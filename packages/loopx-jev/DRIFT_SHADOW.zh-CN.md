@@ -27,6 +27,41 @@
 
 例如只选择函数所在文件，而漏掉被调用的 helper 和对应测试，评估就不能证明完整行为。应主动纳入相关测试、结果和依赖；必要材料装不下时，不能把部分材料包装成完整证据。
 
+## 绑定规范任务 criterion
+
+在既有 `goal_id`、`objective` 和非空 `acceptance` 字段之外，basis 可以包含这个
+私有本机范围：
+
+```json
+"acceptance_scope": {
+  "registry_ref": ".loopx/registry.json",
+  "runtime_ref": ".loopx/runtime",
+  "agent_id": "reviewer",
+  "todo_id": "todo_review",
+  "criterion_ids": ["criterion_review"]
+}
+```
+
+替换为该任务真实 owner 路径与 criterion ID。两个引用必须位于选中 workspace 内，
+拒绝越界与符号链接；这些是本地操作者配置，不应发布。观察器读取当前验收 owner，
+用选中的规范描述替换模型 acceptance 列表。私有 registry/runtime 引用不发送给模型，
+也不进入公开回执范围。没有该块时，basis 明确属于 operator study，不是规范验收。
+
+独立安装按方法能力区分兼容边界。核心缺少 `progress_review.criterion_basis` 时，
+手工研究仍使用原 basis／回执格式，不生成 criterion scope 元数据。只在没有
+`acceptance_scope` 且收到类型化 `unsupported_method` 拒绝时保留这条路径；其他失败
+继续报错。规范 scope 要求核心实现 criterion 和 evidence-scope 方法，缺少任一方法
+须先升级核心；不会自动改成手工研究。
+
+binding 固定 Goal/Agent/Todo 身份、contract 修订／摘要、任务语义及所选 criterion。
+采集在模型派发前拒绝错配任务或 Agent，核心回执解码使用同一规则；切换任务须选用
+匹配的新依据。变更使在途评估失效；
+新的观察沿既有初始化入口重建 basis revision／baseline。核心读回也会在新格式回执的
+规范 binding 不再当前时撤回信号。Goal 的 `assist` revision pin 仍是手动的。
+已实例化 Goal 的读回使用精确 GoalRef；重建会退休旧验收，同一任务 ID 不能使旧观察
+继续有效。保留的历史回执不被改写。
+声明文件净变化不覆盖每条中间判断或遗漏依赖；绑定不证明模型正确，也不授予修改权限。
+
 ## 操作方法
 
 使用 Python 3.11+ 和 LoopX 检出要求的 Node 运行时。采集器目前面向 Linux/macOS 的 POSIX 文件处理；Windows 采集未验证，缺少所需文件原语时记录观察不可用。此可选发行包不进入 LoopX 默认 wheel；从源码根目录在新环境中安装，再执行不需要 key 的集成测试：
@@ -75,12 +110,14 @@ loopx-jev drift configure --state-dir "$OBSERVER" --mode shadow
 
 模型只收到操作者 basis 中的 `objective`、`acceptance`、`non_goals`、`horizon`、`evidence`、`already_known` 字段和限定材料。Goal 身份、样例名称与实验记账不会进入请求；有测试固定“只有 `goal_id` 不同的两份 basis 生成字节相同的请求”。
 
-每次请求问两道 Choice（`relation`、`increment`）和三道 Noul。`behavior_change` 问 delta 是否改变可观察的运行行为；`serves_acceptance` 与 `evidence_increment` 针对**前后检查点之间的变化**而不是 after 状态整体：是否实现、验证或作为前置服务于一条 before 检查点尚未满足的验收条件，以及是否新增关于某条验收条件的可核对证据。漂移布尔值由规则 `progress_review_signal_rule_v1` 按标签阈值 `t` 推导；核心会从类型化判断重新计算并拒绝布尔值不一致的回执：
+每次请求问两道 Choice（`relation`、`increment`）和三道 Noul。`behavior_change` 问 delta 是否改变可观察的运行行为；`serves_acceptance` 与 `evidence_increment` 针对**前后检查点之间的变化**而不是 after 状态整体：是否实现、验证或作为前置服务于一条 before 检查点尚未满足的验收条件，以及是否新增关于某条验收条件的可核对证据。漂移布尔值由规则 `progress_review_signal_rule_v2` 按标签阈值 `t` 推导；核心会从类型化判断重新计算并拒绝布尔值不一致的回执。若下面两种 `noul` 判别条件同时成立，信号为 null：
 
 | 信号 | 判为漂移 | 判为非漂移 | 其余 |
 | --- | --- | --- | --- |
 | `noul` | `P(serves_acceptance) ≤ 1−t` 且 `P(evidence_increment) ≤ 1−t` | 任一概率 `≥ t` | null |
 | `choice` | `relation = off_goal` 且 `increment = no_new_evidence` | `on_goal`、`necessary_prerequisite` 或 `new_evidence` | null |
+
+当 `t=0.5`、两个概率都不超过0.5且至少一个等于0.5时，判别条件重叠；v2 输出 null，不能据此形成新的 `noul` 重规划义务。默认阈值0.6的判别语义和 `choice` 规则不变。历史 `progress_review_signal_rule_v1` 回执仍按原先“先判漂移”的规则读取，不改写文件，也不自动撤销其既有政策效果。只支持v1的旧核心会拒绝v2回执；共享运行时的读取端须先升级。
 
 `behavior_change` 只记录、不参与判定：一个无关的行为变化仍是漂移；服务验收或新增目标证据的文档、负结果不是漂移。落在 `(1−t, t)` 内的 Noul 概率视为未决；没有任何已决答案的评估记为 `abstained`。`abstained`、`failed`、`not_evaluated`、`stale` 事件的回执信号全为 null。
 

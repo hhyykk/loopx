@@ -122,6 +122,7 @@ impl std::error::Error for ServiceError {}
 
 struct OwnedService {
     child: GroupChild,
+    kind: ServiceKind,
 }
 
 impl OwnedService {
@@ -133,36 +134,51 @@ impl OwnedService {
 
 pub struct ServiceSet {
     owned: Vec<OwnedService>,
+    runtime: SelectedRuntime,
+    last_recovery_attempt: Option<Instant>,
     /// True when a stale LoopX service was restarted so the running frontend
     /// was transparently moved onto the current installed release.
     pub healed: bool,
 }
 
 /// Freeze one selected artifact for both concurrently started services.
+#[derive(Clone)]
 pub(crate) struct SelectedRuntime {
     pub executable: String,
     pub identity: Option<serde_json::Value>,
 }
 
 impl ServiceSet {
+    pub(crate) fn runtime_identity(&self) -> Option<&serde_json::Value> {
+        self.runtime.identity.as_ref()
+    }
+
     pub(crate) fn start(
         runtime: &SelectedRuntime,
         endpoints: &ServiceEndpoints,
         progress: impl Fn(&[ServiceKind]) + Sync,
     ) -> Result<Self, ServiceError> {
-        Self::collect(connect_all(
-            SERVICE_KINDS,
-            |kind| connect(kind, runtime, endpoints),
-            progress,
-        ))
+        Self::collect(
+            connect_all(
+                SERVICE_KINDS,
+                |kind| connect(kind, runtime, endpoints),
+                progress,
+            ),
+            runtime.clone(),
+        )
     }
 
     /// Fold finished connection attempts into one owned set. Every outcome
     /// surrenders its child here, so a set that fails still stops the
     /// processes its successful peers started.
-    fn collect(outcomes: [ServiceOutcome; SERVICE_KINDS.len()]) -> Result<Self, ServiceError> {
+    fn collect(
+        outcomes: [ServiceOutcome; SERVICE_KINDS.len()],
+        runtime: SelectedRuntime,
+    ) -> Result<Self, ServiceError> {
         let mut services = Self {
             owned: Vec::new(),
+            runtime,
+            last_recovery_attempt: None,
             healed: false,
         };
         let mut failure = None;
@@ -180,6 +196,55 @@ impl ServiceSet {
             }
             None => Ok(services),
         }
+    }
+
+    /// Recover only this window's exited private children. Keep its qualified
+    /// artifact, ports and healthy peer; never infer ownership from a listener.
+    pub(crate) fn recover_exited(
+        &mut self,
+        endpoints: &ServiceEndpoints,
+        now: Instant,
+    ) -> Result<bool, ServiceError> {
+        if !endpoints.isolated
+            || self
+                .last_recovery_attempt
+                .is_some_and(|at| now.duration_since(at) < Duration::from_secs(2))
+        {
+            return Ok(false);
+        }
+        let mut recovered = false;
+        for service in &mut self.owned {
+            // Observe the direct child, not arbitrary worker descendants in
+            // its process group. An unknown wait result grants no restart.
+            let exited = match service.child.inner().try_wait() {
+                Ok(status) => status.is_some(),
+                Err(error) => {
+                    self.last_recovery_attempt = Some(now);
+                    return Err(ServiceError(error.to_string()));
+                }
+            };
+            if !exited {
+                continue;
+            }
+            self.last_recovery_attempt = Some(now);
+            service.stop();
+            let mut replacement = None;
+            let result = connect_owned_service(
+                service.kind,
+                endpoints.port(service.kind),
+                &self.runtime,
+                &mut replacement,
+            );
+            if let Err(error) = result {
+                if let Some(mut failed) = replacement {
+                    failed.stop();
+                }
+                return Err(error);
+            }
+            *service = replacement.expect("successful private start owns its child");
+            recovered = true;
+        }
+        Ok(recovered)
     }
 
     pub fn stop(&mut self) {
@@ -273,6 +338,13 @@ fn connect_owned_service(
     }
     let mut command = Command::new(&runtime.executable);
     configure_runtime_environment(&mut command);
+    if matches!(kind, ServiceKind::Chat) {
+        configure_codex_chat_home(
+            &mut command,
+            env::var_os("HOME"),
+            env::var_os("LOOPX_CHAT_CODEX_HOME"),
+        );
+    }
     command
         .args(kind.command_args_on_port(port))
         .stdin(Stdio::null())
@@ -284,7 +356,7 @@ fn connect_owned_service(
             kind.label()
         ))
     })?;
-    *owned = Some(OwnedService { child });
+    *owned = Some(OwnedService { child, kind });
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
         let child = &mut owned.as_mut().expect("owned service").child;
@@ -403,6 +475,13 @@ fn connect_service(
 
     let mut command = Command::new(executable);
     configure_runtime_environment(&mut command);
+    if matches!(kind, ServiceKind::Chat) {
+        configure_codex_chat_home(
+            &mut command,
+            env::var_os("HOME"),
+            env::var_os("LOOPX_CHAT_CODEX_HOME"),
+        );
+    }
     command
         .args(kind.command_args())
         .stdin(Stdio::null())
@@ -414,7 +493,7 @@ fn connect_service(
             kind.label()
         ))
     })?;
-    *owned = Some(OwnedService { child });
+    *owned = Some(OwnedService { child, kind });
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
@@ -767,6 +846,21 @@ pub(crate) fn configure_runtime_environment(command: &mut Command) {
     );
 }
 
+// A desktop Chat service has its own account binding. An unrelated terminal's
+// CODEX_HOME must not pair the selected GPT model with another provider. CLI
+// launches retain their environment semantics; explicit Chat overrides win.
+fn configure_codex_chat_home(
+    command: &mut Command,
+    home: Option<std::ffi::OsString>,
+    chat_home: Option<std::ffi::OsString>,
+) {
+    if let Some(selected) = chat_home.filter(|value| !value.is_empty()) {
+        command.env("LOOPX_CHAT_CODEX_HOME", selected);
+    } else if let Some(home) = home.filter(|value| !value.is_empty()) {
+        command.env("LOOPX_CHAT_CODEX_HOME", PathBuf::from(home).join(".codex"));
+    }
+}
+
 fn runtime_search_path(
     home: Option<std::ffi::OsString>,
     inherited: Option<std::ffi::OsString>,
@@ -779,6 +873,14 @@ fn runtime_search_path(
         paths.extend([
             PathBuf::from("/opt/homebrew/bin"),
             PathBuf::from("/usr/local/bin"),
+            // Homebrew's supported LTS Node formulae are keg-only. Finder
+            // does not inherit the shell PATH that activates those runtimes.
+            // Use the same bounded search for the private installer and the
+            // services it starts; Core still qualifies the actual version.
+            PathBuf::from("/opt/homebrew/opt/node@24/bin"),
+            PathBuf::from("/usr/local/opt/node@24/bin"),
+            PathBuf::from("/opt/homebrew/opt/node@22/bin"),
+            PathBuf::from("/usr/local/opt/node@22/bin"),
         ]);
     }
     for path in inherited
@@ -814,7 +916,30 @@ pub(crate) fn python3_environment() -> (bool, Option<String>) {
     (found, version)
 }
 
+pub(crate) fn node_environment() -> (bool, Option<String>) {
+    let path = runtime_search_path(env::var_os("HOME"), env::var_os("PATH"));
+    let executable = resolve_executable_path("node", Some(path.as_os_str()));
+    let found = executable.is_some();
+    let version = executable.and_then(|node| {
+        let mut probe = Command::new(node);
+        probe.arg("--version");
+        timed_output(probe).filter(|output| output.status.success()).and_then(|output| {
+            let text = std::str::from_utf8(&output.stdout).ok()?.trim().strip_prefix('v')?;
+            let fields: Vec<_> = text.split('.').collect();
+            (fields.len() == 3 && fields.iter().all(|field|
+                !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit())))
+                .then(|| text.to_owned())
+        })
+    });
+    (found, version)
+}
+
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+// Installation qualification boots Core, checks the TypeScript runtime and
+// hashes the installed package. It is not a version-banner query: a valid cold
+// wheel can exceed one second. Keep that work bounded without weakening Core's
+// qualification or extending the lightweight environment probes.
+const INSTALLATION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) fn timed_output(command: Command) -> Option<std::process::Output> {
     timed_output_with_timeout(command, VERSION_PROBE_TIMEOUT)
@@ -948,21 +1073,6 @@ fn resolve_executable_path(executable: &str, search_path: Option<&OsStr>) -> Opt
     None
 }
 
-fn runtime_identity_from_manifest(manifest: &serde_json::Value) -> Option<serde_json::Value> {
-    let release_id = manifest.get("release_id")?.as_str()?;
-    let package_version = manifest.get("package")?.get("version")?.as_str()?;
-    let source_revision = manifest
-        .get("source")
-        .and_then(|source| source.get("git_commit"))
-        .and_then(serde_json::Value::as_str);
-    Some(serde_json::json!({
-        "schema_version": "loopx_runtime_identity_v1",
-        "package_version": package_version,
-        "release_id": release_id,
-        "source_revision": source_revision,
-    }))
-}
-
 pub(crate) fn runtime_identity_for_executable(executable: &str) -> Option<serde_json::Value> {
     runtime_identity_for_executable_with_path(executable, env::var_os("PATH").as_deref())
 }
@@ -973,20 +1083,13 @@ fn runtime_identity_for_executable_with_path(
 ) -> Option<serde_json::Value> {
     let resolved = resolve_executable_path(executable, search_path)?;
     let canonical = fs::canonicalize(resolved).ok()?;
-    let release_root = canonical.parent()?.parent()?;
-    if let Ok(manifest) = fs::read_to_string(Path::new(release_root).join("release.json")) {
-        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&manifest) {
-            if let Some(identity) = runtime_identity_from_manifest(&payload) {
-                return Some(identity);
-            }
-        }
-    }
     // Core owns package qualification and hashing. Do not recreate RECORD,
     // editable-install or byte-fingerprint rules inside the native shell.
+    // A surviving release manifest cannot prove its executable still works.
     let mut command = Command::new(canonical);
     configure_runtime_environment(&mut command);
     command.args(["--format", "json", "doctor", "--installation-only"]);
-    let output = timed_output(command)?;
+    let output = timed_output_with_timeout(command, INSTALLATION_PROBE_TIMEOUT)?;
     if !output.status.success() {
         return None;
     }
@@ -999,20 +1102,26 @@ fn identity_from_installation_doctor(payload: &serde_json::Value) -> Option<serd
         return None;
     }
     let identity = payload.get("service_runtime_identity")?;
+    let release = identity["release_id"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty());
     if identity["schema_version"] != "loopx_runtime_identity_v1"
         || !identity["package_version"].is_string()
-        || !is_owned_package_identity(identity)
+        || !(release || is_owned_package_identity(identity))
     {
         return None;
     }
     // This shape is shared with the HTTP startup fence, not source attestation.
-    Some(serde_json::json!({
+    let mut observed = serde_json::json!({
         "schema_version": identity["schema_version"],
         "package_version": identity["package_version"],
         "release_id": identity["release_id"],
         "source_revision": identity["source_revision"],
-        "package_fingerprint": identity["package_fingerprint"],
-    }))
+    });
+    if !release {
+        observed["package_fingerprint"] = identity["package_fingerprint"].clone();
+    }
+    Some(observed)
 }
 
 pub(crate) fn is_owned_package_identity(identity: &serde_json::Value) -> bool {
@@ -1138,6 +1247,35 @@ fn classify_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_chat_account_default_and_explicit_override_are_independent_of_caller_home() {
+        let user_home = PathBuf::from("synthetic-user-home");
+        for chat_home in [None, Some(std::ffi::OsString::new())] {
+            let mut command = Command::new("synthetic-loopx");
+            command.env("CODEX_HOME", "different-provider-home");
+            configure_codex_chat_home(&mut command, Some(user_home.clone().into()), chat_home);
+            assert!(command
+                .get_envs()
+                .any(|(key, value)| key == "LOOPX_CHAT_CODEX_HOME"
+                    && value == Some(user_home.join(".codex").as_os_str())));
+            assert!(command.get_envs().any(|(key, value)| key == "CODEX_HOME"
+                && value == Some(std::ffi::OsStr::new("different-provider-home"))));
+        }
+        let mut command = Command::new("synthetic-loopx");
+        configure_codex_chat_home(
+            &mut command,
+            Some(user_home.into()),
+            Some("selected-chat-home".into()),
+        );
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == "LOOPX_CHAT_CODEX_HOME"
+                && value == Some(std::ffi::OsStr::new("selected-chat-home"))));
+        let mut command = Command::new("synthetic-loopx");
+        configure_codex_chat_home(&mut command, None, None);
+        assert_eq!(command.get_envs().count(), 0);
+    }
     #[test]
     fn package_identity_requires_core_installation_qualification() {
         let identity = serde_json::json!({"schema_version":"loopx_runtime_identity_v1",
@@ -1357,22 +1495,55 @@ mod tests {
     }
 
     #[test]
-    fn manifest_runtime_identity_is_public_and_exact() {
-        let manifest = serde_json::json!({
-            "release_id": "20260821T164921Z",
-            "package": {"version": "0.5.1"},
-            "source": {"git_commit": "62647e2e299d"},
-        });
-
-        assert_eq!(
-            runtime_identity_from_manifest(&manifest),
-            Some(serde_json::json!({
+    fn qualified_release_identity_is_public_and_exact() {
+        let identity = serde_json::json!({
                 "schema_version": "loopx_runtime_identity_v1",
                 "package_version": "0.5.1",
                 "release_id": "20260821T164921Z",
                 "source_revision": "62647e2e299d",
-            }))
-        );
+                "path": "PRIVATE",
+        });
+        let qualified = serde_json::json!({"ok":true,"scope":"installation_only",
+            "service_runtime_identity":identity});
+        let observed = identity_from_installation_doctor(&qualified).unwrap();
+        assert_eq!(observed["release_id"], identity["release_id"]);
+        assert_eq!(observed["source_revision"], identity["source_revision"]);
+        assert_eq!(observed.as_object().unwrap().len(), 4);
+        assert!(observed.get("path").is_none());
+        let mut rejected = qualified.clone();
+        rejected["ok"] = serde_json::json!(false);
+        assert!(identity_from_installation_doctor(&rejected).is_none());
+        rejected = qualified.clone();
+        rejected["service_runtime_identity"]["release_id"] = serde_json::json!("");
+        assert!(identity_from_installation_doctor(&rejected).is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn release_metadata_cannot_qualify_a_broken_or_unready_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let scripts = root.path().join("scripts");
+        fs::create_dir(&scripts).unwrap();
+        let executable = scripts.join("loopx");
+        fs::write(
+            root.path().join("release.json"),
+            r#"{"release_id":"cached-release","package":{"version":"99.0.0"},"source":{"git_commit":"cached-revision"}}"#,
+        )
+        .unwrap();
+        for response in [
+            "exit 1",
+            "printf 'not JSON'",
+            "printf '%s' '{\"ok\":false,\"scope\":\"installation_only\"}'",
+        ] {
+            fs::write(&executable, format!("#!/bin/sh\n{response}\n")).unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                runtime_identity_for_executable_with_path("loopx", Some(scripts.as_os_str()))
+                    .is_none(),
+                "a cached manifest must not override failed executable qualification: {response}"
+            );
+        }
     }
 
     #[test]
@@ -1395,19 +1566,16 @@ mod tests {
         )
         .expect("fixture release manifest");
 
+        assert_eq!(
+            resolve_executable_path("loopx", Some(scripts_dir.as_os_str())),
+            Some(scripts_dir.join(executable_name))
+        );
+        // A path and manifest still do not make this non-executable fixture usable.
         let identity =
             runtime_identity_for_executable_with_path("loopx", Some(scripts_dir.as_os_str()));
         fs::remove_dir_all(&release_root).expect("remove runtime identity fixture");
 
-        assert_eq!(
-            identity,
-            Some(serde_json::json!({
-                "schema_version": "loopx_runtime_identity_v1",
-                "package_version": "0.5.1",
-                "release_id": "path-release",
-                "source_revision": "path-revision",
-            }))
-        );
+        assert!(identity.is_none());
     }
 
     #[test]
@@ -1562,3 +1730,7 @@ mod tests {
 #[cfg(test)]
 #[path = "services_tests.rs"]
 mod supervisor_tests;
+
+#[cfg(all(test, unix))]
+#[path = "services_real_runtime_tests.rs"]
+mod real_runtime_tests;

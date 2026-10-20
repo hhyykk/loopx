@@ -1,12 +1,32 @@
 #!/usr/bin/env node
+import { selectScenarioShard } from "./personal-workspace-browser/shard.mjs";
+import {researchWorkerReadbackScenario} from "./personal-workspace-browser/research-worker-readback.mjs";
+import { zcodeGoalScenario } from "./personal-workspace-browser/zcode-goal.mjs";
+import {goalWorkspaceCreateScenario} from "./personal-workspace-browser/goal-workspace-create.mjs";
+import {agentModelSelectionScenario} from "./personal-workspace-browser/agent-model-selection.mjs";
+import {goalWorkspaceM2Scenario} from "./personal-workspace-browser/goal-workspace-m2.mjs";
+import {goalWorkspaceSelectionScenario} from "./personal-workspace-browser/goal-workspace-selection.mjs";
+import {sinceYouLookedScenario} from "./personal-workspace-browser/since-you-looked.mjs";
+import {sinceYouLookedLiveScenario} from "./personal-workspace-browser/since-you-looked-live.mjs";
+import {firstGoalHomeScenario} from "./personal-workspace-browser/first-goal-home.mjs";
+import {firstGoalAgentUnavailableScenario} from "./personal-workspace-browser/first-goal-agent-unavailable.mjs";
+import {runtimeReadinessScenario} from "./personal-workspace-browser/runtime-readiness.mjs";
+import {runtimeReadinessLiveScenario} from "./personal-workspace-browser/runtime-readiness-live.mjs";
+import {attentionNotificationsScenario} from "./personal-workspace-browser/attention-notifications.mjs";
+import {attentionNotificationsLiveScenario} from "./personal-workspace-browser/attention-notifications-live.mjs";
+import {firstGoalHomeLiveScenario} from "./personal-workspace-browser/first-goal-home-live.mjs";
+import {goalSuggestionsScenario} from "./personal-workspace-browser/goal-suggestions.mjs";
+import {goalSuggestionsLiveScenario} from "./personal-workspace-browser/goal-suggestions-live.mjs";
 import { replanCadenceScenario } from "./personal-workspace-browser/replan-cadence.mjs";
 import {nativeChildActivityScenario} from "./personal-workspace-browser/native-child-activity.mjs";
 import {privateStewardScopeScenario} from "./personal-workspace-browser/private-steward-scope.mjs";
+import {goalHierarchyScenario} from "./personal-workspace-browser/goal-hierarchy.mjs";
 import {configurationBackupScenario} from "./personal-workspace-browser/configuration-backup.mjs";
 import {attentionUserActionScenario} from "./personal-workspace-browser/attention-user-action.mjs";
 import {prReviewAgentOrderScenario} from "./personal-workspace-browser/pr-review-agent-order.mjs";
 import {conversationImageRequestScenario} from "./personal-workspace-browser/conversation-image-request.mjs";
 import {externalEvidenceReadbackScenario} from "./personal-workspace-browser/external-evidence-readback.mjs";
+import {exploreCompositionOwnerScenario} from "./personal-workspace-browser/explore-composition-owner.mjs";
 // Isolated browser acceptance scenarios for the personal Agent workspace.
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -47,11 +67,12 @@ import { teamEvidenceScenario } from "./personal-workspace-browser/team-evidence
 import { taskInspectorReturnScenario } from "./personal-workspace-browser/task-inspector-return.mjs";
 import { managedGoalResultsScenario } from "./personal-workspace-browser/managed-goal-results.mjs";
 import { researchResultsScenario } from "./personal-workspace-browser/research-results.mjs";
+import { researchHistoryScenario } from "./personal-workspace-browser/research-history.mjs";
 import { loopxModeScenario } from "./personal-workspace-browser/loopx-mode.mjs";
 import { progressiveLoadingScenario } from "./personal-workspace-browser/progressive-loading.mjs";
 import { stewardJourneyScenario } from "./personal-workspace-browser/steward-journey.mjs";
 import { teamPlanScenario } from "./personal-workspace-browser/team-plan.mjs";
-import { typedActionsScenario } from "./personal-workspace-browser/typed-actions.mjs";
+import { typedActionsScenario, proposalReadbackScopeScenario } from "./personal-workspace-browser/typed-actions.mjs";
 import { goalDeletionScenario } from "./personal-workspace-browser/goal-deletion.mjs";
 import { confirmedOperationsScenario } from "./personal-workspace-browser/confirmed-operations.mjs";
 import { stewardModelSettingsScenario } from "./personal-workspace-browser/steward-model-settings.mjs";
@@ -62,6 +83,8 @@ import { newestDraftScenario } from "./personal-workspace-browser/newest-draft.m
 import { conversationInputScenario } from "./personal-workspace-browser/conversation-input.mjs";
 import { goalActivityScenario } from "./personal-workspace-browser/goal-activity.mjs";
 import { goalWorkMapScenario } from "./personal-workspace-browser/goal-work-map.mjs";
+import { goalMastheadScenario } from "./personal-workspace-browser/goal-masthead.mjs";
+import { goalShowcaseScenario } from "./personal-workspace-browser/goal-showcase.mjs";
 
 import { stewardGroupTriggerScenario } from "./personal-workspace-browser/steward-group-trigger.mjs";
 
@@ -74,28 +97,51 @@ import { chatTodoProposalScenario } from "./personal-workspace-browser/chat-todo
 
 const scenarioCatalog = [conversationStartupScenario,goalDraftScenario, capabilityScopeScenario, stewardGroupTriggerScenario, conversationInputScenario, goalActivityScenario, conversationActivityScenario, navigationSortingScenario, automationCadenceScenario, chatRecoveryScenario, composerSessionAdmissionScenario, attachedHostFollowUpScenario, conversationReturnContinuityScenario, conversationHistoryRecoveryScenario, answerPresentationScenario, loopxModeScenario, teamEvidenceScenario, managedGoalResultsScenario, typedActionsScenario, teamPlanScenario, stewardJourneyScenario, executionChipScenario, stewardModelSettingsScenario, progressiveLoadingScenario, workspaceLocaleScenario, newestDraftScenario, larkCliMissingScenario, executionServiceOfflineScenario, chatTodoProposalScenario];
 scenarioCatalog.push(confirmedOperationsScenario);
+scenarioCatalog.push(proposalReadbackScopeScenario);
 scenarioCatalog.push(goalDeletionScenario);
 scenarioCatalog.push(conversationImageRequestScenario);
 scenarioCatalog.push(workspaceViewRecoveryScenario);
 scenarioCatalog.push(monitorReadbackScenario);
 scenarioCatalog.push(blockedReasonReadbackScenario);
+scenarioCatalog.push(researchWorkerReadbackScenario);
 scenarioCatalog.push(turnStepsScenario);
 scenarioCatalog.push(goalWorkMapScenario);
+scenarioCatalog.push(goalMastheadScenario);
+scenarioCatalog.push(goalShowcaseScenario);
 scenarioCatalog.push(performanceDiagnosisScenario);
 scenarioCatalog.push(blockedNoticeSettingsScenario);
 scenarioCatalog.push(nativeChildActivityScenario);
 scenarioCatalog.push(privateStewardScopeScenario);
+scenarioCatalog.push(goalHierarchyScenario);
 scenarioCatalog.push(externalEvidenceReadbackScenario);
 scenarioCatalog.push(configurationBackupScenario);
+scenarioCatalog.push(exploreCompositionOwnerScenario);
 scenarioCatalog.push(attentionUserActionScenario);
 scenarioCatalog.push(researchResultsScenario);
+scenarioCatalog.push(researchHistoryScenario);
 scenarioCatalog.push(prReviewAgentOrderScenario);
 scenarioCatalog.push(taskInspectorReturnScenario);
 scenarioCatalog.push(replanCadenceScenario);
+scenarioCatalog.push(zcodeGoalScenario);
+scenarioCatalog.push(goalWorkspaceM2Scenario);
+scenarioCatalog.push(goalWorkspaceCreateScenario);
+scenarioCatalog.push(goalWorkspaceSelectionScenario);
+scenarioCatalog.push(sinceYouLookedScenario);
+scenarioCatalog.push(sinceYouLookedLiveScenario);
+scenarioCatalog.push(firstGoalHomeScenario);
+scenarioCatalog.push(firstGoalAgentUnavailableScenario);
+scenarioCatalog.push(runtimeReadinessScenario);
+scenarioCatalog.push(runtimeReadinessLiveScenario);
+scenarioCatalog.push(attentionNotificationsScenario);
+scenarioCatalog.push(attentionNotificationsLiveScenario);
+scenarioCatalog.push(firstGoalHomeLiveScenario);
+scenarioCatalog.push(goalSuggestionsScenario);
+scenarioCatalog.push(goalSuggestionsLiveScenario);
 const requestedScenario = process.env.LOOPX_PERSONAL_WORKSPACE_SCENARIO;
+scenarioCatalog.push(agentModelSelectionScenario);
 const scenarios = requestedScenario
   ? scenarioCatalog.filter((scenario) => scenario.id === requestedScenario)
-  : scenarioCatalog;
+  : selectScenarioShard(scenarioCatalog, process.env.LOOPX_PERSONAL_WORKSPACE_SHARD);
 
 async function main() {
   if (collectCoverage && packaged) {
@@ -117,6 +163,7 @@ async function main() {
     browser = await launchBrowser(loadPlaywright().chromium);
     for (const scenario of scenarios) {
       const startedAt = Date.now();
+      console.log(`scenario-start=${scenario.id}`);
       try {
         // Existing scenarios assert Chinese copy; the locale scenario exercises
         // browser preferences explicitly and receives the unmodified browser.
@@ -138,9 +185,10 @@ async function main() {
         };
         throw error;
       } finally {
+        console.log(`scenario-end=${scenario.id} duration_ms=${Date.now() - startedAt}`);
         await writeFile(
           resolve(outputDir, "acceptance-results.json"),
-          `${JSON.stringify({ scenarios: results }, null, 2)}\n`,
+          `${JSON.stringify({ shard: process.env.LOOPX_PERSONAL_WORKSPACE_SHARD, catalog_count: scenarioCatalog.length, selected: scenarios.map(scenario => scenario.id), scenarios: results }, null, 2)}\n`,
           "utf8",
         );
       }

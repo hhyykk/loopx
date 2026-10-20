@@ -1,13 +1,14 @@
 /** Explicit local execution bindings. Registration/messages alone grant no launch.
  * These are host observations; canonical task/Turn/acceptance remain authoritative. */
 import type {JsonObject} from "../effect_program.ts";
-import {requireJsonObject} from "../runtime_decode.ts";
+import {requireInteger, requireJsonObject, requireStringArray} from "../runtime_decode.ts";
 import {EffectRuntimeRequestError} from "../effect_runtime_errors.ts";
 import {canonicalAuthoritySha256} from "../coordination/authority_store_codec.ts";
 import {acceptanceValidationEffects, goalAcceptanceTodoDigest, type AcceptanceCompletionRequirements} from "../goals/acceptance_contract.ts";
 import {normalizeTodoCompletionValidationDeclaration} from "../todos/completion_validation_declaration.ts";
 import {readTurnSelectionRejection, turnSelectionRejectionState} from "../turn_driver/selection_rejection.ts";
 import { BARE_SHA256_PATTERN, ENVELOPED_SHA256_PATTERN } from "../content_digest.ts";
+import {PROJECTION_ENVELOPE_SEAL_REQUEST, sealProjectionEnvelope} from "../projection_envelope.ts";
 
 function requireThat(ok: unknown, message: string): asserts ok {
   if (!ok) throw new EffectRuntimeRequestError(message);
@@ -62,7 +63,8 @@ export function delegationValidationPlan(params: JsonObject): JsonObject {
     basis_sha256: canonicalAuthoritySha256({todo_id: todo.todo_id, requirements, effects}),
     check_count: effects.length,
     pinned_file_count: effects.reduce((count, effect) => count
-      + (Array.isArray(effect.validation_files) ? effect.validation_files.length : 0), 0)};
+      + (Array.isArray(effect.validation_files) ? effect.validation_files.length : 0), 0),
+    ...currentOracleChecks(basis, effects)};
   // Reuse the acceptance owner's work classification. Scheduling/progress
   // metadata and unrelated provider commits are not a new task declaration;
   // current claim/lifecycle still fence this particular validation attempt.
@@ -71,6 +73,20 @@ export function delegationValidationPlan(params: JsonObject): JsonObject {
     status: todo.status, done: todo.done, archive_state: todo.archive_state ?? null});
   return {todo_id: todo.todo_id, state: "ready", source, observation, task_basis_sha256,
     effects, canonical_done: todo.done === true && todo.status === "done"};
+}
+
+/** Consume only the acceptance owner's current exact-source observation. */
+function currentOracleChecks(basis: JsonObject, effects: JsonObject[]): JsonObject {
+  const contract = basis.goal_acceptance_contract as JsonObject | undefined;
+  if (!contract || !Array.isArray(contract.criteria) || !contract.criteria.some(raw => (raw as JsonObject).oracle)) return {};
+  const receipt = contract.verification as JsonObject | null;
+  const checks = (contract.criteria as JsonObject[]).flatMap(criterion => {
+    const oracle = criterion.oracle as JsonObject | undefined;
+    const result = (receipt?.results as JsonObject[] | undefined)?.find(row => row.criterion_id === criterion.id);
+    return oracle?.state === "current" && effects.some(effect => effect.criterion_id === criterion.id)
+      && result?.oracle_evidence ? [{criterion_id: criterion.id, ...result.oracle_evidence as JsonObject}] : [];
+  });
+  return {oracle_checks: checks};
 }
 
 /** Fresh host check observation, not an independent-verifier or persisted receipt.
@@ -113,7 +129,12 @@ export function delegationCheckedArtifacts(params: JsonObject): JsonObject {
     "delegation output changed during validation; recheck the original output");
   return {source: observation.source, basis_sha256: observation.basis_sha256,
     check_count: observation.check_count, pinned_file_count: observation.pinned_file_count,
-    checked_at: params.checked_at, output_versions: after};
+    checked_at: params.checked_at, output_versions: after,
+    ...(Array.isArray(observation.oracle_checks) ? {oracle_checks: observation.oracle_checks.filter(raw => {
+      const check = requireJsonObject(raw, "oracle execution evidence");
+      return Array.isArray(check.output_versions) && after.every(output => (check.output_versions as JsonObject[])
+        .some(row => row.ref === output.ref && row.sha256 === output.sha256));
+    })} : {})};
 }
 export function selectDelegationBinding(params: JsonObject): JsonObject {
   const config = requireJsonObject(params.config, "delegation configuration");
@@ -379,6 +400,11 @@ export function delegationInventoryItem(params: JsonObject): JsonObject {
   if (observation.status === "accepted") {
     requireThat(Array.isArray(observation.artifacts) && observation.artifacts.length > 0,
       "accepted inventory requires current artifacts");
+    if (observation.current_use !== undefined) {
+      const use = requireJsonObject(observation.current_use, "delegation current use");
+      requireThat(use.state === "current" || use.state === "unavailable", "invalid delegation current use");
+      result.current_use = use;
+    }
     result.artifacts = observation.artifacts.map(value => {
       const artifact = requireJsonObject(value, "accepted artifact");
       requireThat(text(artifact.ref) && typeof artifact.sha256 === "string"
@@ -387,6 +413,63 @@ export function delegationInventoryItem(params: JsonObject): JsonObject {
     });
   }
   return result;
+}
+
+function inventoryPageItem(raw: unknown, recordId: string): JsonObject {
+  const entry = requireJsonObject(raw, "delegation page observation");
+  const record = requireJsonObject(entry.record, "delegation inventory record");
+  requireThat(record.record_id === recordId, "delegation inventory page identity mismatch");
+  try {
+    return delegationInventoryItem({record, observation: entry.observation});
+  } catch (error) {
+    // A malformed current observation cannot hide healthy siblings or imply acceptance.
+    if (error instanceof EffectRuntimeRequestError || error instanceof TypeError)
+      return delegationInventoryItem({record, observation: null});
+    throw error;
+  }
+}
+
+/** The lookahead address proves another page exists; its operation is not read. */
+export function delegationInventoryPage(params: JsonObject): JsonObject {
+  const query = delegationInventoryQuery(requireJsonObject(params.query, "delegation inventory query"));
+  const limit = Number(query.limit);
+  const recordIds = requireStringArray(params.record_ids, "delegation inventory addresses");
+  requireThat(recordIds.length <= limit + 1 && recordIds.every((id, index) =>
+    BARE_SHA256_PATTERN.test(id) && (query.cursor === null || id > String(query.cursor))
+    && (index === 0 || id > recordIds[index - 1]!)), "invalid delegation inventory page addresses");
+  const observations = params.observations;
+  requireThat(Array.isArray(observations) && observations.length === Math.min(limit, recordIds.length),
+    "delegation inventory page observations must match its addresses");
+  const items = observations.map((entry, index) => inventoryPageItem(entry, recordIds[index]!));
+  const facts = requireJsonObject(params.read_facts, "delegation inventory read facts");
+  const available = requireInteger(facts.available_count, "delegation inventory available_count");
+  requireThat(recordIds.length === Math.min(available, limit + 1),
+    "delegation inventory count does not match its page addresses");
+  const unavailable = items.filter(item => item.status === "unavailable").length;
+  const projectionEnvelope = sealProjectionEnvelope({
+    schema_version: PROJECTION_ENVELOPE_SEAL_REQUEST, projection: "delegation_inventory",
+    observed_at: facts.observed_at,
+    sources: [
+      {source_id: "delegation_directory", read_status: "read", last_read_at: facts.directory_read_at,
+        item_count: available},
+      {source_id: "delegation_operations", read_status: "read", last_read_at: facts.operations_read_at,
+        item_count: items.length, unreadable_count: unavailable},
+    ],
+    coverage: {scope: "requester_page", expected_count: items.length,
+      included_count: items.length - unavailable,
+      omitted: unavailable ? [{reason: "unavailable_operations", count: unavailable}] : [],
+      shown_count: items.length, available_count: available},
+  });
+  const more = recordIds.length > limit;
+  return {
+    schema_version: "loopx_delegation_inventory_v0", items, has_more: more,
+    next_cursor: more ? recordIds[limit - 1]! : null,
+    page_readback_complete: unavailable === 0,
+    projection_envelope: projectionEnvelope,
+    note: "Live requester-scoped page, not a snapshot or proof that the whole Goal is complete. "
+      + "Read original operations for full results; resume only when recovery is required. "
+      + "Restart paging to discover work added before the cursor. Listing starts no work.",
+  };
 }
 
 export function transitionDelegationObservation(params: JsonObject): JsonObject {
@@ -486,6 +569,16 @@ export function decideDelegationStop(params: JsonObject): DelegationStopStep {
   }
   return stopRecord("requested", operationFree ? executionPending
     : params.timed_out === true ? "holder_still_running_after_grace" : "awaiting_acknowledgement");
+}
+
+/** Same-operation recovery after an explicitly requested independent recheck.
+ * Admission supplies a qualified committed receipt and proves no Host reinvocation. */
+export function recoverRevalidatedDelegation(params: JsonObject): JsonObject {
+  requireThat(params.from === "rejected" && params.original_task_failure === true,
+    "revalidation recovery requires the original task failure");
+  requireThat(params.committed_progress === true && params.host_reinvoked === false,
+    "revalidation recovery requires committed progress without repeating Host work");
+  return {status: "turn_returned"};
 }
 
 /** Whether an accepted result may produce a wake intent at all.

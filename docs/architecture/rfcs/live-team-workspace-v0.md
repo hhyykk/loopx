@@ -188,6 +188,36 @@ provider scope; motion rate or token count does not imply financial cost.
   local Chat SSE infrastructure where compatible; provider-specific streaming
   can be absent. Without granular events, show last observed state honestly.
 
+### Long-horizon progress reading
+
+The [product reading journey](../../product/use-cases/auto-research/long-horizon-progress-design.md)
+refines this presentation owner; it does not introduce another research graph,
+metric authority or writable lifecycle. Research leads episode/rubric, baseline,
+window/cost and calibration decisions; product refines selection and evidence
+reading. These requirements are proposed, not qualified implementation.
+
+For an already-open Goal, target zero setup actions to read the native outcome
+and material change, one selection to see its source, exact artifact/check basis,
+next decision and adoption observation, and an optional second action for a
+valuable comparison or source drill-down. Timeline, branch context and inline
+evidence share one selection. Missing decisive evidence remains a visible gap;
+a summary alone does not satisfy the one-action target.
+
+Keep result, information, actual adoption and realized benefit distinct, with
+reliability, cost and coverage alongside. Original scorer/acceptance owners retain
+authority. Time adjacency is not a causal edge; graph/Todo counts or model
+interpretations are not verified progress. Later windows use the research
+owner's declared budget/checkpoint, exposing inherited prefix, source age,
+measurement gaps, censoring and unmatched controls. A check remains bound to its
+artifact/input revision. Restricted evidence cannot appear accessible, and absent
+adoption cannot appear observed; neither silently negates a separate valid check.
+
+Qualify the eventual read-only slice in the packaged frontend and real backend,
+including source access, missing data, version changes, refresh/back and no
+replayed effects. Comprehension against the existing list/map and independent
+scientific calibration are separate exits. This design does not advance delivery
+maturity or delay the existing L1/R2 correction journey behind all research work.
+
 ## 6. Research and technical choices
 
 These primary sources inform the design; they do not qualify LoopX behavior.
@@ -281,8 +311,9 @@ owners, with explicit history gaps if durable events do not exist.
 Disable the scene or stop its subscription to return to list/chat without
 interrupting member work. Do not delete journals, rebind sessions, rewrite
 historical receipt strength or reset provider state. Default Overview/navigation
-changes require the repository's concrete first-screen preview approval before
-commit/push; approval of an unrelated copy edit does not approve this scene.
+changes follow the repository first-screen evidence rule: put the concrete
+viewport in the PR description and reuse scoped direction for ordinary
+refinements; approval of an unrelated copy edit does not approve this scene.
 
 ## 9. Acceptance
 
@@ -316,6 +347,14 @@ records native Codex MCP execution and a real-model correction/acceptance/adopti
 qualification. This retires the earlier host-approval blocker; it does not prove
 the released first-use journey, two continuing cycles or observer comprehension.
 Reuse the existing version-bound readback, feedback and scoped pause owners.
+The report details now expose the existing requester adoption operation: inspect
+an accepted downstream result using the exact displayed version, then explicitly
+record the decision through the configured coordinator. Discovery and reading
+remain read-only; lost acknowledgement is reconciled against the durable receipt,
+and changed receiver inputs withdraw current adoption. This completes an App
+operation over already accepted work, not the live L1 qualification or an
+independent-verifier receipt. The real correction, verifier and requester-use
+acceptance above remains required.
 The presentation slice in #4828 returns readable reports to the original Goal
 conversation and compares an explicitly selected dependency with the accepted
 output, preferring the same artifact name/type. The referenced artifact and hash
@@ -392,6 +431,33 @@ execution, result return or whole-team stopping.
 Implementation checkpoint ([#5587](https://github.com/loopx-project/loopx/pull/5587), merged): the correction reader cross-checks the original, review response, revised output and requester adoption against current version-bound delegation reads. Opening linked evidence preserves a stepwise return path. Leaving evidence rereads the current execution page once, retains that page and returns keyboard focus; revoked output withdraws its earlier accepted row/count. A failed inventory read clears earlier success and offers refresh recovery. A failed downstream read or withdrawn adoption keeps freshly checked original, response and revision evidence readable, with adoption marked unavailable. The follow-on reader correction shares that checked observation with the surrounding adoption details and report, so they cannot retain an earlier success alongside a failed check. Core version loss clears the whole evidence view; explicit recheck restores it only against current version-bound reads. Consumer unavailability is a read-only presentation observation, not a persisted receipt change. Rechecking unchanged version bindings preserves the selected source, output and reading mode, including after artifact reordering. Changed identity, missing or ambiguous bindings, revoked source versions and changed selected hashes withdraw the comparison; unrelated artifact or adoption observations do not erase valid reading context.
 
 This remains a presentation/readback slice. `responds_to` does not certify an objection. Current native acceptance validates the canonical task and configured validators, but its readback does not expose an independent verifier identity and exact-version receipt. The revision therefore shows that missing evidence explicitly, even beside a valid requester adoption. The evidence reader separately exposes the current validation source, definition digest and check/file-pin counts from the existing typed validation plan. CLI and HTTP readback carry the same path-free observation after the original checks pass; failed validation or changed pins withdraw it with the report. This rule identity is not a persisted success or independent-verifier receipt. The frontend must consume such evidence from the existing acceptance owner when available; it cannot infer it from the reviewer name, relationship or artifact hash.
+
+The acceptance owner also supports an explicit optional owner-pinned oracle:
+the trusted local host executes its pinned source against copies of declared
+inputs/outputs and records their exact versions. Current Team evidence consumes
+only matching source/contract/work and output observations; stale or absent
+receipts remain unavailable. Existing Goal settings and acceptance details offer
+real save/check/readback/disable operations. This source identity is an
+owner-approved checker, not an authenticated remote verifier; snapshots do not
+attest the interpreter or unpinned imports. Ordinary validators retain their
+previous behavior. This closes the bounded configured-source/version producer
+and local operator-journey gap; it does not qualify independent authorship,
+semantic resolution, the real correction/adoption episode or full L1. See the
+[operation and rollback guide](../../reference/goal-acceptance-observations.md#owner-pinned-oracle-and-exact-versions).
+
+The proposed local journey now lets a registered Agent prepare that exact check
+plan through the existing typed-action store. Preparation changes neither the
+contract nor the outputs. The owner sees its objective, coverage, outputs and
+local command effect beside the delivery, then adopts and checks in one action;
+JSON import and revision diagnostics remain optional. This is one additional
+owner decision after preparation, not proof that every original request takes
+one interaction. Proposal replay and lost responses use existing native receipts;
+an uncertain execution never automatically reruns commands. Fresh readback
+withdraws historical success when source/output evidence changes, and an applied
+new plan does not revive an older draft. File/SQLite execution, isolated
+PostgreSQL acceptance ownership and packaged SQLite/HTTP/CLI recovery validate
+this author proposal. Scripted Agent preparation does not qualify live model
+preparation, installed App adoption, independent authorship or full L1.
 
 The current host-check observation additionally names its UTC completion time and the declared output versions that remained unchanged before and after those checks. A changed output withdraws even the first return; the evidence detail displays matching records and leaves older or mismatched records unavailable. Stability reuses the acceptance owner's task work digest plus current claim/lifecycle and selected rules/pins/workspace: unrelated canonical commits and observation metadata do not revoke a stable check, while changed work, authorization or validators still reject it. This replaces whole-Goal revision comparison only on this read path; mutation CAS remains intact. The delegation TS owner and read-only Chat/CLI projection add no verifier configuration or independent semantic verdict, and do not close Section 9's independent exact-version acceptance gap.
 
@@ -477,7 +543,7 @@ The [near-term local-agent launch](loopx-overall-roadmap-v0.md#near-term-local-a
 | L0 Design and traceability | Interactive synthetic study, source audit and executable acceptance plan | Design review; V1/V3 concept checks; no live claim | Presentation; discard prototype, retain decisions |
 | L1 One real correction | Objection→revision→independent acceptance→requester adoption is understandable, with evidence, intervention and accurately scoped stop controls | Section 9 first live outcome; V1/V2/V3/V6 and episode-level V7 through real frontend + CLI | Collaboration/evidence/control owners + Chat/packaged UI; disable scene without implying work stopped |
 | L2 Continuous research | Original research Agent completes V4 and the user replays correction→adoption→next cycle | Runtime credential/admission repairs and usable L1; qualify each host profile, then V4 | Existing R2/R3 owners; stop new admission and retain results |
-| L3 Semantic zoom and scale | Subteams, source/conclusion version comparison and focused replay at measured 10/30/100 display load | Typed lineage producers and L2; V5/V7 and approved first-screen composition | Presentation + evidence owner; reduce detail/revert renderer |
+| L3 Semantic zoom and scale | Subteams, source/conclusion version comparison and focused replay at measured 10/30/100 display load | Typed lineage producers and L2; V5/V7 and first-screen composition evidence in the PR description | Presentation + evidence owner; reduce detail/revert renderer |
 
 **Work-scale map track.** Semantic zoom needs a whole-Goal Work view to zoom
 from. This track renders existing typed Todo relations only. It runs beside L1
@@ -490,7 +556,10 @@ and never advances L1, V4 or G1:
   (interaction 5), opens Todo details in place, discloses omitted/missing/cyclic
   coverage and becomes a list on phones. A packaged synthetic scenario covers the
   desktop, 390px and keyboard paths of V3. A disposable demo Goal exercises the
-  real cold delivery-review read; live team Goals remain unqualified.
+  real cold delivery-review read; live team Goals remain unqualified. The
+  [Goal workspace](goal-workspace-surface-v0.md) places this map as the Map lens
+  beside By owner and Board, sharing one selection; that changes placement, not
+  this contract.
 - **W2 Live state on the map:** show running turns, owed returns and stale
   observations on the same nodes from the existing execution observation owner,
   without a new polling loop; disconnection shows age, not activity.

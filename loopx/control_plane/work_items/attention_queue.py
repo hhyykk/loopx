@@ -7,6 +7,7 @@ from typing import AbstractSet, Any, Callable, Optional
 from .replan_history_codec import effective_turn_cadence_context
 
 from ..goals.legacy_event_source import RetiredTodoEventSourceError
+from ..effect_runtime import effect_runtime_result
 
 
 AttentionItemBuilder = Callable[..., dict[str, Any]]
@@ -126,6 +127,35 @@ def build_attention_queue_projection(
     return queue
 
 
+def _reconcile_active_state_item(
+    goal: dict[str, Any],
+    current_run: dict[str, Any] | None,
+    item: dict[str, Any],
+    active_state_item: dict[str, Any] | None,
+    context: AttentionQueueContext,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    warning = context.active_state_projection_warning(goal, current_run)
+    if not warning:
+        return item, None
+    reconciled = effect_runtime_result("presentation.goal_attention.reconcile", {
+        "item": item, "active_state_item": active_state_item,
+        "warning": warning, "historical_run": current_run,
+    })
+    return reconciled["item"], reconciled["warning"]
+
+
+def _active_state_goal_context(
+    goal: dict[str, Any],
+    current_run: dict[str, Any] | None,
+    context: AttentionQueueContext,
+    runtime_root: Path | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    fields = context.active_state_todo_fields(goal, runtime_root=runtime_root)
+    # Goal content survives even when no work creates an attention item.
+    goal["goal_objective"] = fields.get("goal_objective")
+    return fields, context.active_state_todo_attention_item(goal, fields, current_run)
+
+
 def build_attention_queue(
     *,
     contract: dict[str, Any],
@@ -172,7 +202,9 @@ def build_attention_queue(
         goal_latest_runs = goal.get("latest_runs") if isinstance(goal.get("latest_runs"), list) else []
         if goal.get("registry_member"):
             try:
-                active_state_fields = context.active_state_todo_fields(goal, runtime_root=runtime_root)
+                active_state_fields, active_state_item = _active_state_goal_context(
+                    goal, current_status_run, context, runtime_root,
+                )
             except RetiredTodoEventSourceError as error:
                 # Refuse this source without hiding independent Goals or turning
                 # stale Todo/run projections into executable fallback work.
@@ -188,11 +220,6 @@ def build_attention_queue(
                 item["activation_state"] = str(goal.get("activation_state") or "active")
                 history_items.append(item)
                 continue
-            active_state_item = context.active_state_todo_attention_item(
-                goal,
-                active_state_fields,
-                current_status_run,
-            )
         if active_state_item and active_state_item.get("waiting_on") in {"controller", "user_or_controller"}:
             item = active_state_item
         else:
@@ -200,6 +227,9 @@ def build_attention_queue(
             if not item:
                 item = active_state_item
         if item:
+            item, projection_warning = _reconcile_active_state_item(
+                goal, current_status_run, item, active_state_item, context,
+            )
             item["activation_state"] = str(
                 goal.get("activation_state") or "active"
             )
@@ -243,7 +273,6 @@ def build_attention_queue(
                 item["agent_lane_recommendation"] = agent_lane_recommendation
             subagent_activity = context.subagent_activity_for_goal(goal)
             interface_budget_cadence = context.interface_budget_cadence_for_runs(goal_latest_runs)
-            projection_warning = context.active_state_projection_warning(goal, context.latest_run(goal))
             context.enrich_project_asset(
                 item,
                 latest_validation=context.project_asset_latest_validation(context.latest_run(goal)),
@@ -272,7 +301,8 @@ def build_attention_queue(
             if goal.get("registry_member"):
                 if active_state_fields is None:
                     active_state_fields = context.active_state_todo_fields(goal, runtime_root=runtime_root)
-                item.update(active_state_fields)
+                item.update({key: value for key, value in active_state_fields.items()
+                             if key != "goal_objective"})
                 context.sync_connected_attention_action_from_todos(item)
                 external_progress_review = (
                     context.external_progress_review_context(goal, runtime_root)

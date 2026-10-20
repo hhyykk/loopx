@@ -39,6 +39,15 @@ into a LoopX-governed visible goal loop.
   and fences an in-flight quota probe. For persistent sessions, the loop stays
   paused across Pi restarts until `/loopx resume` or a fresh goal activation
   explicitly re-arms it.
+- **Pause reasons** — every pause records why it happened in the binding:
+  `pauseReason: "user_prompt"` when a `before_agent_start` prompt was not the
+  loop's own injected task body, `"aborted"` after Escape, and `""` again once
+  `/loopx resume` re-arms the loop. Both pause paths report the pause in the UI
+  and the recorded reason is diagnostic only: it never decides continuation, and
+  the canonical `autoResume` flag stays the single authority. Prompt origin is not
+  inferred from another event: Pi compacts before it emits `before_agent_start`
+  for a submitted prompt, so a preceding `session_compact` does not prove that
+  the next prompt came from the host.
 
 ## Install / uninstall
 
@@ -155,3 +164,15 @@ is atomically disposed: every timer is cancelled and an in-flight quota probe
 that returns afterwards stops at the disposed guard, so the old session can
 never inject a follow-up or reschedule past the reload / session-replacement
 boundary.
+
+## Pause and resume boundaries
+
+An explicit host abort or Core `stop_until_explicit_resume` disarms automatic
+continuation and cancels its timer. Idle events and ordinary prompts do not
+re-arm it. Resolve the Core Goal/quota stop, then use `/loopx resume`; the next
+idle evaluation must obtain fresh admission. Pause/resume advances the existing
+binding generation, so a late pre-pause result cannot send a task afterward.
+Use `/loopx status` and `loopx quota should-run --goal-id <goal_id> --agent-id
+<agent_id>` to distinguish host binding from Core permission. Validated
+no-follow-up stops; dependency waits retain bounded checks without model calls.
+Already-started tools and original settlement are not cancelled by this gate.

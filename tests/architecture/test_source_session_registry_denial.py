@@ -3,10 +3,21 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DIRECT_LOADER_ALLOWLIST = {
+    "loopx/runtime.py",
     "loopx/authority.py",
+    "loopx/control_plane/coordination/new_goal_storage_transport.py",
+    "loopx/chat_server.py",
+    "loopx/presentation/goal_direction_api.py",
+    "loopx/chat_status_api.py",
+    "loopx/control_plane/goals/goal_amendment_runtime.py",
+    "loopx/control_plane/goals/source_session_registration.py",
+    "loopx/presentation/goal_amendment_api.py",
+    "loopx/presentation/goal_source_routing.py",
     "loopx/attached_session.py",
     "loopx/bootstrap.py",
     "loopx/capabilities/manager_context/__init__.py",
@@ -19,16 +30,68 @@ DIRECT_LOADER_ALLOWLIST = {
     "loopx/configure_goal.py",
     "loopx/control_plane/collaboration/goal_instance_scope.py",
     "loopx/control_plane/collaboration/peers.py",
+    "loopx/control_plane/collaboration/request_control_source.py",
+    "loopx/control_plane/collaboration/request_amendment.py",
+    "loopx/presentation/request_control_api.py",
     "loopx/control_plane/collaboration/source_grant_observation.py",
     "loopx/control_plane/goals/first_party_host_admission.py",
+    "loopx/control_plane/goals/direction_runtime.py",
+    "loopx/control_plane/goals/source_session_recreation.py",
     "loopx/control_plane/goals/source_session_turn_effects.py",
-    "loopx/control_plane/coordination/runtime_shadow.py",
+    "loopx/control_plane/coordination/authority_source_capture.py",
     "loopx/control_plane/coordination/shadow_goal_scope.py",
     "loopx/control_plane/projects/registry.py",
     "loopx/control_plane/turn_driver/codex_sessions.py",
     "loopx/kunluncode_goal_mode/cli.py",
     "loopx/state_migration.py",
 }
+
+
+# Storage-location readers grant no runtime action. Exceptions name the exact
+# functions; another direct loader in either module must still fail.
+METADATA_READER_FUNCTIONS = {
+    "loopx/runtime.py": {"_archive_source_goal_refs"},
+    "loopx/capabilities/native_chat/project_context.py": {"coordination_runtime_root"},
+    "loopx/control_plane/goals/source_session_recreation.py": {"_canonical_runtime_root"},
+}
+
+
+def _assert_metadata_reader_functions(tree: ast.Module, expected: set[str]) -> None:
+    loader_functions = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "load_project_registry"
+            for call in ast.walk(node)
+        )
+    }
+    assert loader_functions == expected
+
+
+def _assert_recreation_reader_is_location_only(tree: ast.Module) -> None:
+    reader = next(node for node in tree.body
+                  if isinstance(node, ast.FunctionDef) and node.name == "_canonical_runtime_root")
+    calls = [node for node in ast.walk(reader) if isinstance(node, ast.Call)]
+    assert {node.func.id for node in calls if isinstance(node.func, ast.Name)} == {
+        "load_project_registry", "resolve_runtime_root",
+    }
+    attributes = [node for node in calls if isinstance(node.func, ast.Attribute)]
+    assert len(attributes) == 1
+    assert attributes[0].func.attr == "resolve"
+    assert isinstance(attributes[0].func.value, ast.Call)
+    assert attributes[0].func.value.func.id == "resolve_runtime_root"
+    returned = [node.value for node in ast.walk(reader) if isinstance(node, ast.Return)]
+    assert returned == [attributes[0]]
+    guard = next(node for node in tree.body
+                 if isinstance(node, ast.FunctionDef) and node.name == "_canonical_writer_guard_path")
+    guard_calls = [node for node in ast.walk(guard) if isinstance(node, ast.Call)]
+    assert all(isinstance(node.func, ast.Name) for node in guard_calls)
+    assert {node.func.id for node in guard_calls} == {
+        "shadow_maintenance_lock_target", "_canonical_runtime_root",
+    }
 
 
 def test_direct_project_registry_loaders_have_source_session_denial() -> None:
@@ -47,6 +110,8 @@ def test_direct_project_registry_loaders_have_source_session_denial() -> None:
 
     assert callers == DIRECT_LOADER_ALLOWLIST
     source_session_owners = {
+        "loopx/control_plane/goals/goal_amendment_runtime.py",
+        "loopx/control_plane/goals/source_session_registration.py",
         "loopx/attached_session.py",
         "loopx/capabilities/manager_context/__init__.py",
         "loopx/capabilities/manager_context/roundtrip.py",
@@ -56,28 +121,34 @@ def test_direct_project_registry_loaders_have_source_session_denial() -> None:
         "loopx/control_plane/collaboration/goal_instance_scope.py",
         "loopx/control_plane/collaboration/peers.py",
         "loopx/control_plane/goals/first_party_host_admission.py",
+        "loopx/control_plane/goals/source_session_recreation.py",
         "loopx/control_plane/goals/source_session_turn_effects.py",
-        "loopx/control_plane/coordination/runtime_shadow.py",
+        "loopx/control_plane/coordination/authority_source_capture.py",
         "loopx/control_plane/coordination/shadow_goal_scope.py",
         "loopx/control_plane/projects/registry.py",
     }
-    # Storage-location observation grants no runtime action. Keep this exception
-    # at its exact function; another direct loader in the module still fails.
-    metadata_reader = "loopx/capabilities/native_chat/project_context.py"
-    metadata_tree = ast.parse((REPO_ROOT / metadata_reader).read_text(encoding="utf-8"))
-    metadata_loader_functions = {
-        node.name
-        for node in ast.walk(metadata_tree)
-        if isinstance(node, ast.FunctionDef)
-        and any(
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id == "load_project_registry"
-            for call in ast.walk(node)
-        )
+    # Metadata discovery and named lifecycle/settings owners grant no generic
+    # runtime admission. Keep every exception at its exact function; HTTP and
+    # native creation tests additionally prove the executable refusal boundary.
+    metadata_readers = {
+        **METADATA_READER_FUNCTIONS,
+        "loopx/control_plane/collaboration/request_control_source.py": {"_locked_request"},
+        "loopx/control_plane/collaboration/request_amendment.py": {"_root"},
+        "loopx/presentation/request_control_api.py": {"_request_control_source"},
+        "loopx/chat_server.py": {"serve_chat"},
+        "loopx/presentation/goal_direction_api.py": {"_direction_route"},
+        "loopx/chat_status_api.py": {"_discovery_registry"},
+        "loopx/control_plane/goals/direction_runtime.py": {"_source"},
+        "loopx/control_plane/coordination/new_goal_storage_transport.py": {"initialize_goal_storage_target"},
+        "loopx/presentation/goal_amendment_api.py": {"_amendment_inspect"},
+        "loopx/presentation/goal_source_routing.py": {"source_registry_for_goal"},
     }
-    assert metadata_loader_functions == {"coordination_runtime_root"}
-    for relative in callers - source_session_owners - {metadata_reader}:
+    for relative, expected in metadata_readers.items():
+        tree = ast.parse((REPO_ROOT / relative).read_text(encoding="utf-8"))
+        _assert_metadata_reader_functions(tree, expected)
+        if relative == "loopx/control_plane/goals/source_session_recreation.py":
+            _assert_recreation_reader_is_location_only(tree)
+    for relative in callers - source_session_owners - metadata_readers.keys():
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")
         assert "require_runtime_compatible_project_registry(" in source, relative
     attached_owner = (REPO_ROOT / "loopx/attached_session.py").read_text(
@@ -85,6 +156,28 @@ def test_direct_project_registry_loaders_have_source_session_denial() -> None:
     )
     assert "SOURCE_SESSION_PROFILE_ID" in attached_owner
     assert "source_session_goal_lifetime" in attached_owner
+
+
+@pytest.mark.parametrize("relative", tuple(METADATA_READER_FUNCTIONS))
+def test_metadata_exception_rejects_another_direct_loader(relative: str) -> None:
+    source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    tree = ast.parse(source + "\n\ndef execute_goal(registry_path):\n    return load_project_registry(registry_path)\n")
+    with pytest.raises(AssertionError):
+        _assert_metadata_reader_functions(tree, METADATA_READER_FUNCTIONS[relative])
+
+
+@pytest.mark.parametrize("reader_name", ["_canonical_runtime_root", "_canonical_writer_guard_path"])
+@pytest.mark.parametrize("authority_call", ["effect_runtime_result", "mutate_project_registry"])
+def test_recreation_metadata_exception_rejects_authority_calls(authority_call: str, reader_name: str) -> None:
+    relative = "loopx/control_plane/goals/source_session_recreation.py"
+    tree = ast.parse((REPO_ROOT / relative).read_text(encoding="utf-8"))
+    reader = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == reader_name
+    )
+    reader.body.insert(0, ast.parse(f"{authority_call}()").body[0])
+    with pytest.raises(AssertionError):
+        _assert_recreation_reader_is_location_only(tree)
 
 
 def test_generic_registry_decoder_enforces_source_session_denial() -> None:

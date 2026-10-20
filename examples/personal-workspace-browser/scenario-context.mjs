@@ -1,5 +1,18 @@
 import { installApi } from "./fixture.mjs";
 
+// A disposable backend has a different port from the browser fixture. Rebase
+// same-origin requests with it; foreign origins must still reach the real guard.
+export function fetchWorkspaceBackend(route, backendUrl, { pathname } = {}) {
+  const request = route.request();
+  const source = new URL(request.url());
+  const target = new URL(backendUrl);
+  target.pathname = pathname ?? source.pathname;
+  target.search = source.search;
+  const headers = { ...request.headers(), host: target.host };
+  if (headers.origin === source.origin) headers.origin = target.origin;
+  return route.fetch({ url: target.href, headers });
+}
+
 export async function openWorkspacePage(
   browser,
   url,
@@ -46,6 +59,9 @@ export async function openWorkspacePage(
       coverageEntries.push(...await page.coverage.stopJSCoverage());
       coverageRunning = false;
     }
+    // A route handler still proxying a request when the page goes away must
+    // not surface as an uncaught rejection that takes the whole smoke down.
+    await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
     await page.close();
     return coverageEntries;
   }

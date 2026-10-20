@@ -1,8 +1,9 @@
+import {configuredGoalChecks} from "../goals/acceptance_contract.ts";
 /** Canonical Todo reads and projection confirmation share one provider snapshot. */
 import type {JsonObject} from "../effect_program.ts";
 import {requireJsonObject} from "../runtime_decode.ts";
 import {acceptanceWorkGuard, projectGoalAcceptance,
-  projectGoalAcceptanceWorkGuards} from "../goals/acceptance_contract.ts";
+  projectGoalAcceptanceWorkGuards, goalAcceptanceOracleObservationBasis} from "../goals/acceptance_contract.ts";
 import {authorityStoreSourceAuthority as sourceAuthorityFor} from "./authority_store.ts";
 import {canonicalAuthoritySha256, hasExactAuthorityKeys, parseAuthorityCursor,
   requireAuthorityStoreId} from "./authority_store_codec.ts";
@@ -20,11 +21,14 @@ import {completionTurnOperationId,
  * this same owner. */
 export function canonicalTodoCollection(head: JsonObject, goalId: string, includeLeases: boolean) {
   const read = new CoordinationProjectionRead(head, goalId);
+  const acceptance = projectGoalAcceptance(head, goalId);
   return {
     projection: read.todoIndex,
     todoReadModel: read.validateTodoReadModel(),
     leaseIndex: includeLeases ? read.coordinationIndex : null,
-    acceptance: projectGoalAcceptance(head, goalId),
+    acceptance,
+    oracleObservationBasis: acceptance.outcome_requirements
+      ? goalAcceptanceOracleObservationBasis(head, goalId) : null,
   };
 }
 
@@ -181,7 +185,7 @@ export async function readLocalCoordinationTodoSource(
       provider_revision: revision, cursor, store_identity: identity.store_identity,
       todos: projection.todo_ids.map((todoId) => projection.todos.get(todoId)!),
       todo_ids: projection.todo_ids, todo_read_model: todoReadModel,
-      ...(acceptance.enabled !== true ? {} : {
+      ...(!configuredGoalChecks(acceptance) && !acceptance.outcome_requirements ? {} : {
         goal_acceptance_contract: acceptance,
         goal_acceptance_work_guards: projectGoalAcceptanceWorkGuards(
           transaction.projection, goalId, projection.todo_ids),
@@ -310,7 +314,7 @@ export async function listLocalCoordinationTodos(
         legacy_fallback_used: false,
       };
     }
-    const {projection, todoReadModel, leaseIndex, acceptance} = canonicalTodoCollection(
+    const {projection, todoReadModel, leaseIndex, acceptance, oracleObservationBasis} = canonicalTodoCollection(
       head.head, goalId, input.include_leases === true,
     );
     return {
@@ -320,8 +324,9 @@ export async function listLocalCoordinationTodos(
       todos: projection.todo_ids.map((todoId) => projection.todos.get(todoId)!),
       todo_ids: projection.todo_ids,
       todo_read_model: todoReadModel,
-      ...(acceptance.enabled !== true ? {} : {goal_acceptance_contract: acceptance,
+      ...(!configuredGoalChecks(acceptance) && !acceptance.outcome_requirements ? {} : {goal_acceptance_contract: acceptance,
         goal_acceptance_work_guards: projectGoalAcceptanceWorkGuards(head.head, goalId, projection.todo_ids)}),
+      ...(oracleObservationBasis === null ? {} : {goal_acceptance_oracle_observation_basis: oracleObservationBasis}),
       ...(leaseIndex === null ? {} : {
         leases: leaseIndex.lease_todo_ids.map((id) => leaseIndex.leases.get(id)!),
         handoff_mode: head.head.handoff_mode ?? "legacy",

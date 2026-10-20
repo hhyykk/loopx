@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import time
 import zipfile
 
 import pytest
@@ -91,6 +93,93 @@ def test_failed_build_preserves_existing_delivery(source):
         builder.build(None)
     assert (builder.OUTPUT / MANIFEST).read_bytes() == original
     validate_bundle(builder.OUTPUT)
+    source.update(name="recovered", fail=False)
+    builder.build(None)
+    assert validate_bundle(builder.OUTPUT)["current_assets"] == ["assets/recovered.js"]
+
+
+def test_concurrent_cold_ensure_serializes_shared_build_and_reuses_delivery(tmp_path):
+    """Separate installers share npm state; only one may build a cold checkout."""
+    (tmp_path / "apps/presentation/dashboard").mkdir(parents=True)
+    (tmp_path / "apps/presentation/dashboard/package.json").write_text("{}")
+    backend = tmp_path / "backend.py"
+    backend.write_text(
+        """import os, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+mode = sys.argv[2]
+busy = root / 'backend-busy'
+fd = os.open(busy, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+try:
+    with (root / 'backend-calls').open('a') as calls:
+        calls.write(mode + '\\n')
+    time.sleep(0.2)
+    if mode == 'build':
+        output = pathlib.Path(sys.argv[3])
+        (output / 'assets').mkdir(parents=True)
+        (output / 'assets/current.js').write_text('export const ready = true')
+        (output / 'index.html').write_text('<script src="/chat/assets/current.js"></script>')
+        (output / 'manifest.webmanifest').write_text('{}')
+finally:
+    os.close(fd)
+    busy.unlink()
+""",
+        encoding="utf-8",
+    )
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        """import importlib.util, pathlib, subprocess, sys, time
+spec = importlib.util.spec_from_file_location('builder', sys.argv[1])
+builder = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(builder)
+root = pathlib.Path(sys.argv[2])
+builder.ROOT = root
+builder.OUTPUT = root / 'loopx/web/chat'
+builder.shutil.which = lambda _: sys.executable
+original_run = subprocess.run
+def run(command, **kwargs):
+    if command[0] == 'git':
+        return subprocess.CompletedProcess(command, 0, stdout='a' * 40)
+    mode = 'ci' if command[1] == 'ci' else 'build'
+    output = kwargs.get('env', {}).get('LOOPX_CHAT_OUT_DIR', '')
+    return original_run([sys.executable, str(root / 'backend.py'), str(root), mode, output], check=True)
+builder.subprocess.run = run
+(root / ('ready-' + sys.argv[3])).touch()
+deadline = time.monotonic() + 10
+while not (root / 'start').exists():
+    if time.monotonic() > deadline:
+        raise RuntimeError('test start barrier timed out')
+    time.sleep(0.01)
+builder.ensure()
+""",
+        encoding="utf-8",
+    )
+    processes = [
+        subprocess.Popen(
+            [sys.executable, str(driver), str(spec.origin), str(tmp_path), str(index)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for index in range(2)
+    ]
+    try:
+        deadline = time.monotonic() + 10
+        while not all((tmp_path / f"ready-{index}").exists() for index in range(2)):
+            assert time.monotonic() < deadline, "workers did not reach the start barrier"
+            time.sleep(0.01)
+        (tmp_path / "start").touch()
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=20)
+            assert process.returncode == 0, (stdout, stderr)
+        assert (tmp_path / "backend-calls").read_text().splitlines() == ["ci", "build"]
+        assert validate_bundle(tmp_path / "loopx/web/chat", source_root=tmp_path)[
+            "current_assets"
+        ] == ["assets/current.js"]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
 
 
 def test_explicit_installed_predecessor_overrides_local_history(source, tmp_path):
@@ -151,8 +240,12 @@ def test_same_asset_name_different_bytes_cannot_overwrite_current(source, tmp_pa
 
 
 @pytest.mark.parametrize("checksum_valid", [True, False])
+@pytest.mark.parametrize(
+    ("target", "predecessor"),
+    [("v1.1.0", "v1.0.5"), ("v2.0.0a1", "v1.2.0")],
+)
 def test_release_predecessor_is_stable_older_and_checksum_verified(
-    tmp_path, monkeypatch, checksum_valid
+    tmp_path, monkeypatch, checksum_valid, target, predecessor
 ):
     def release(tag, *, draft=False, prerelease=False):
         return {
@@ -168,6 +261,7 @@ def test_release_predecessor_is_stable_older_and_checksum_verified(
             release("v1.0.5"),
             release("v1.1.0"),
             release("v1.2.0"),
+            release("v2.0.0"),
             release("v1.0.9", draft=True),
             release("v1.0.8", prerelease=True),
             release("desktop-main-123"),
@@ -201,13 +295,65 @@ def test_release_predecessor_is_stable_older_and_checksum_verified(
         ),
     )
     if checksum_valid:
-        builder.release_build("v1.1.0", "fixture/repository")
+        builder.release_build(target, "fixture/repository")
         assert builds == ["old code"]
     else:
         with pytest.raises(RuntimeError, match="checksum mismatch"):
-            builder.release_build("v1.1.0", "fixture/repository")
+            builder.release_build(target, "fixture/repository")
         assert builds == []
-    assert downloads == ["v1.0.5"]
+    assert downloads == [predecessor]
+
+
+def test_release_predecessor_supports_prerelease_target(monkeypatch):
+    releases = [[
+        {
+            "tag_name": "v1.4.0",
+            "draft": False,
+            "prerelease": False,
+            "assets": [{"name": "loopx-1.4.0-py3-none-any.whl"}],
+        },
+        {
+            "tag_name": "v2.0.0",
+            "draft": False,
+            "prerelease": False,
+            "assets": [{"name": "loopx-2.0.0-py3-none-any.whl"}],
+        },
+    ]]
+    monkeypatch.setattr(
+        builder.subprocess,
+        "check_output",
+        lambda *args, **kwargs: json.dumps(releases),
+    )
+    downloads = []
+
+    def download(command, **kwargs):
+        downloads.append(command[3])
+        directory = Path(command[command.index("--dir") + 1])
+        wheel = directory / "loopx-1.4.0-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr(
+                "loopx/web/chat/index.html",
+                '<script src="/chat/assets/old.js"></script>',
+            )
+            archive.writestr("loopx/web/chat/assets/old.js", "old code")
+        (directory / "SHA256SUMS").write_text(
+            f"{builder.contract.digest(wheel)}  {wheel.name}\n"
+        )
+
+    monkeypatch.setattr(builder.subprocess, "run", download)
+    builds = []
+    monkeypatch.setattr(
+        builder,
+        "build",
+        lambda previous, **kwargs: builds.append(
+            (previous / "assets/old.js").read_text()
+        ),
+    )
+
+    builder.release_build("v2.0.0a1", "fixture/repository")
+
+    assert downloads == ["v1.4.0"]
+    assert builds == ["old code"]
 
 
 def test_windows_drive_paths_are_not_portable_bundle_names():
@@ -245,3 +391,15 @@ def test_frontend_source_inputs_ignore_placeholder_checkout_line_endings(tmp_pat
 
     asset.write_bytes(b"<svg><path/></svg>\n")
     assert builder.contract.source_inputs(tmp_path) != original
+
+
+@pytest.mark.parametrize("name", ["contract.ts", "contract.json"])
+def test_provider_contract_update_invalidates_packaged_frontend(source, tmp_path, name):
+    # A changed caller contract must not ship with previously built controls.
+    contract = tmp_path / "loopx/zcode_goal_mode" / name
+    contract.parent.mkdir(parents=True)
+    contract.write_text("original contract", encoding="utf-8")
+    builder.build(None)
+    contract.write_text("changed contract", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="source changed"):
+        validate_bundle(builder.OUTPUT, source_root=tmp_path)

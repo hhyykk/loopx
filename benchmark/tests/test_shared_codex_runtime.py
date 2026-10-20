@@ -71,6 +71,16 @@ def test_trial_home_preserves_sessions_and_fixes_nonconversation_inputs(tmp_path
         prepare_codex_home(**(args | {"effort": "medium"}))
 
 
+@pytest.mark.parametrize("mode", ["plain", "native-goal", "heartbeat", "turn", "loopx-goal"])
+def test_trial_shell_tools_disable_usage_ping_for_every_execution_mode(tmp_path, mode):
+    execution = Execution(mode=mode, **({"validation_command": ("true",)} if mode == "turn" else {}))
+    args = settings(tmp_path, execution=execution,
+                    **({"skills": None} if not execution.uses_loopx else {}))
+    prepare_codex_home(**args)
+    config = tomllib.loads((args["home"] / "config.toml").read_text())
+    assert config["shell_environment_policy"]["set"]["LOOPX_USAGE_PING"] == "0"
+
+
 def test_baseline_isolated_from_loopx_skills(tmp_path):
     args = settings(tmp_path, execution=Execution(mode="native-goal"), skills=None)
     prepare_codex_home(**args)
@@ -80,6 +90,24 @@ def test_baseline_isolated_from_loopx_skills(tmp_path):
     ]
     (args["home"] / "skills").mkdir()
     with pytest.raises(ValueError, match="baseline"):
+        prepare_codex_home(**args)
+
+
+def test_catalog_staging_validates_host_bytes_but_renders_fixed_guest_path(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({"models": [{"slug": "fixture-model"}]}))
+    args = settings(tmp_path, model_catalog=catalog,
+                    model_catalog_destination=Path("/usr/local/share/codex/model-catalog.json"))
+    prepare_codex_home(**args)
+    config = tomllib.loads((args["home"] / "config.toml").read_text())
+    assert config["model_catalog_json"] == "/usr/local/share/codex/model-catalog.json"
+    with pytest.raises(ValueError, match="settings changed"):
+        prepare_codex_home(**(args | {"model_catalog_destination": Path("/different/catalog.json")}))
+    for invalid in ({"model_catalog": None}, {"model_catalog_destination": Path("relative.json")}):
+        with pytest.raises(ValueError, match="catalog destination"):
+            prepare_codex_home(**(args | invalid))
+    catalog.write_text(json.dumps({"models": [{"slug": "other-model"}]}))
+    with pytest.raises(ValueError, match="no entry"):
         prepare_codex_home(**args)
 
 
@@ -115,6 +143,70 @@ sys.stdin.read()
     }
 
 
+def test_non_heartbeat_wakes_do_not_import_checkpoint_control_plane(tmp_path, monkeypatch):
+    # plain/native-goal workers stage no LoopX control plane; a checkpoint import
+    # there turned a 90-minute trial into a 0.7s ModuleNotFoundError exit.
+    monkeypatch.setitem(sys.modules, "benchmark.runtime.checkpoint_wake", None)
+    env = worker_env(tmp_path)
+    receipt = run_once(env)
+    assert receipt["ok"], receipt
+    assert receipt.get("error_kind") is None and "checkpoint" not in receipt
+
+
+def test_native_goal_staged_source_is_importable_without_loopx_control_plane(tmp_path):
+    # Non-LoopX workers receive only NATIVE_GOAL_SOURCE_PATHS from `git archive`;
+    # a new loopx-internal import in native_codex_goal.py must be staged too,
+    # or a native-goal trial dies with ModuleNotFoundError before the model runs.
+    pytest.importorskip("harbor")
+    from benchmark.runtime.harbor import NATIVE_GOAL_SOURCE_PATHS
+    from benchmark.runtime.source import archive_source
+    repo = Path(__file__).resolve().parents[2]
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    archive = tmp_path / "source.tar"
+    archive_source(repo, head, archive, NATIVE_GOAL_SOURCE_PATHS)
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    subprocess.run(["tar", "-xf", str(archive), "-C", str(staged)], check=True)
+    # -I -S: no site-packages, so the editable checkout cannot mask a missing staged file.
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c",
+         f"import sys; sys.path.insert(0, {str(staged)!r}); "
+         "import loopx.capabilities.benchmark_toolkit.native_codex_goal as m; print(m.__name__)"],
+        cwd=tmp_path, env={"PATH": os.environ["PATH"]}, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "loopx.capabilities.benchmark_toolkit.native_codex_goal"
+
+
+def test_native_goal_rounds_graceful_deadline_and_opt_in_continuation():
+    from benchmark.runtime.worker import native_goal_rounds
+    from loopx.capabilities.benchmark_toolkit.native_codex_goal import NativeGoalDeadlineExceeded
+    clock = [0.0]
+    def tick(seconds):
+        clock[0] += seconds
+    # Default: one Goal that declares completion ends the worker (no continuation).
+    calls = []
+    def one_round(suffix, timeout):
+        calls.append((suffix, timeout)); tick(100); return "complete"
+    assert native_goal_rounds(one_round, budget_seconds=1000, continue_after_complete=False, clock=lambda: clock[0]) == (1, "complete")
+    assert calls == [("", 1000)]
+    # Opt-in: completed Goals are followed by continuation Goals until the reserve.
+    clock[0] = 0; calls.clear()
+    def completing(suffix, timeout):
+        calls.append(suffix[:40]); tick(400); return "complete"
+    rounds, outcome = native_goal_rounds(completing, budget_seconds=1000, continue_after_complete=True, clock=lambda: clock[0], reserve_seconds=300)
+    assert (rounds, outcome) == (2, "complete")
+    assert calls[0] == "" and calls[1].startswith("\n\nContinuation 1")
+    # A Goal still active at the budget edge is normal exhaustion, not a failure.
+    clock[0] = 0
+    def never_ends(suffix, timeout):
+        raise NativeGoalDeadlineExceeded("goal_timeout_before_terminal")
+    assert native_goal_rounds(never_ends, budget_seconds=1000, continue_after_complete=True, clock=lambda: clock[0]) == (1, "budget_exhausted")
+    # A non-complete terminal status stops without continuation.
+    clock[0] = 0
+    assert native_goal_rounds(lambda s, t: "cancelled", budget_seconds=1000, continue_after_complete=True, clock=lambda: clock[0]) == (1, "stopped")
+
+
 def test_fresh_wakes_share_environment_without_resuming_or_duplicate_session_copies(
     tmp_path,
 ):
@@ -137,6 +229,49 @@ def test_process_failure_is_not_reported_as_success(tmp_path):
     receipt = run_once(env)
     assert receipt["ok"] is False
     assert receipt["return_code"] == 7
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX worker resource inheritance")
+@pytest.mark.parametrize("mode,checkpoint,expected", [
+    ("heartbeat", True, 0), ("heartbeat", False, 4 * 1024 * 1024),
+    ("plain", True, 4 * 1024 * 1024),
+])
+def test_checkpoint_cli_worker_bounds_crash_dumps_without_changing_parent_or_files(
+    tmp_path, mode, checkpoint, expected,
+):
+    import resource
+
+    parent_limits = resource.getrlimit(resource.RLIMIT_CORE)
+    retained = tmp_path / "core"
+    retained.write_bytes(b"existing participant must remain exact")
+    script = r'''
+import json, os, resource, subprocess, sys
+from benchmark.runtime import worker
+_, hard = resource.getrlimit(resource.RLIMIT_CORE)
+resource.setrlimit(resource.RLIMIT_CORE, (4194304 if hard < 0 else min(4194304, hard), hard))
+def probe(env):
+    command = [sys.executable, "-c", "import json, resource; print(json.dumps(list(resource.getrlimit(resource.RLIMIT_CORE))))"]
+    with worker.child_process(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+        out, err = child.communicate()
+        assert child.returncode == 0, err
+    print(out.strip())
+    assert resource.getrlimit(resource.RLIMIT_CORE)[1] == hard
+    return {"ok": True, "timed_out": False, "mode": env["LOOPX_EXECUTION_MODE"]}
+worker.run_once = probe
+raise SystemExit(worker.main())
+'''
+    env = dict(os.environ, LOOPX_EXECUTION_MODE=mode, LOOPX_PROJECT=str(tmp_path))
+    env.pop("LOOPX_CHECKPOINT_REQUEST", None)
+    if checkpoint:
+        env["LOOPX_CHECKPOINT_REQUEST"] = "/control/explicit-request.json"
+    result = subprocess.run([sys.executable, "-c", script], env=env,
+                            text=True, capture_output=True, check=True)
+    inherited, receipt = map(json.loads, result.stdout.splitlines())
+    assert inherited[0] == (expected if parent_limits[1] < 0 else min(expected, parent_limits[1]))
+    assert inherited[1] == parent_limits[1]
+    assert receipt["ok"]
+    assert resource.getrlimit(resource.RLIMIT_CORE) == parent_limits
+    assert retained.read_bytes() == b"existing participant must remain exact"
 
 
 def test_timeout_keeps_receipt_and_reaps_child(tmp_path):
@@ -195,6 +330,10 @@ def test_scheduler_cancel_reaps_detached_worker_host_and_keeps_receipt(tmp_path)
         str(source / "scripts/external_scheduler_worker.py"),
         "--cli-bin",
         str(cli),
+        "--registry",
+        str(tmp_path / "registry.json"),
+        "--runtime-root",
+        str(tmp_path / "runtime"),
         "--goal-id",
         "fixture",
         "--agent-id",
@@ -349,12 +488,27 @@ def test_baseline_and_treatment_use_same_harbor_entry(tmp_path):
         assert env["LOOPX_EXECUTION_MODE"] == mode
         assert env["LOOPX_PROJECT"] == "/workspace"
         assert env["MODEL_NAME"] == "fixture"
-        assert agent.replan_after_turns == (3 if agent.execution.uses_loopx else None)
+        assert agent.replan_after_turns == (6 if agent.execution.uses_loopx else None)
+
+
+def test_checkpoint_request_is_explicit_and_reaches_the_existing_worker_env(tmp_path, monkeypatch):
+    pytest.importorskip("harbor")
+    from benchmark.runtime.harbor import BenchmarkCodex
+    monkeypatch.setenv("LOOPX_CHECKPOINT_REQUEST", "/ambient-request.json")
+    off = BenchmarkCodex(logs_dir=tmp_path / "off", model_name="openai/fixture")
+    assert "LOOPX_CHECKPOINT_REQUEST" not in off._worker_env(cwd="/workspace")
+    on = BenchmarkCodex(logs_dir=tmp_path / "on", model_name="openai/fixture",
+                        checkpoint_request_path="/control/checkpoint-request.json")
+    assert on._worker_env(cwd="/workspace")["LOOPX_CHECKPOINT_REQUEST"] == "/control/checkpoint-request.json"
+    for settings in ({"execution_mode": "plain", "checkpoint_request_path": "/control/request.json"},
+                     {"checkpoint_request_path": "relative"}, {"checkpoint_request_path": "/control/../request.json"}):
+        with pytest.raises(ValueError, match="checkpoint_request_path"):
+            BenchmarkCodex(logs_dir=tmp_path / "invalid", model_name="openai/fixture", **settings)
 
 
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize("settings,field,value", [
-    ({}, "replan_after_effective_turns", 3),
+    ({}, "replan_after_effective_turns", 6),
     ({"replan_after_turns": 2}, "replan_after_effective_turns", 2),
     ({"replan_after_todos": 3}, "replan_after_completed_todos", 3),
 ])
@@ -396,6 +550,44 @@ def test_seeded_phase_bootstrap_records_default_turns_or_explicit_cadence(tmp_pa
     assert configured and all(args[args.index(option) + 1] == str(value)
                               for args in configured)
     assert agent._replan_receipt() == {field: value}
+
+
+def test_requested_stride_requires_configuration_readback_before_execution(tmp_path, monkeypatch):
+    pytest.importorskip("harbor")
+    from benchmark.runtime.harbor import BenchmarkCodex
+
+    agent = BenchmarkCodex(logs_dir=tmp_path, model_name="fixture",
+                           stride_strategy="evidence_conditioned_v1")
+
+    async def prepared(*args, **kwargs):
+        return True
+
+    async def no_pending(**kwargs):
+        return SimpleNamespace(return_code=1)
+
+    async def wrong_strategy(*args, **kwargs):
+        return {"after": {"execution_profile": {
+            "replan_after_effective_turns": 6, "stride_strategy": "off",
+        }}}
+
+    monkeypatch.setattr(agent, "_registry_exists", prepared)
+    monkeypatch.setattr(agent, "_write_task_document", prepared)
+    monkeypatch.setattr(agent, "_loopx", wrong_strategy)
+    with pytest.raises(RuntimeError, match="stride strategy readback mismatch"):
+        asyncio.run(agent._prepare_phase(SimpleNamespace(exec=no_pending), "Synthetic task", cwd=str(tmp_path)))
+
+
+@pytest.mark.parametrize("settings", [
+    {"stride_strategy": "future_policy"},
+    {"stride_strategy": True},
+    {"execution_mode": "plain", "stride_strategy": "off"},
+])
+def test_stride_rejects_unknown_version_and_incompatible_mode(tmp_path, settings):
+    pytest.importorskip("harbor")
+    from benchmark.runtime.harbor import BenchmarkCodex
+
+    with pytest.raises(ValueError, match="stride_strategy"):
+        BenchmarkCodex(logs_dir=tmp_path, model_name="fixture", **settings)
 
 
 def test_staged_snapshot_keeps_observed_commit_when_branch_moves(tmp_path, monkeypatch):
@@ -473,12 +665,41 @@ def test_default_execution_has_no_independent_turn_deadline(tmp_path):
     assert "--timeout-seconds" not in turn_command(env, execution, "wake-default")
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_harbor_install_receipt_preserves_opt_out(tmp_path, monkeypatch, enabled):
+@pytest.mark.parametrize("enabled,trigger,expected", [
+    (False, None, None),
+    (True, None, "explicit"),
+    (False, "after_wake", None),
+    (False, "fresh_replan", None),
+    (True, "fresh_replan", "explicit"),
+])
+def test_harbor_install_receipt_keeps_capture_independent_from_display(tmp_path, monkeypatch, enabled, trigger, expected):
     pytest.importorskip("harbor")
     from benchmark.runtime.harbor import BenchmarkCodex, CodexOffline
-    agent = BenchmarkCodex(logs_dir=tmp_path, model_name="fixture", turn_envelope=enabled)
+    from benchmark.runtime.checkpoint_wake import CheckpointWake
+    wake_root = tmp_path / "wakes"
+    wake_root.mkdir()
+    request = tmp_path / "request.json"
+    checkpoint_args = {}
+    if trigger is not None:
+        declaration = {"destination": str(tmp_path / "checkpoints"),
+            "components": [{"id": "workspace", "source_path": str(tmp_path)}],
+            "point_metadata": {}}
+        if trigger == "fresh_replan":
+            declaration["trigger"] = trigger
+        request.write_text(json.dumps(declaration))
+        checkpoint_args = {"checkpoint_request_path": str(request),
+                           "checkpoint_request": request.read_bytes()}
+    agent = BenchmarkCodex(logs_dir=tmp_path, model_name="fixture", turn_envelope=enabled,
+                           **checkpoint_args)
+    with CheckpointWake({"LOOPX_WAKE_LOG_DIR": str(wake_root),
+            **({"LOOPX_CHECKPOINT_REQUEST": str(request)} if trigger else {})},
+            {"turn_id": "fixture", "mode": "heartbeat", "stage": "execute"}) as wake:
+        # Real declaration parser and socket lifecycle, independent of the
+        # metadata helper. Omitted trigger is legal after-wake capture.
+        assert bool(wake.socket_path) is (trigger == "fresh_replan")
+        assert enabled is (expected is not None)
     commands = []
+    command_envs = {}
     async def no_op(*args, **kwargs):
         return None
     async def stage(*args, **kwargs):
@@ -486,6 +707,7 @@ def test_harbor_install_receipt_preserves_opt_out(tmp_path, monkeypatch, enabled
         return "fixture"
     async def execute(*args, **kwargs):
         commands.append(kwargs.get("command", ""))
+        command_envs[kwargs.get("command", "")] = kwargs.get("env", {})
         return SimpleNamespace(stdout='{"ok": true}', stderr="", return_code=0)
     for key in ("LOOPX_SRC_DIR", "LOOPX_PORTABLE_PYTHON", "LOOPX_NODE_DIR"):
         monkeypatch.setenv(key, str(tmp_path))
@@ -504,8 +726,14 @@ def test_harbor_install_receipt_preserves_opt_out(tmp_path, monkeypatch, enabled
     assert "/task/toolchain" in agent._shell_path_restore()
     command = next(c for c in commands if "> /logs/agent/loopx-install.json" in c)
     receipt = json.loads(shlex.split(command)[2])
-    assert ("turn_envelope" in receipt) is enabled
-    if enabled:
+    assert receipt["loopx_usage_ping_enabled"] is False
+    for command in commands:
+        if "install-local.sh" in command or " doctor " in command:
+            assert command_envs[command]["LOOPX_USAGE_PING"] == "0"
+    assert agent._worker_env(cwd="/task")["LOOPX_USAGE_PING"] == "0"
+    assert ("turn_envelope" in receipt) is (expected is not None)
+    assert receipt.get("turn_envelope_source") == expected
+    if expected:
         assert receipt["turn_envelope"] is True
 
 
@@ -517,8 +745,10 @@ def test_wake_receipt_preserves_opt_out(tmp_path, monkeypatch, enabled):
     receipt = run_once(env)
     assert receipt["ok"], receipt
     assert ("turn_envelope" in receipt) is enabled
+    assert ("turn_envelope_source" in receipt) is enabled
     if enabled:
         assert receipt["turn_envelope"] is True
+        assert receipt["turn_envelope_source"] == "explicit"
 
 
 @pytest.mark.parametrize("observed", [
@@ -589,3 +819,168 @@ def test_missing_task_path_fails_before_install(tmp_path, monkeypatch, stdout, r
     monkeypatch.setattr(CodexOffline, "install", unexpected)
     with pytest.raises(RuntimeError, match="task container PATH"):
         asyncio.run(agent.install(SimpleNamespace(exec=task_exec)))
+
+
+def test_trial_home_stages_model_catalog_and_honors_web_search(tmp_path):
+    catalog = tmp_path / "model-catalog.json"
+    catalog.write_text(json.dumps({"models": [{"slug": "fixture-model"}]}))
+    args = settings(tmp_path) | {"web_search": "live", "model_catalog": catalog}
+    prepare_codex_home(**args)
+    config = tomllib.loads((args["home"] / "config.toml").read_text())
+    assert config["model_catalog_json"] == str(catalog.resolve())
+    assert config["web_search"] == "live"
+    defaults = settings(tmp_path) | {"home": tmp_path / "default-home"}
+    prepare_codex_home(**defaults)
+    rendered = tomllib.loads((defaults["home"] / "config.toml").read_text())
+    assert rendered["web_search"] == "disabled"
+    assert "model_catalog_json" not in rendered
+    with pytest.raises(ValueError, match="web_search"):
+        prepare_codex_home(**(settings(tmp_path) | {
+            "home": tmp_path / "ws-home", "web_search": "on"}))
+    with pytest.raises(ValueError, match="model catalog missing"):
+        prepare_codex_home(**(settings(tmp_path) | {
+            "home": tmp_path / "missing-home",
+            "model_catalog": tmp_path / "absent.json"}))
+
+
+def test_chat_bundle_revision_survives_missing_git_binary(tmp_path, monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "chat_bundle_script", Path(__file__).resolve().parents[2] / "scripts/chat_bundle.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("LOOPX_RESOLVED_SOURCE_GIT_COMMIT", "feedbeef")
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(module.subprocess, "run", missing)
+    assert module._source_revision() == "feedbeef"
+
+    class Failed:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: Failed())
+    assert module._source_revision() == "feedbeef"
+
+    class Resolved:
+        returncode = 0
+        stdout = "abc123\n"
+
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: Resolved())
+    assert module._source_revision() == "abc123"
+
+
+@pytest.mark.parametrize(
+    "catalog_body, message",
+    [
+        ("not json", "not valid JSON"),
+        (json.dumps({"models": "nope"}), '"models" list'),
+        (json.dumps({"models": [{"slug": "someone-else"}]}), "no entry for"),
+        (json.dumps({"models": [{"slug": "fixture-model",
+                                 "tool_mode": "code_mode_only"}]}), "tool_mode"),
+    ],
+)
+def test_model_catalog_counterexamples_fail_before_a_trial(tmp_path, catalog_body, message):
+    catalog = tmp_path / "model-catalog.json"
+    catalog.write_text(catalog_body)
+    with pytest.raises(ValueError, match=message):
+        prepare_codex_home(**(settings(tmp_path) | {"model_catalog": catalog}))
+
+
+def test_model_catalog_admits_capability_fields_and_model_messages(tmp_path):
+    # model_messages is prompt content; it is disclosed, not rejected, and the
+    # qualification boundary below is the check that actual tools survive.
+    catalog = tmp_path / "model-catalog.json"
+    catalog.write_text(json.dumps({"models": [{
+        "slug": "fixture-model", "tool_mode": None,
+        "supports_search_tool": True, "model_messages": ["be terse"],
+    }]}))
+    prepare_codex_home(**(settings(tmp_path) | {"model_catalog": catalog}))
+
+
+def test_toolface_qualification_captures_first_request_and_rejects_empty(tmp_path):
+    from benchmark.runtime import toolface
+
+    fake = tmp_path / "codex"
+    fake.write_text("""#!/usr/bin/env python3
+import json, os, re, sys, urllib.request
+if sys.argv[1:2] == ["--version"]:
+    print("codex-cli 0.0.0-fake"); raise SystemExit(0)
+if os.environ.get("FAKE_DIE"):
+    print("error: model catalog entry is missing field display_name", file=sys.stderr)
+    raise SystemExit(2)
+home = os.environ["CODEX_HOME"]
+config = open(os.path.join(home, "config.toml")).read()
+base = re.search(r'base_url = "([^"]+)"', config).group(1)
+model = re.search(r'model = "([^"]+)"', config).group(1)
+tools = json.loads(os.environ.get("FAKE_TOOLS", "[]"))
+namespaces = [] if os.environ.get("FAKE_NO_NAMESPACE") else [
+    {"name": "functions", "tools": [{"name": "exec"}]}]
+body = {"model": model, "tools": tools,
+        "input": [{"type": "additional_tools", "tools": namespaces}]}
+request = urllib.request.Request(base + "/responses",
+    data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+try:
+    urllib.request.urlopen(request, timeout=10)
+except Exception:
+    pass
+raise SystemExit(1)
+""")
+    fake.chmod(0o755)
+    receipt = toolface.qualify_toolface(
+        {"web_search", "apply_patch", "exec"},
+        codex_bin=fake, model="fixture-model", timeout_sec=30,
+        extra_env={"FAKE_TOOLS": json.dumps(
+            [{"type": "web_search"}, {"name": "apply_patch"}])},
+    )
+    assert receipt["binary_version"] == "codex-cli 0.0.0-fake"
+    assert receipt["tools"] == ["apply_patch", "functions.exec", "web_search"]
+    with pytest.raises(RuntimeError, match="missing"):
+        toolface.qualify_toolface(
+            {"web_search"}, codex_bin=fake, model="fixture-model",
+            timeout_sec=30, extra_env={"FAKE_TOOLS": json.dumps(
+                [{"name": "apply_patch"}])})
+    with pytest.raises(RuntimeError, match="empty tool list"):
+        toolface.qualify_toolface(
+            set(), codex_bin=fake, model="fixture-model", timeout_sec=30,
+            extra_env={"FAKE_TOOLS": "[]", "FAKE_NO_NAMESPACE": "1"})
+    # A client that cannot parse its catalog dies before any request; the
+    # qualification must surface the client's own words, not a timeout.
+    with pytest.raises(RuntimeError, match="missing field display_name"):
+        toolface.qualify_toolface(
+            set(), codex_bin=fake, model="fixture-model", timeout_sec=30,
+            extra_env={"FAKE_DIE": "1"})
+
+
+@pytest.mark.parametrize("requested,actual", [(True, False), (False, True), (None, True)])
+def test_horizon_setting_must_match_restored_goal_before_work(tmp_path, monkeypatch, requested, actual):
+    pytest.importorskip("harbor")
+    from benchmark.runtime.harbor import BenchmarkCodex
+    agent = BenchmarkCodex(logs_dir=tmp_path, model_name="fixture", planning_horizon_goal=requested)
+    async def prepared(*args, **kwargs):
+        return True
+    async def no_pending(**kwargs):
+        return SimpleNamespace(return_code=1)
+    async def wrong_setting(*args, **kwargs):
+        return {"after": {"execution_profile": {
+            "replan_after_effective_turns": 6, "planning_horizon_goal": actual,
+        }}}
+    monkeypatch.setattr(agent, "_registry_exists", prepared)
+    monkeypatch.setattr(agent, "_write_task_document", prepared)
+    monkeypatch.setattr(agent, "_loopx", wrong_setting)
+    with pytest.raises(RuntimeError, match="planning_horizon_goal readback mismatch"):
+        asyncio.run(agent._prepare_phase(SimpleNamespace(exec=no_pending), "Synthetic task", cwd=str(tmp_path)))
+
+
+@pytest.mark.parametrize("settings", [
+    {"planning_horizon_goal": "true"}, {"planning_horizon_goal": 1},
+    {"execution_mode": "plain", "planning_horizon_goal": False},
+])
+def test_horizon_setting_rejects_non_boolean_and_non_loopx_mode(tmp_path, settings):
+    pytest.importorskip("harbor")
+    from benchmark.runtime.harbor import BenchmarkCodex
+    with pytest.raises(ValueError, match="planning_horizon_goal"):
+        BenchmarkCodex(logs_dir=tmp_path, model_name="fixture", **settings)

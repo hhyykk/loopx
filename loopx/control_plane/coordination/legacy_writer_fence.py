@@ -1,25 +1,24 @@
-"""Cheap Python entry guard for the TypeScript-owned coordination fence.
+"""Python guards for retained source maintenance and historical cleanup.
 
-Legacy Todo writes still happen in Python during Stage 2C.  The durable fence
-itself and its validation semantics remain owned by the TypeScript control
-plane; this module only avoids starting that runtime while no fence exists and
-delegates every present-fence decision to the canonical handler.
+Normal Markdown Todo writes are retired. The TypeScript control plane still
+owns the durable promotion fence used by exact legacy lease release, recovery,
+and prose-only source maintenance. This module avoids starting that runtime
+while no fence exists and delegates every present-fence decision to the
+canonical handler.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import contextmanager
 import hashlib
 import re
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from ..effect_runtime import effect_runtime_result
-from ...file_lock import exclusive_cross_runtime_file_lock
 from ..projects.registry_codec import load_registry
 from ...paths import resolve_runtime_root
-from ...registry import registry_goals, resolve_state_file
+from ...registry import find_registry_goal, registry_goals, resolve_state_file
 from ..goals.active_state_metadata import parse_state_frontmatter
 from .shadow_management import (
     ShadowManagementError, read_shadow_bootstrap_source_path, read_shadow_management_state, require_shadow_primary_write_allowed,
@@ -192,6 +191,58 @@ def require_registry_source_write_allowed(
         require_legacy_coordination_write_allowed(runtime_root=registered_root, goal_id=goal_id)
 
 
+class ActiveStateAuthorityMutationError(ValueError):
+    """A prose-only writer attempted to change canonical coordination state."""
+
+    code = "active_state_authority_mutation_forbidden"
+    payload = {"primary_writeback_preserved": True}
+
+
+def require_prose_state_write_allowed(
+    *, registry_path: Path, runtime_root: Path, goal_id: str, state_path: Path,
+    original_text: str, planned_text: str,
+) -> None:
+    """Under S, enforce source maintenance and the owned prose-only invariant."""
+
+    require_registry_source_write_allowed(
+        registry_path=registry_path, runtime_root=runtime_root, goal_id=goal_id,
+        state_file=state_path, canonical_mutation=False,
+    )
+
+    from ...rollout_event_log import load_rollout_events, rollout_event_log_path
+    from ..todos.todo_index import MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL
+    from .authority_source_capture import todo_partition_projector
+    from .local_authority_shadow_projection import canonical_bytes, partition_comparison_view
+
+    try:
+        goal = find_registry_goal(load_registry(registry_path), goal_id)
+        events = load_rollout_events(
+            rollout_event_log_path(runtime_root, goal_id),
+            limit=MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL,
+        )
+        projector = todo_partition_projector(
+            goal, state_path=state_path, rollout_events=events,
+        )
+        # Todo projections include the read-time resume-condition evaluation
+        # clock. Compare the same semantic view used by shadow continuity
+        # digests so an owned prose update is not rejected merely because the
+        # two projections were evaluated milliseconds apart.
+        original_projection = partition_comparison_view(projector(original_text))
+        planned_projection = partition_comparison_view(projector(planned_text))
+        # Python structural equality aliases JSON booleans with integers.
+        # Use the existing exact-byte identity contract before authorizing IO.
+        if canonical_bytes(original_projection) != canonical_bytes(planned_projection):
+            raise ActiveStateAuthorityMutationError(
+                "prose update would change canonical Todo or handoff state"
+            )
+    except ActiveStateAuthorityMutationError:
+        raise
+    except Exception as error:
+        raise ActiveStateAuthorityMutationError(
+            "prose update cannot prove that canonical coordination state is unchanged"
+        ) from error
+
+
 def require_legacy_state_replacement_allowed(
     *, runtime_root: Path, goal_id: str, goal: dict[str, Any] | None,
 ) -> None:
@@ -222,10 +273,10 @@ def require_legacy_coordination_write_allowed(
 ) -> None:
     """Allow the default path cheaply; delegate a present fence fail-closed.
 
-    A future promotion transaction must acquire the legacy writer's existing
-    mutation lock before engaging the fence.  Calling this function while that
-    lock is held then closes the check/write race without introducing a second
-    Python authority for fence contents.
+    A promotion transaction acquires the retained mutation lock before
+    engaging the fence. Calling this function while that lock is held closes
+    the check/write race without introducing a second Python authority for
+    fence contents.
     """
 
     fence_path = legacy_coordination_writer_fence_path(
@@ -285,52 +336,3 @@ def require_legacy_coordination_write_allowed(
         code=code,
         payload={"write_check": result},
     )
-
-
-@contextmanager
-def legacy_todo_write_transaction(
-    registry_path: Path,
-    goal_id: str,
-    state_file: Path,
-    agent_id: str | None,
-    operation: str,
-    dry_run: bool,
-    *,
-    runtime_root: Path | None = None,
-) -> Iterator[None]:
-    """Serialize promotion with one complete legacy Todo mutation.
-
-    ``runtime_root`` is the effective runtime root of the CLI call (the
-    ``--runtime-root`` override when given) so the mutex and the fence check
-    share the same root as promotion and the observation hooks.  Callers that
-    omit it keep the registry-derived root.
-    """
-
-    resolved_runtime_root = runtime_root or resolve_runtime_root(
-        load_registry(registry_path),
-        None,
-        registry_path=registry_path,
-    )
-    with exclusive_cross_runtime_file_lock(
-        legacy_coordination_todo_lock_path(
-            runtime_root=resolved_runtime_root,
-            goal_id=goal_id,
-        ),
-        agent_id=agent_id,
-        operation="legacy_coordination_todo_write",
-    ), exclusive_cross_runtime_file_lock(
-        state_file,
-        agent_id=agent_id,
-        operation=operation,
-    ):
-        if not dry_run:
-            require_registry_source_write_allowed(
-                registry_path=registry_path, runtime_root=resolved_runtime_root, goal_id=goal_id,
-                state_file=state_file,
-            )
-            require_shadow_primary_write_allowed(resolved_runtime_root, goal_id)
-            require_legacy_coordination_write_allowed(
-                runtime_root=resolved_runtime_root,
-                goal_id=goal_id,
-            )
-        yield

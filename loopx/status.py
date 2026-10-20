@@ -617,6 +617,7 @@ def project_post_handoff_history(
     for run, signal in zip(runs, projection["runs"], strict=True):
         compact = {field: run[field] for field in (
             "generated_at", "classification", "health_check", "json_exists", "markdown_exists",
+            "progress_scope",
         ) if field in run}
         compact.update({field: signal[field] for field in ("delivery_batch_scale", "delivery_turn_kind")})
         if signal.get("delivery_claim_conflicts"):
@@ -1358,12 +1359,15 @@ def collect_status(
     include_public_boundary_scan: bool = True,
     recent_run_limit: int | None = None,
     include_goal_subagent_configuration: bool = False,
+    include_zcode_goal_eligibility: bool = False,
     activation_state_filter: str | None = None,
     agent_lane_id: str | None = None,
+    allow_missing_registry: bool = False,
 ) -> dict[str, Any]:
     with effect_runtime_request_scope():
         return _collect_status_read_model(
             registry_path=registry_path,
+            allow_missing_registry=allow_missing_registry,
             runtime_root_override=runtime_root_override,
             scan_roots=scan_roots,
             limit=limit,
@@ -1375,6 +1379,7 @@ def collect_status(
             include_goal_subagent_configuration=(
                 include_goal_subagent_configuration
             ),
+            include_zcode_goal_eligibility=include_zcode_goal_eligibility,
             activation_state_filter=activation_state_filter,
             agent_lane_id=agent_lane_id,
             context=build_status_collection_context(),

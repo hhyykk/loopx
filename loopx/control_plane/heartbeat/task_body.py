@@ -33,7 +33,6 @@ def _render_compact_policy_tail(
     *,
     material_queue_rule: str,
     permission_rule: str,
-    include_default_permission: bool = False,
 ) -> str:
     parts = [
         "No learning queue unless asked."
@@ -42,8 +41,6 @@ def _render_compact_policy_tail(
     ]
     if permission_rule != DEFAULT_PERMISSION_RULE:
         parts.append(permission_rule)
-    elif include_default_permission:
-        parts.append("No permission asks in a trusted session.")
     return " ".join(parts)
 
 
@@ -93,6 +90,9 @@ def render_heartbeat_task_body(
     pr_review_pre_quota_block = (
         f"{pr_review_pre_quota_command}\n" if pr_review_pre_quota_command else ""
     )
+    policy_tail = _render_compact_policy_tail(
+        material_queue_rule=material_queue_rule, permission_rule=permission_rule,
+    )
     return f"""Advance `{goal_id}` using `{active_state}`.
 
 {scope_block}
@@ -111,7 +111,9 @@ If that preflight still fails: no work/spend; quiet `DONT_NOTIFY`.
 `agent_read_required`: drain/read/triage before work; settle/ACK.
 
 {USER_TODO_FINAL_MESSAGE_RULE}
+{HOST_LOOP_QUOTA_DISPATCH_RULE}
 {HEARTBEAT_VISION_WRITEBACK_RULE_SHORT}
+{SCHEDULER_HINT_APPLICATION_RULE} Scheduling grants no delivery permission.
 
 If the result says `should_run=false`:
 
@@ -123,15 +125,14 @@ If the result says `should_run=false`:
   never say "no new user action". Honor
   `open_todo_notification_policy=repeat_until_resolved`; when
   `user_gate_notification_cooldown.notification_suppressed=true`, keep the gate
-  pending and quiet until its reminder window/change. No gated delivery/spend.
+  pending and quiet until its reminder window/change.
   No delivery/spend on the gated path.
 - If the payload also says `safe_bypass_allowed=true` and the same gate has
   already been surfaced, the gate blocks only the gated delivery path. You may
   do exactly one bounded safe-bypass step from the Priority Stack that does not
-  depend on that gate; validate, write back, refresh accountable progress, spend
-  once. Only if `user_channel.notify=NOTIFY`: report the result compactly; if
-  `user_todo_summary.open_count > 0`, include those todos; if none exists, report
-  the gate. Under `DONT_NOTIFY`, stay quiet after the safe-bypass work.
+  depend on that gate; validate and follow the current settlement plan.
+  Under `NOTIFY`, report the result and open user todos, or the gate if none.
+  Under `DONT_NOTIFY`, stay quiet after the work.
 - If `effective_action=monitor_quiet_skip`, receipt/stall is written; quiet
   unless replan. On receipt write failure, retry same id. No edits/spend;
   receipts do not self-stop.
@@ -140,17 +141,15 @@ If the result says `should_run=false`:
   project-approved status/log/metric/marker surfaces named in active state,
   `recommended_action`, or `goal_boundary.next_probe`. Unchanged evidence:
   quiet `DONT_NOTIFY`, no edits, no spend. New eval/fail/complete/blocker/
-  approval/CI/deploy/data evidence: write back only allowed canonical
-  state/board/ledger, add todos if needed, then spend once after validation.
-  Only if `user_channel.notify=NOTIFY`: report the new evidence. Under
-  `DONT_NOTIFY`, stay quiet.
+  approval/CI/deploy/data evidence: use the projected monitor writeback commands;
+  exact monitor settlement never refreshes/spends. An auxiliary poll does not
+  replace admitted work or its settlement.
+  Report new evidence only under `NOTIFY`.
   Still do not launch/stop/restart/sync/design code or mutate production unless
   `should_run=true` or the user explicitly authorizes it.
 - Otherwise, do not do implementation work, adapter work, file edits, research,
   or project exploration in this turn. Return a quiet heartbeat `DONT_NOTIFY`
   response with the skip reason.
-  {SCHEDULER_HINT_APPLICATION_RULE} App automation cadence changes are host
-  scheduling updates only; they never consume quota or authorize delivery work.
 
 If the result says `should_run=true`:
 
@@ -171,28 +170,24 @@ If the result says `should_run=true`:
    If `effective_action=outcome_floor_recovery` or
    `recovery_delivery_allowed=true` or
    `safe_bypass_kind=outcome_floor_recovery`, produce the required
-   ranker/cross-domain evidence artifact named by `must_advance`, or write back
+   evidence artifact named by `must_advance`, or write back
    the concrete blocker. Do not fall through to ordinary delivery,
    surface propagation, or synthetic-only chains.
    Read `execution_obligation`: `notify` is not an execution gate;
    `must_attempt_work=true` requires scope-bounded work even with
    `notify=DONT_NOTIFY`; quiet no-op needs `must_attempt_work=false` and
    `user_channel.notify=DONT_NOTIFY`. Use
-   `scheduler_hint` for wakeup and unchanged-loop limits. For App automation:
-   `apply_needed=true` -> update `recommended_rrule` once; on success run
-   `ack_hint.cli_args`; on failure/timeout do not retry or ack, run
-   `failure_hint.cli_args` once. LoopX suppresses that target/host pair until
-   either changes; continue under the observed host cadence. Else
-   `ack_needed=true` -> run that bound ack directly; else skip.
-   LoopX owns reset/progression state. It is scheduling only, not delivery
-   permission.
+   `scheduler_hint` for wakeup and unchanged-loop limits. Apply the scheduler
+   steps above with its bound ACK/failure hints. Failed updates do not permit
+   an ACK or retry; honor target/host suppression and observed cadence.
+   LoopX owns reset/progression.
 
    {reward_memory_rule}
    Then use
    `heartbeat_recommendation`: `recommended_mode=run_first_read_only_map` means
    run its `command` as a real read-only map, then
-   validate/save the `read_only_project_map` result, refresh accountable
-   progress, append exactly one heartbeat spend, sync state if needed; notify
+   validate/save the `read_only_project_map` result and settle through the
+   current plan; notify
    only under `NOTIFY`. If it says
    `recommended_mode=mapped_noop_if_unchanged` with `stop_if_unchanged=true`,
    and you find no new user instruction, owner evidence, agent todo, stale
@@ -201,9 +196,9 @@ If the result says `should_run=true`:
    Check `delivery_batch_scale`, `delivery_outcome`,
    `post_handoff_outcome_gap_streak`, and `handoff_delivery_contract`; for
    repeated-small or surface-only loops, obey the contract.
-2. Run a short steering audit before choosing work: list at least three
-   plausible next-action candidates across different P0/P1/P2 lanes when
-   useful; if the same topic has consumed several recent delivery slices, apply
+2. Run a short steering audit when new evidence or a projected review warrants
+   changing the selected work; compare relevant alternatives without a fixed
+   candidate count. If the same topic has consumed several recent delivery slices, apply
    a continuation check and state why continuing still wins; keep compute quota
    separate from focus quota; record any losing high-value candidate that should
    not be forgotten. Include a product bottleneck lens: ask whether the core
@@ -211,15 +206,11 @@ If the result says `should_run=true`:
    evidence quality, adapter readiness, or priority-rule gaps, and promote one
    concrete bottleneck candidate when it should outrank the nearest local TODO.
    Plan/top todo/route changes need todo/Next Action writeback or no-writeback rationale.
-3. Run the no-progress self-repair check before choosing delivery work. Obey
-   any machine-readable `autonomous_replan_obligation` or
-   `execution_obligation.must_attempt_work=true` from `quota should-run`; that
-   hard contract overrides a quiet no-op. Count a turn as no-progress only when
-   it produced no substantive artifact, adapter/implementation progress,
-   gate/user decision, or validation signal. If 2 consecutive eligible
-   heartbeats are no-progress loops, run one bounded self-repair/replan segment
-   before another quiet no-op. Delete/pause only when that repair path is stuck
-   for 2 more eligible turns; no spend for the self-cancel turn.
+3. Run the no-progress self-repair check against current evidence. Obey
+   `autonomous_replan_obligation`, `replan_action_packet` and
+   `execution_obligation.must_attempt_work` from the guard. Preserve valid work;
+   reconcile ambiguous effects before retry. Wake counts do not authorize replan
+   or self-pause; obey explicit/Core/host stops, with original settlement still owed.
 4. {SCOPE_BOUNDED_WORK_RULE}
    Related work can form a coherent effort; a focused correction may suffice.
 5. Execute that scoped work. Stay inside `goal_boundary` when present.
@@ -233,43 +224,16 @@ If the result says `should_run=true`:
    {HOST_LOOP_TODO_CLOSEOUT_RULE}
    For the full field contract, see `docs/project-agent-todo-contract.md` in
    the LoopX checkout.
-8. After validation/writeback, use actual class/scale/outcome; never default or
-   upgrade to `multi_surface` / `outcome_progress`. Record accountable delivery:
+8. After validation/writeback, follow the current settlement plan in order.
+   Use actual class/scale/outcome; never default or upgrade to `multi_surface`
+   / `outcome_progress`. Accountable progress precedes its spend; state-only
+   refresh cannot replace it. Preserve complete command output and reconcile
+   uncertain effects before any retry. Never append accountable progress after
+   spend or spend for quiet skips, preflight failures, dry runs or duplicate
+   accounting. A validated safe-bypass result still owes its projected settlement.
+9. Follow the user-channel rule above for results, gates, blockers or self-stop.
 
-   ```bash
-   {progress_refresh_state_command}
-   ```
-
-   Spend consumes this causal record; plain state-only refresh cannot replace
-   it. Run spend once as rendered; no pipe/filter/retry:
-
-   ```bash
-   {quota_spend_command}
-   ```
-
-   If spend output is ambiguous, verify with read-only quota status; never
-   rerun.
-
-   Do not append spend for quiet `should_run=false` skips, preflight failures,
-   pure dry-run previews, or duplicate accounting attempts. If
-   `should_run=false` but `safe_bypass_allowed=true` and you actually completed
-   a bounded safe-bypass step, append this same spend event once after
-   validation/writeback.
-
-9. After spend, optionally refresh state-only:
-
-   ```bash
-   {refresh_state_command}
-   ```
-
-   Never emit accountable progress after spend; it creates an unspent record.
-
-10. Return compactly under `interaction_contract.user_channel.notify`:
-    `NOTIFY` only for concrete artifact/gate/blocker/self-stop when the
-    authority is `NOTIFY`; otherwise stay quiet `DONT_NOTIFY`.
-
-{material_queue_rule}
-{permission_rule}"""
+{policy_tail}"""
 def render_brief_heartbeat_task_body(
     *,
     goal_id: str,
@@ -297,7 +261,6 @@ def render_brief_heartbeat_task_body(
     policy_tail = _render_compact_policy_tail(
         material_queue_rule=material_queue_rule,
         permission_rule=permission_rule,
-        include_default_permission=True,
     )
     return f"""Advance `{goal_id}` from `{active_state}`.
 
@@ -318,11 +281,11 @@ Fail:quiet.
 {HEARTBEAT_NOTIFICATION_RULE_SHORT}
 {SCOPE_BOUNDED_WORK_RULE}
 {HEARTBEAT_VISION_WRITEBACK_RULE_SHORT}
+{SCHEDULER_HINT_THIN_RULE}
 
 `should_run=false`: follow user channel; `monitor_quiet_skip` records
-receipt/stall. Wait: one read-only poll; only new evidence permits
-writeback/spend; retry the same id.
-{SCHEDULER_HINT_THIN_RULE}
+receipt/stall. Wait: one allowed read-only poll; use current monitor/auxiliary
+contract for new evidence. Retry a failed receipt with its same id.
 `agent_read_required`: drain/read/triage before work; settle/ACK.
 
 `should_run=true`: read compact, `status --limit 3`, and
@@ -330,14 +293,10 @@ writeback/spend; retry the same id.
 Outcome-floor recovery: evidence or blocker.
 {HOST_LOOP_QUOTA_DISPATCH_RULE}
 {reward_memory_rule}
-After validated delivery, settle via current
-`interaction_contract.cli_channel.settlement_plan.ordered_steps` in exact
-identity/effect order; without a plan follow current `next_cli_actions`, never
-old refresh/spend. Todo acceptance is not settlement. External wait:
-open + monitor_changed + successor -> rerun quota/continue, no spend.
-Finish only on terminal no-follow-up.
+{HOST_LOOP_TODO_CLOSEOUT_COMPACT_RULE}
+Finish Goal only on terminal no-follow-up.
 
-Do not spend for quiet skips, preflight failures, blocker-push questions,
+Do not spend for quiet skips, preflight failures, blocker-only turns,
 dry runs, or duplicate accounting. Output only under
 `user_channel.notify=NOTIFY`; otherwise stay quiet.
 
@@ -369,9 +328,11 @@ def render_compact_heartbeat_task_body(
     pr_review_pre_quota_block = (
         f"{pr_review_pre_quota_command}\n" if pr_review_pre_quota_command else ""
     )
+    policy_tail = _render_compact_policy_tail(
+        material_queue_rule=material_queue_rule, permission_rule=permission_rule,
+    )
     return f"""Advance `{goal_id}` using `{active_state}`.
 
-Compact policy: registry/state/adapter/`goal_boundary`.
 Detail: `{expanded_prompt_command}`.
 {scope_block}
 
@@ -386,6 +347,7 @@ LOOPX_TURN=<current_time_iso>
 Preflight fail: quiet; no work/spend.
 
 {SCHEDULER_HINT_COMPACT_RULE}
+{HOST_LOOP_QUOTA_DISPATCH_RULE}
 {HEARTBEAT_VISION_WRITEBACK_RULE_SHORT}
 {OPERATOR_LANGUAGE_RULE}
 
@@ -398,8 +360,9 @@ If `should_run=false`: `monitor_quiet_skip` -> receipt/stall; quiet unless
 replan; failed write -> retry id; no edits/spend; receipts do not self-stop.
 Only under `NOTIFY`, `state=operator_gate`/`notify_user_on_open_todo=true`
 permit concrete blocker-push; else quiet.
-Honor repeat/cooldown. `safe_bypass_allowed=true`: one validated step. Wait
-monitor: one read-only poll; unchanged quiet, new evidence writeback/spend.
+Honor repeat/cooldown. `safe_bypass_allowed=true`: validate/settle its allowed work.
+Wait: one allowed read-only poll; unchanged quiet, new evidence follows the
+current monitor/auxiliary contract.
 
 If `should_run=true`:
 1. Read active state, Priority Stack, progress/critic, `goal_boundary`,
@@ -414,51 +377,41 @@ If `should_run=true`:
    Dependency/sibling todos: record; continue audit.
 3. If `effective_action=outcome_floor_recovery` or
    `recovery_delivery_allowed=true` or
-   `safe_bypass_kind=outcome_floor_recovery`, run only ranker/cross-domain
+   `safe_bypass_kind=outcome_floor_recovery`, run only the requested
    evidence artifact or blocker recovery; no ordinary delivery or
    surface/synthetic-only work.
 4. `execution_obligation`: `must_attempt_work=true` requires work even with
    `notify=DONT_NOTIFY`; quiet no-op needs false and `user_channel.notify=DONT_NOTIFY`.
    Then follow `heartbeat_recommendation`:
-   `run_first_read_only_map`: exact real-map, validate/save/refresh/spend;
+   `run_first_read_only_map`: exact real-map, validate/save/projected settlement;
    notify only under `NOTIFY`;
    `mapped_noop_if_unchanged` plus
    `stop_if_unchanged=true` means quiet no-op if no new instruction/evidence/
    todo/stale source/safe handoff.
    `task_orchestration_contract`: spawn admitted child lanes or resume peers;
    the coordinator alone accepts evidence and writes/spends once.
-   Check `delivery_batch_scale`, `delivery_outcome`,
-   `post_handoff_outcome_gap_streak`, `handoff_delivery_contract`; obey
-   repeated-small/surface-loop contracts.
-5. Run steering audit: compare P0/P1/P2, continuation checks,
+   Obey current `handoff_delivery_contract` and repeated-small/surface-loop
+   requirements; do not infer progress from batch size or handoff alone.
+5. Run steering audit on new evidence/projected review: relevant P0/P1/P2 alternatives, continuation checks,
    compute/focus quota, bottleneck lens.
-6. no-progress self-repair: obey `autonomous_replan_obligation` or
-   `execution_obligation.must_attempt_work=true`; after 2 eligible stall
-   heartbeats with only status/brief checks, replan before quiet no-op.
-   Pause/delete only if repair stays stuck 2 more turns.
+6. no-progress self-repair: follow `autonomous_replan_obligation` and
+   `replan_action_packet`; preserve valid work; reconcile ambiguous effects before
+   retry. No wake-count replan or self-pause; explicit/Core/host stops and original
+   settlement still apply.
 7. {SCOPE_BOUNDED_WORK_RULE}
    {HOST_LOOP_SAFETY_RULE}
 8. Validate; write files/validation/critic/next action to active state;
    use `{cli_bin} todo add --goal-id {goal_id} --role user --task-class user_gate|user_action`
    for owner todos and `--role agent` for agent todos, not prose.
    {HOST_LOOP_TODO_CLOSEOUT_COMPACT_RULE}
-9. Account actual class/scale/outcome; no defaults. Refresh; spend once
-   unpiped; never retry:
+9. Settle through the current plan; actual class/scale/outcome, no defaults.
+   Accountable progress precedes its spend; preserve complete output. Optional
+   post-spend refresh is state-only, never another accountable progress record.
 
-```bash
-{progress_refresh_state_command}
-{quota_spend_command}
-```
+No spend for quiet skips, preflight failures, blocker-only turns, dry runs,
+self-cancel turns or duplicate accounting. Follow the output policy above.
 
-10. Optional state-only post-spend: `{refresh_state_command}`; never accountable.
-
-No spend for quiet skips, preflight failures, blocker-push asks, dry-runs,
-self-cancel turns, or duplicate accounting.
-
-Return only under `user_channel.notify=NOTIFY`; otherwise stay quiet.
-
-{material_queue_rule}
-{permission_rule}"""
+{policy_tail}"""
 def render_visible_goal_task_body(
     *,
     goal_id: str,
@@ -675,11 +628,13 @@ def render_thin_heartbeat_task_body(
 Use TurnEnvelope: `action.must_attempt` requires work; `user.notify` controls
 output only. ok=false -> recovery, no delivery. Language=user. Honor `boundary`, `execution_policy`, `contract_capsule`,
 `work_context`, remaining `required_reads`, `agent_context`, and `replan_action_packet` when present.
-Read `detail_ref.full_decision` for selection, replan, capability context or
-missing/truncated commands: same-invocation observation, not fresh admission.
+When present, read inline `agent_context` before planning. Read `detail_ref.full_decision` for
+selection, replan, missing/truncated commands or an `agent_context.detail_ref`:
+same-invocation observation, not fresh admission.
 Selection uses the saved `interaction_contract.cli_channel.selection_command`.
-Keep the guard's --turn-envelope and --decision-output-root on every fresh
-selection/repair/replan guard; each call saves its own immutable observation.
+Keep all supplied guard transport flags (--turn-envelope, --decision-output-root,
+and --decision-handoff-socket when present) on every fresh selection/repair/replan
+guard; each call saves its own immutable observation.
 After a workspace or state change, re-enter the guard before continuing work.
 
 ```sh
@@ -694,8 +649,9 @@ Validate work; execute `writeback.settlement_plan` and `writeback.next_cli_actio
 their exact identity. Do not guess commands from abbreviated previews.
 Writeback needs outcome and vision; unchanged reason requires an existing
 current evidence-linked vision. Missing vision after writeback -> same-Turn
-checkpoint-context then evidence; stale -> reread. Done -> complete Todo; waiting -> monitor and
-successor. Two stalls -> replan. P0 blocked -> safe P1/P2; quiet polls do not spend.
+checkpoint-context then evidence; stale -> reread.
+{HOST_LOOP_TODO_CLOSEOUT_COMPACT_RULE}
+P0 blocked -> admitted P1/P2; quiet polls do not spend.
 `agent_read_required`: read/triage before work, settle/ACK.
 {reward_memory_rule}
 {policy_tail}"""
@@ -716,23 +672,33 @@ LOOPX_TURN=<current_time_iso>
 {RUNTIME_CAPABILITY_PROJECTION_THIN_RULE}
 {SCHEDULER_HINT_THIN_RULE}
 {HEARTBEAT_VISION_WRITEBACK_RULE_SHORT}
-Done->todo/rationale; wait->monitor+successor/work; guard; 2 stalls->replan.
+Todo done≠settled; no invented successor. Wait=open; projected monitor/continuation; re-enter guard.
 `agent_read_required`: drain/read/triage before work; settle/ACK.
 
-P0 blocked: safe P1/P2; monitor quiet/no-spend.
+P0 blocked: admitted P1/P2; no wait spend.
 
 {reward_memory_rule}
 
 {policy_tail}"""
 def render_heartbeat_generator_inputs_markdown(payload: dict[str, Any]) -> str:
     interface_budget = payload.get("interface_budget") if isinstance(payload.get("interface_budget"), dict) else {}
+    active_state = payload.get("active_state")
+    resolved_active_state = payload.get("resolved_active_state")
+    state_lines = [
+        f"- active_state: `{active_state}`",
+        f"- active_state_source: `{payload.get('active_state_source')}`",
+    ]
+    # Keep both route identities and the complete path without printing an
+    # identical long native path twice. Different or unresolved routes stay explicit.
+    if active_state is not None and active_state == resolved_active_state:
+        state_lines[0] = f"- active_state = resolved_active_state: `{active_state}`"
+    else:
+        state_lines.append(f"- resolved_active_state: `{resolved_active_state}`")
     lines = [
         "## Generator Inputs",
         "",
         f"- goal_id: `{payload.get('goal_id')}`",
-        f"- active_state: `{payload.get('active_state')}`",
-        f"- active_state_source: `{payload.get('active_state_source')}`",
-        f"- resolved_active_state: `{payload.get('resolved_active_state')}`",
+        *state_lines,
         f"- compact: `{payload.get('compact')}`",
         f"- brief: `{payload.get('brief')}`",
         f"- thin: `{payload.get('thin')}`",
@@ -759,10 +725,13 @@ def render_heartbeat_generator_inputs_markdown(payload: dict[str, Any]) -> str:
                 f"- thin_prompt_command: `{payload.get('thin_prompt_command')}`",
             ]
         )
+    if payload.get("pr_review_pre_quota_command") is not None:
+        lines.append(
+            "- pr_review_pre_quota_command: "
+            f"`{payload['pr_review_pre_quota_command']}`"
+        )
     lines.extend(
         [
-            "- pr_review_pre_quota_command: "
-            f"`{payload.get('pr_review_pre_quota_command')}`",
             f"- quota_guard_command: `{payload.get('quota_guard_command')}`",
             f"- quota_spend_command: `{payload.get('quota_spend_command')}`",
             f"- cli_preflight: `{payload.get('cli_preflight')}`",

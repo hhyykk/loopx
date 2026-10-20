@@ -1,10 +1,15 @@
 import type { SettlementIdentity } from "../effect_program.ts";
 import { jsonObject } from "../runtime_decode.ts";
-import { isCausalBlockedWait } from "./blocked_wait.ts";
+import { isBlockedLifecycleWait, isCausalBlockedWait, isMonitorUnavailableWait } from "./blocked_wait.ts";
+import { isTurnScopedSettlementOutcome } from "../work_items/delivery_outcome.ts";
 
-/** A blocked Turn needs a bounded retry or a verified canonical causal wait. */
+/** Historical entry point for blocked no-spend qualification: an advancement
+ * retry/causal wait, blocked lifecycle or a Monitor unavailable attempt.
+ * A lifecycle/Monitor closeout creates no retry clock or execution grant. */
 export function isBoundedBlockedRetry(value: unknown, todoId: string | null): boolean {
   if (isCausalBlockedWait(value, todoId)) return true;
+  if (isBlockedLifecycleWait(value, todoId)) return true;
+  if (isMonitorUnavailableWait(value, todoId)) return true;
   const retry = jsonObject(value);
   if (!retry || retry.schema_version !== "quota_blocked_retry_v0" ||
       (retry.source !== "todo" && retry.source !== "turn_settlement") ||
@@ -15,6 +20,77 @@ export function isBoundedBlockedRetry(value: unknown, todoId: string | null): bo
   const due = Date.parse(retry.due_at);
   const delay = (due - observed) / 1000;
   return Number.isFinite(delay) && delay >= 60 && delay <= 30 * 60;
+}
+
+/** The replan owner has already qualified the blocker/path and its evidence.
+ * Verify that exact observation and semantic checkpoint, rather than inventing
+ * a Todo binding or retry clock for this administrative no-debit closeout.
+ * The caller must verify the guard and durable writeback receipts first. */
+export function isAcceptedBlockedReplanWriteback(
+  value: unknown, identity: SettlementIdentity, selectedObligation: unknown,
+): boolean {
+  const run = jsonObject(value), ack = jsonObject(run?.autonomous_replan_ack);
+  const delta = jsonObject(ack?.semantic_delta), progress = jsonObject(run?.progress_observation);
+  const checkpoint = jsonObject(run?.vision_checkpoint);
+  const outcomes = delta?.outcomes, satisfying = delta?.satisfying_outcomes;
+  return identity.binding_kind === "autonomous_replan" && identity.replan_obligation_id !== null
+    && selectedObligation === identity.replan_obligation_id
+    && !!run && run.goal_id === identity.goal_id && run.agent_id === identity.agent_id
+    && run.turn_instance_id === identity.turn_instance_id && run.replan_obligation_id === identity.replan_obligation_id
+    && run.delivery_outcome === "outcome_gap"
+    && isTurnScopedSettlementOutcome(run.delivery_outcome, progress, identity.replan_obligation_id)
+    && ack?.schema_version === "autonomous_replan_ack_v0" && ack.recorded === true
+    && delta?.schema_version === "replan_semantic_delta_v0" && delta.accepted === true
+    && delta.obligation_id === identity.replan_obligation_id
+    && typeof progress?.fingerprint === "string" && progress.fingerprint.length > 0
+    && delta.observation_fingerprint === progress.fingerprint
+    && Array.isArray(outcomes) && Array.isArray(satisfying) && satisfying.some(outcome =>
+      outcomes.includes(outcome) && (outcome === "new_concrete_blocker" || outcome === "fresh_vision_path_outcome"))
+    && checkpoint?.schema_version === "vision_checkpoint_v0" && checkpoint.agent_id === identity.agent_id
+    && checkpoint.satisfied === true && checkpoint.delivery_boundary === "semantic_closeout"
+    && Array.isArray(checkpoint.triggers) && checkpoint.triggers.some(value => {
+      const trigger = jsonObject(value);
+      return trigger?.kind === "material_delivery_outcome" && trigger.delivery_outcome === "outcome_gap";
+    });
+}
+
+/** A service-qualified capability duty can retire its exact admitted Turn.
+ * The caller first verifies the durable writeback receipt. No Task/Goal
+ * completion, progress or debit follows from this lifecycle evidence. */
+export function isCapabilityRetirementWriteback(value: unknown, identity: SettlementIdentity, selectedGuard: unknown): boolean {
+  const run = jsonObject(value), guard = jsonObject(selectedGuard);
+  const ack = jsonObject(run?.autonomous_replan_ack), delta = jsonObject(ack?.semantic_delta);
+  const retirement = jsonObject(delta?.retirement), original = jsonObject(retirement?.original_guard);
+  const deltaGuard = jsonObject(delta?.capability_guard), progress = jsonObject(run?.progress_observation);
+  const sameGuard = (candidate: Record<string, unknown> | null) => !!guard && !!candidate
+    && candidate.schema_version === "semantic_replan_capability_guard_v0"
+    && candidate.capability_id === guard.capability_id && candidate.gap_id === guard.gap_id
+    && candidate.frontier_revision === guard.frontier_revision;
+  return identity.binding_kind === "autonomous_replan" && identity.replan_obligation_id !== null
+    && !!run && run.goal_id === identity.goal_id && run.agent_id === identity.agent_id
+    && run.turn_instance_id === identity.turn_instance_id && run.replan_obligation_id === identity.replan_obligation_id
+    && run.delivery_outcome === "outcome_gap" && ack?.recorded === true
+    && delta?.schema_version === "replan_semantic_delta_v0" && delta.accepted === true
+    && delta.obligation_id === identity.replan_obligation_id
+    && JSON.stringify(delta.outcomes) === '["capability_duty_retired"]'
+    && JSON.stringify(delta.satisfying_outcomes) === '["capability_duty_retired"]'
+    && retirement?.schema_version === "capability_obligation_retirement_v0" && retirement.disposition === "invalidated"
+    && retirement.obligation_id === identity.replan_obligation_id && retirement.capability_id === guard?.capability_id
+    && ["source_disabled", "source_ineligible", "source_revision_changed"].includes(String(retirement.reason_code))
+    && retirement.blocking_todo_count === 0 && Array.isArray(retirement.blocking_todo_ids) && retirement.blocking_todo_ids.length === 0
+    && typeof retirement.current_revision === "string" && retirement.current_revision.length > 0
+    && sameGuard(original) && sameGuard(deltaGuard)
+    && progress?.schema_version === "typed_progress_observation_v0" && progress.result_class === "blocked"
+    && progress.work_item_id === identity.replan_obligation_id
+    && typeof progress.blocker_id === "string" && progress.blocker_id.length > 0
+    && typeof progress.fingerprint === "string" && progress.fingerprint.length > 0
+    && retirement.progress_fingerprint === progress.fingerprint
+    && jsonObject(retirement.progress_observation)?.blocker_id === progress.blocker_id
+    && jsonObject(retirement.progress_observation)?.work_item_id === identity.replan_obligation_id
+    && jsonObject(retirement.progress_observation)?.result_class === "blocked"
+    && jsonObject(retirement.progress_observation)?.schema_version === "typed_progress_observation_v0"
+    && JSON.stringify(jsonObject(retirement.progress_observation)?.evidence_ids) === JSON.stringify(progress.evidence_ids)
+    && JSON.stringify(progress.evidence_ids) === JSON.stringify([retirement.current_revision]);
 }
 
 /** The committed checkpoint accepts progress for a Turn, not Todo completion.
@@ -96,12 +172,14 @@ export interface ReceiptBoundMonitorSettlementState {
   material_change: boolean;
   durable_writeback_present: boolean;
   quota_spend_present: boolean;
+  /** Exact typed unavailable writeback, verified by the settlement owner. */
+  unavailable_attempt_present?: boolean;
 }
 
 export function receiptBoundMonitorPhase(
   state: ReceiptBoundMonitorSettlementState,
 ): ReceiptBoundMonitorPhase {
-  if (!state.poll_present) return "poll_due";
+  if (!state.poll_present && !state.unavailable_attempt_present) return "poll_due";
   // The committed monitor-poll is the durable no-spend closeout for this
   // monitor Turn. A material observation may atomically release an independent
   // successor, but it never upgrades the observe-only monitor into an

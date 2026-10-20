@@ -657,6 +657,32 @@ Every attempted tick returns one result kind:
 | `validation_failed` | Host output exists but task validation failed or is inconclusive. | Preserve failure evidence and route to repair/replan. |
 | `writeback_failed` | Validated work could not be durably recorded. | Do not spend; retry idempotent writeback before more delivery. |
 
+Managed host adapters carry the existing path-delta fields through the typed
+result unchanged: `path_delta_mode`, `agent_vision_json`, and
+`vision_unchanged_reason`. A material path change uses
+`path_delta_mode: "material_replan"`, `result_kind: "replan_required"`, and a
+JSON-encoded `goal_vision_replan_contract_v0` packet whose
+`goal_path_delta_v0.outcome` is `replan`; it must not also claim an unchanged
+reason. An unchanged path uses `path_delta_mode: "unchanged"`, no vision
+packet, and a bounded `vision_unchanged_reason`. The Turn executor remains the
+owner of packet parsing, bounds, and semantic validation. These declarations do
+not grant write or Goal authority, and legacy hosts that omit both path-delta
+fields retain their prior compatibility behavior. For material results, an
+explicit null or other non-string value for either path-delta field is invalid;
+omitting the field remains distinct from supplying null. Stop results
+(`wait`, `user_action_required`, and `iteration_failed`) do not declare a path
+delta. Managed dsh and optional-cloud prompts may omit both fields; the Codex
+CLI output schema requires both strings, so empty strings express the same
+no-declaration result. The executor accepts those empty strings and rejects
+non-empty stop-result declarations. The shared material validation applies to
+generic CLI, Codex CLI, dsh, and optional-cloud host results.
+
+The existing TypeScript Vision normalizer owns packet interpretation and emits
+the canonical `goal_vision_replan_contract_v0` shape. Its current compatibility
+behavior does not verify the submitted packet's top-level `schema_version`;
+the nested `path_delta.schema_version` remains optional, and when present the
+existing owner requires `goal_path_delta_v0`.
+
 ### Settlement identity decoding / 结算身份解码
 
 Executable settlement decodes exactly one Todo or autonomous-replan binding in
@@ -741,6 +767,31 @@ The completion fence accepts this distinct
 `active_goal`, no successor, and an authorized lifecycle actor. It does not
 reinterpret the local key as a quota receipt or permit arbitrary cross-Turn
 terminal replay.
+
+After legacy state is promoted to a canonical provider, this lifecycle-only
+closeout uses its own stable closeout operation receipt. The authoritative
+completed Todo supplies the original identity even when its pre-promotion
+completion has no native operation receipt. The transition preserves the
+original completion timestamp, evidence, validation commitment, completion
+receipt and quota history. It neither resolves nor reruns the old validator.
+Only continuation metadata changes; new results, successors, ownership edits,
+replacement evidence, a mismatched identity or an active execution lease are
+rejected. Exact retry recovers the closeout receipt, including after a lost
+response. This does not relax the original Turn's writeback/spend ordering.
+Quota-bound identities must resolve through original durable settlement
+receipts and pass the existing settlement readback; missing history rejects.
+Only the exact TS-derived local completion identity is exempt from quota
+readback. Historical closeout replay still precedes fresh authority lookup.
+
+旧状态迁移到 canonical provider 后，这类生命周期收尾使用独立、稳定的收尾操作
+回执。即使迁移前的完成记录没有 native operation receipt，也从权威已完成 Todo
+读取原始身份，只更新 continuation 元数据；原始完成时间、证据、验证声明、完成
+回执与 quota 历史保持不变，不重新解析或执行旧验证器。身份不符、新结果、后继、
+所有权或证据修改，以及仍持有执行租约的请求均拒绝。响应丢失后的精确重试恢复
+已有收尾回执，不放宽原始 Turn 的 writeback/spend 顺序。
+绑定 quota 的身份必须从原始持久回执解析，并通过既有 settlement 读回；历史缺失
+时拒绝。只有精确匹配 TS 生成的本地完成身份才能免除 quota 读回。已提交收尾的
+历史重放仍先于新的权威检查。
 
 `repair_required` and `replan_required` are distinct. Repair preserves the
 current task intent. Replan changes the runnable todo set or route because the
@@ -843,6 +894,18 @@ Use a new `turn_instance_id` for each new iteration. Reuse the same id only for
 an explicit replay or failed-Turn recovery. The context policy controls Host
 memory, while the TurnEnvelope and durable LoopX frontier remain the sole
 authority for work selection and continuation.
+
+`run-once --resume-turn-key` loads that original plan before fresh selection or
+Turn-start context, inbox synchronization and recall. It does not mint a new
+TurnEnvelope for recovery. The existing actor/Goal-lifetime checks, typed
+journal/session recovery decision, provider revalidation and post-writeback
+recovery still apply; `--retry-failed-turn` retains its existing bounded policy.
+A new invocation without a resume key continues through fresh admission.
+
+中文：显式 resume 先读原计划，不为恢复另建一次选任务、TurnEnvelope 或 Turn-start
+上下文、inbox 同步和 recall。原身份／Goal 生命周期、journal／Session 恢复、provider
+当前校验与写回后恢复流程保持；失败重试仍受既有有界策略约束。无 resume key 的新轮次
+继续走完整 fresh 准入。
 
 ## Adapter Requirements
 

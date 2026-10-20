@@ -3,17 +3,49 @@ from __future__ import annotations
 import pytest
 
 from loopx.control_plane.testing.quota_fixtures import quota_status_payload
+from loopx.control_plane.quota.selected_todo_projection import (
+    selected_todo_projection,
+)
+from loopx.control_plane.todos.summary_item import todo_text_content_revision
 from loopx.control_plane.work_items.work_lane import (
     preserve_heartbeat_receipt_bound_work_lane,
+    scoped_user_gate_due_monitor_contract,
 )
 from loopx.control_plane.work_items.work_lane_context import (
     item_progress_scope,
     latest_run_progress_scope,
 )
 from loopx.quota import build_quota_should_run
+from loopx.status import compact_post_handoff_run
 
 GOAL_ID = "work-lane-policy-fixture"
 PAST_DUE_AT = "2000-01-01T00:00:00+00:00"
+
+
+def test_scoped_gate_monitor_keeps_canonical_revision_for_selected_work_readback() -> None:
+    revision = "sha256:" + "a" * 64
+    lane = scoped_user_gate_due_monitor_contract(
+        {
+            "selected_executable": {
+                "todo_id": "todo_monitor",
+                "text": "Observe the independent target.",
+                "content_revision": revision,
+                "status": "open",
+                "task_class": "continuous_monitor",
+                "claimed_by": "agent-a",
+            }
+        },
+        current_contract={"lane": "advancement_task"},
+    )
+
+    assert lane is not None
+    assert lane["monitor_due_items"][0]["content_revision"] == revision
+    selected = selected_todo_projection(
+        agent_lane_next_action=None,
+        work_lane_contract=lane,
+    )
+    assert selected is not None
+    assert selected["content_revision"] == revision
 
 
 def _status(
@@ -132,6 +164,9 @@ def test_due_watch_only_monitor_is_an_auxiliary_no_spend_route() -> None:
             {
                 "index": 1,
                 "text": "[P0] Monitor one overdue dependency.",
+                "content_revision": todo_text_content_revision(
+                    "[P0] Monitor one overdue dependency."
+                ),
                 "todo_id": "todo_watch_due",
                 "status": "open",
                 "priority": "P0",
@@ -376,13 +411,86 @@ def test_work_lane_context_progress_scope_sources() -> None:
     )
     item = payload["attention_queue"]["items"][0]
 
-    assert item_progress_scope(item) == "dependency_observation"
+    assert item_progress_scope(item) == "primary_goal"
     assert latest_run_progress_scope(
         {"classification": "runner_dependency_observed"}
-    ) == "dependency_observation"
+    ) == "primary_goal"
     assert latest_run_progress_scope(
         {
             "classification": "runner_dependency_observed",
             "progress_scope": "primary_goal",
         }
     ) == "primary_goal"
+    for explicit in ("goal", "agent_lane", "dependency_observation", "unrecognized_scope"):
+        assert latest_run_progress_scope(
+            {"classification": "runner_dependency_observed", "progress_scope": explicit}
+        ) == explicit
+    item["progress_scope"] = "dependency_observation"
+    assert item_progress_scope(item) == "dependency_observation"
+    item.pop("progress_scope")
+    item["project_asset"]["progress_scope"] = "dependency_observation"
+    assert item_progress_scope(item) == "dependency_observation"
+    unknown = _status(agent_todo_items=[_monitor_and_advancement()[1]])
+    unknown["attention_queue"]["items"][0]["project_asset"]["progress_scope"] = "unrecognized_scope"
+    assert build_quota_should_run(unknown, goal_id=GOAL_ID)["work_lane_contract"]["lane"] == "advancement_task"
+
+
+def test_post_handoff_compaction_keeps_authored_scope_without_inventing_one() -> None:
+    for scope in ("goal", "agent_lane"):
+        compact = compact_post_handoff_run({
+            "classification": "dependency_observed_in_narrative",
+            "progress_scope": scope,
+        })
+        assert compact["progress_scope"] == scope
+        assert latest_run_progress_scope(compact) == scope
+    historical = compact_post_handoff_run({"classification": "dependency_observed_in_narrative"})
+    assert "progress_scope" not in historical
+    assert latest_run_progress_scope(historical) == "primary_goal"
+
+
+@pytest.mark.parametrize("delivery_outcome", [None, "surface_only"])
+def test_narrative_status_cannot_change_work_lane_obligation(delivery_outcome: str | None) -> None:
+    run = {"classification": "routine_progress"}
+    if delivery_outcome:
+        run.update(delivery_outcome=delivery_outcome, delivery_batch_scale="implementation")
+    payload = _status(
+        agent_todo_items=[_monitor_and_advancement()[1]],
+        status="routine_progress",
+        next_action="Advance the bounded product slice.",
+    )
+    item = payload["attention_queue"]["items"][0]
+    item["handoff_readiness"] = {"post_handoff_latest_run": run}
+    baseline = build_quota_should_run(payload, goal_id=GOAL_ID)
+    run["classification"] = "routine_progress_dependency_observation_note"
+    item["status"] = "routine_progress_dependency_observation_note"
+    changed = build_quota_should_run(payload, goal_id=GOAL_ID)
+
+    expected = (
+        "advance_primary_outcome_or_write_blocker"
+        if delivery_outcome else "advance_one_bounded_segment"
+    )
+    assert baseline["work_lane_contract"]["obligation"] == expected
+    assert changed["work_lane_contract"]["obligation"] == expected
+    assert changed["work_lane_contract"]["lane"] == "advancement_task"
+    if delivery_outcome:
+        assert changed["work_lane_contract"]["outcome_followthrough"]["required"] is True
+
+
+@pytest.mark.parametrize("agent_items,user_items", [
+    (_monitor_and_advancement()[:1], []),
+    ([{**_monitor_and_advancement()[0], "next_due_at": "2999-01-01T00:00:00+00:00"}], []),
+    ([], [{"index": 1, "text": "[P1] Owner must approve the step.", "role": "user", "status": "open"}]),
+])
+def test_narrative_status_keeps_typed_monitor_and_user_gates(
+    agent_items: list[dict], user_items: list[dict],
+) -> None:
+    payload = quota_status_payload(
+        goal_id=GOAL_ID, status="routine_progress", agent_todo_items=agent_items,
+        user_todo_items=user_items, recommended_action="Observe the typed work state.",
+    )
+    before = build_quota_should_run(payload, goal_id=GOAL_ID)
+    payload["attention_queue"]["items"][0]["status"] = "routine_progress_dependency_observation_note"
+    after = build_quota_should_run(payload, goal_id=GOAL_ID)
+    assert after.get("work_lane_contract") == before.get("work_lane_contract")
+    assert after["should_run"] == before["should_run"]
+    assert after["heartbeat_recommendation"]["recommended_mode"] == before["heartbeat_recommendation"]["recommended_mode"]

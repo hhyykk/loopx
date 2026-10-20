@@ -12,17 +12,20 @@ def configuration_summary(goal: Mapping[str, Any]) -> dict[str, Any] | None:
     profile = goal.get("execution_profile")
     if not isinstance(profile, Mapping):
         return None
+    strategy = {key: profile[key] for key in ("stride_strategy", "planning_horizon_goal") if key in profile}
     if "replan_after_effective_turns" in profile:
         return {
             "count_unit": "effective_turns",
             "count": profile["replan_after_effective_turns"],
+            **strategy,
         }
     if "replan_after_completed_todos" in profile:
         return {
             "count_unit": "completed_todos",
             "count": completed_todo_replan_threshold(dict(profile)),
+            **strategy,
         }
-    return None
+    return strategy or None
 
 
 __all__ = ["configuration_summary"]

@@ -1,6 +1,8 @@
+import {assertActionSelectionConsistency} from "./work_items/action_selection_admission.ts";
 import { EffectRuntimeRequestError } from "./effect_runtime_errors.ts";
-import { isStringLiteral } from "./runtime_decode.ts";
+import { isStringLiteral, type JsonObject } from "./runtime_decode.ts";
 import { decodeInteractionContract } from "./work_items/interaction_contract.ts";
+import { EffectiveAction } from "./quota/effective_action.generated.ts";
 
 export {
   RECEIPT_BOUND_MONITOR_PHASES,
@@ -25,7 +27,7 @@ export const SETTLEMENT_PLAN_SCHEMA_VERSION = "quota_settlement_plan_v1";
 export const SETTLEMENT_RECEIPT_SCHEMA_VERSION =
   "quota_settlement_receipt_v1";
 
-export type JsonObject = Record<string, unknown>;
+export type {JsonObject} from "./runtime_decode.ts";
 
 export interface EffectRequest<Context> {
   kind: string;
@@ -184,6 +186,7 @@ export interface SettlementStep {
   expected_receipt: string;
   command_template?: string;
   command_condition?: "todo_deliverable_complete";
+  vision_authoring?: JsonObject;
   conditional?: true;
 }
 
@@ -304,6 +307,7 @@ export function interpretQuotaShouldRunPacket(
 ): EffectTurn<JsonObject, string> {
   const packet = asObject(packetValue);
   const interaction = decodeInteractionContract(packet.interaction_contract);
+  assertActionSelectionConsistency(packet, interaction);
   const lane = asObject(packet.work_lane_contract);
   const scheduler = asObject(packet.scheduler_hint);
   const codexApp = asObject(scheduler.codex_app);
@@ -606,6 +610,7 @@ export function settlementStepPayload(step: SettlementStep): JsonObject {
   if (step.command_template) payload.command_template = step.command_template;
   if (step.command_condition) payload.command_condition = step.command_condition;
   if (step.conditional) payload.conditional = true;
+  if (step.vision_authoring) payload.vision_authoring = step.vision_authoring;
   return payload;
 }
 
@@ -905,13 +910,16 @@ export function settlementNextAction(options: {
   return { decision: "complete", step_kind: null, result: seeded };
 }
 
+/** Only the actual quota admission refusal carries a rejecting action.
+ * Missing/unknown facts retain a stage failure; diagnostic text is never authority. */
 export function callbackFailureKind(
   stepKind: SettlementStepKind,
-  reason: string,
+  payload: JsonObject,
 ): SettlementFailureKind {
   if (stepKind === "durable_writeback") return "writeback_rejected";
   if (stepKind === "terminal_closeout") return "terminal_closeout_rejected";
-  if (reason.toLowerCase().includes("budget")) return "budget_rejected";
+  if (stepKind === "quota_spend" &&
+      payload.quota_rejection_action === EffectiveAction.THROTTLED_SKIP) return "budget_rejected";
   return "quota_spend_rejected";
 }
 
@@ -930,7 +938,7 @@ export function commitStepPayload(options: {
       `${stepKind} callback rejected the settlement`;
     return {
       result: settlementFailed({
-        kind: callbackFailureKind(stepKind, reason),
+        kind: callbackFailureKind(stepKind, payload),
         step_kind: stepKind,
         reason,
       }),

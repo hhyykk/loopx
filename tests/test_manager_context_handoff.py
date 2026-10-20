@@ -72,6 +72,89 @@ def test_project_conversation_delivers_only_to_its_registered_goal(fixture):
     assert not pending(root, "other", "peer")["items"]
 
 
+@pytest.mark.parametrize("exact", [False, True], ids=["legacy", "goal-instance"])
+def test_guidance_upgrade_replays_original_request_without_rewriting_history(
+    fixture, monkeypatch, exact
+):
+    import loopx.capabilities.manager_context as context
+    from loopx.capabilities.manager_context.roundtrip import report
+
+    root, registry, session, turn, request = fixture
+    if exact:
+        from loopx.control_plane.projects.registry_codec import source_session_registry_transaction
+
+        data = json.loads(registry.read_text())
+        for goal, letter in zip(data["goals"], "ab"):
+            goal["goal_instance_id"] = "ginst_" + letter * 32
+        data.update(profile_id="source_session_v1", session_bindings=[], session_receipts=[], lifetime_receipts=[])
+        registry = root / "exact-source" / "registry.json"
+        with source_session_registry_transaction(registry, operation="test_create_exact_source", create=lambda: data) as transaction:
+            transaction.commit(transaction.payload_copy())
+    # Persist through the real delivery owner using an older generated guide.
+    # Guidance is adapter metadata; the original user's content is unchanged.
+    with monkeypatch.context() as old_version:
+        old_version.setattr(context, "INSTRUCTION", "Earlier receiver guidance.")
+        first = deliver(root, registry, session=session, turn=turn, request=request)
+    rid = first["request_id"]
+    if exact:
+        assert first["goal_ref"] == {"goal_id": "research", "goal_instance_id": "ginst_" + "a" * 32}
+    acknowledge(root, "research", "worker", rid, "adopt", "Original assessment", registry=registry,
+        caller_goal_ref=first.get("goal_ref"))
+    report(root, "research", "worker", rid, "conclusion", "Original result", registry=registry,
+        caller_goal_ref=first.get("goal_ref"))
+    before = {p.relative_to(_root(root)): p.read_bytes()
+              for p in _root(root).rglob("*.json")}
+
+    for _ in range(2):
+        replay = deliver(root, registry, session=session, turn=turn, request=request)
+        assert replay == {**first, "replayed": True}
+    assert {p.relative_to(_root(root)): p.read_bytes()
+            for p in _root(root).rglob("*.json")} == before
+
+
+@pytest.mark.parametrize("change", ["message", "brief", "recipient"])
+@pytest.mark.parametrize("exact", [False, True], ids=["legacy", "goal-instance"])
+def test_guidance_upgrade_still_rejects_original_request_content_conflicts(
+    fixture, monkeypatch, exact, change
+):
+    import loopx.capabilities.manager_context as context
+
+    root, registry, session, turn, request = fixture
+    if exact:
+        from loopx.control_plane.projects.registry_codec import source_session_registry_transaction
+
+        data = json.loads(registry.read_text())
+        for goal, letter in zip(data["goals"], "ab"):
+            goal["goal_instance_id"] = "ginst_" + letter * 32
+        data.update(profile_id="source_session_v1", session_bindings=[], session_receipts=[], lifetime_receipts=[])
+        registry = root / "exact-source" / "registry.json"
+        with source_session_registry_transaction(registry, operation="test_create_exact_source", create=lambda: data) as transaction:
+            transaction.commit(transaction.payload_copy())
+    with monkeypatch.context() as old_version:
+        old_version.setattr(context, "INSTRUCTION", "Earlier receiver guidance.")
+        first = deliver(root, registry, session=session, turn=turn, request=request)
+    if change == "message":
+        turn = {**turn, "message": "Different original user content"}
+    elif change == "brief":
+        request = {**request, "brief": {
+            "schema_version": "collaboration_brief_v0",
+            "purpose": "A changed output destination",
+            "context": "A changed collaboration context",
+            "constraints": [], "inputs": [], "acceptance": ["Verify the changed destination"],
+            "return_requirement": "Return to the original conversation",
+        }}
+    else:
+        path = next(_root(root).glob("entries/*/" + first["request_id"] + ".json"))
+        _write(path, json.loads(path.read_text()) | {"agent_id": "peer"})
+    before = {p.relative_to(_root(root)): p.read_bytes()
+              for p in _root(root).rglob("*.json")}
+
+    with pytest.raises(ValueError, match="context request identity conflict"):
+        deliver(root, registry, session=session, turn=turn, request=request)
+    assert {p.relative_to(_root(root)): p.read_bytes()
+            for p in _root(root).rglob("*.json")} == before
+
+
 @pytest.mark.parametrize("strict_envelope", [False, True])
 @pytest.mark.parametrize("origin", ["web", "lark"])
 def test_lifecycle_only_registry_cannot_supply_context_recipients(
@@ -161,8 +244,10 @@ def test_stopped_goal_is_not_a_context_recipient_and_revokes_replay(fixture):
     assert authority(root, registry, session, turn)["targets"] == [
         {"goal_id": "other", "agent_id": "peer"}
     ]
+    before = {path: path.read_bytes() for path in _root(root).rglob("*.json")}
     with pytest.raises(ValueError, match="stopped or archived"):
         deliver(root, registry, session=session, turn=turn, request=request)
+    assert before == {path: path.read_bytes() for path in _root(root).rglob("*.json")}
     assert len(pending(root, "research", "worker")["items"]) == 1
 
     data["goals"][0]["activation_state"] = "active"
@@ -183,8 +268,10 @@ def test_stopped_or_invalid_goal_is_excluded_from_lark_and_goal_chat(fixture, lo
 
     goal_session = {**session, "channel_id": "goal.research", "goal_id": "research"}
     assert authority(root, registry, goal_session, turn)["targets"] == []
+    before = {path: path.read_bytes() for path in _root(root).rglob("*.json")}
     with pytest.raises(ValueError, match="stopped or archived"):
         deliver(root, registry, session=goal_session, turn=turn, request=request)
+    assert before == {path: path.read_bytes() for path in _root(root).rglob("*.json")}
 
     lark_session = {**session, "channel_id": "manager.external.group"}
     lark_turn = {**turn, "origin": "lark"}
@@ -200,8 +287,10 @@ def test_stopped_or_invalid_goal_is_excluded_from_lark_and_goal_chat(fixture, lo
                      message=turn["message"], source_id="lark:original")
     expected = [] if local_scope == "selected" else [{"goal_id": "other", "agent_id": "peer"}]
     assert authority(root, registry, lark_session, lark_turn)["targets"] == expected
+    before = {path: path.read_bytes() for path in _root(root).rglob("*.json")}
     with pytest.raises(ValueError, match="stopped or archived"):
         deliver(root, registry, session=lark_session, turn=lark_turn, request=request)
+    assert before == {path: path.read_bytes() for path in _root(root).rglob("*.json")}
 
     data["goals"][0]["activation"]["state"] = "unreadable"
     registry.write_text(json.dumps(data))
@@ -584,7 +673,7 @@ def test_hook_keeps_decided_requests_open_until_receiver_returns_conclusion(
     assert not dispatch["failures"]
     assert dispatch["required_reads"][0]["ordering"] == "before_work"
     assert "manager-inbox read" in dispatch["required_reads"][0]["command"]
-    assert turn["message"] not in json.dumps(dispatch)
+    assert turn["message"] not in json.dumps(dispatch["results"])
     assert dispatch["results"][0]["agent_read_required"]
     acknowledge(
         root,
@@ -606,9 +695,9 @@ def test_hook_keeps_decided_requests_open_until_receiver_returns_conclusion(
         "Current evidence supports retaining the existing experiment; no plan change.",
     )
     assert not pending(root, "research", "worker")["items"]
-    assert not dispatch_turn_start_hooks(
-        [turn_start_hook(root, registry, "research", "worker")]
-    )["required_reads"]
+    after = dispatch_turn_start_hooks([turn_start_hook(root, registry, "research", "worker")])
+    assert after["required_reads"]
+    assert after["contexts"][0]["content"]["unfinished_delegations"]["items"][0]["step"] == "await_return_delivery"
     assert deliver(root, registry, session=session, turn=turn, request=request)[
         "replayed"
     ]
@@ -684,7 +773,7 @@ def test_actual_manager_turn_delivers_and_reports_host_receipt(fixture, monkeypa
         assert created and completed["status"] == "completed", completed
         response = completed["response"]
         assert response["context_handoff_receipt"]["status"] == "delivered"
-        assert "已将原消息交给 research / worker" in response["message"]
+        assert "**已转交给 `worker`。**" in response["message"]
         assert response["proposals"] == [] and response["gate"] is None
         assert len(pending(root, "research", "worker")["items"]) == 1
         assert registry.read_bytes() == original_registry

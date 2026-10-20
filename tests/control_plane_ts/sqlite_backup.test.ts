@@ -34,7 +34,8 @@ test("online backup preserves committed metadata, schema and blobs, excluding an
     } finally { copy.close(); }
     writer.exec("ROLLBACK");
     assert.equal(writer.prepare("SELECT metadata FROM facts").get()?.metadata, metadata);
-    assert.equal((await stat(target)).mode & 0o777, 0o600);
+    // Windows stat reports 0o666 for every writable file and has no owner-only mode.
+    if (process.platform !== "win32") assert.equal((await stat(target)).mode & 0o777, 0o600);
   } finally { writer.close(); }
 });
 
@@ -47,8 +48,11 @@ test("snapshot rejects existing destinations and source aliases without modifyin
   await assert.rejects(snapshotSqliteDatabase(source, target), /EEXIST/);
   assert.equal(await readFile(target, "utf8"), "keep existing");
   await assert.rejects(snapshotSqliteDatabase(source, source), /distinct absolute/);
-  const alias = join(directory, "alias"); await symlink(source, alias);
-  await assert.rejects(snapshotSqliteDatabase(source, alias), /EEXIST/);
+  // File symlink creation needs Developer Mode or admin on Windows.
+  if (process.platform !== "win32") {
+    const alias = join(directory, "alias"); await symlink(source, alias);
+    await assert.rejects(snapshotSqliteDatabase(source, alias), /EEXIST/);
+  }
   assert.deepEqual(await readFile(source), original);
 });
 

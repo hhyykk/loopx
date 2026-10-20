@@ -36,6 +36,8 @@ export function todoFixtureRecord(
   delete domainInput.schema_version;
   delete domainInput.source_section;
   delete domainInput.index;
+  // Content revision is read-model selection metadata, not a persisted Todo field.
+  delete domainInput.content_revision;
   const domain = canonicalTodoDomainRecord({
     ...domainInput,
     schema_version: TODO_DOMAIN_ITEM_SCHEMA,
@@ -74,6 +76,9 @@ export function authorityProjectionFixture(
   const normalizedLeases = leases.map(lease => structuredClone(lease)).sort((left, right) =>
     authorityUnicodeCompare(String(left.todo_id), String(right.todo_id)));
   return canonicalAuthorityObject({
+    // Normal fixture work uses a current policy; legacy wire format is a
+    // separate axis. Migration/history tests must explicitly request legacy mode.
+    handoff_mode: "soft_claim",
     ...structuredClone(extras),
     goal_id: goalId,
     todos: normalizedTodos,

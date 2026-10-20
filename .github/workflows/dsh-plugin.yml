@@ -22,6 +22,30 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  frozen-configuration:
+    name: dsh-pnpm-frozen (${{ matrix.pnpm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        pnpm: ["9.15.9", "10.33.0", "12.10.1"]
+    defaults:
+      run:
+        working-directory: packages/dsh-loopx-plugin
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ matrix.pnpm }}
+      - name: Qualify the frozen override configuration without dependency scripts
+        run: pnpm install --frozen-lockfile --lockfile-only --ignore-scripts
+      - name: Keep the qualified dependency graph unchanged
+        run: git diff --exit-code -- pnpm-lock.yaml
+
   distribution:
     name: dsh-plugin (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

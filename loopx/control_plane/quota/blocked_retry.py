@@ -6,12 +6,33 @@ from datetime import datetime
 from typing import Any
 
 from ..todos.contract import normalize_todo_id
+from ..todos.resume_condition import compact_todo_resume_items
 from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
 
 BLOCKED_RETRY_SCHEMA_VERSION = "quota_blocked_retry_v0"
 MIN_RETRY_SECONDS = 60
 MAX_RETRY_SECONDS = 30 * 60
 TURN_SETTLEMENT_RETRY_SECONDS = 5 * 60
+
+
+def compact_settlement_wait_todos(
+    items: list[dict[str, Any]], *, todo_id: str,
+) -> list[dict[str, Any]]:
+    """Transport all dependency facts and the bound wait's frozen observation.
+
+    The TS blocked-wait owner needs the complete graph for cycle diagnosis,
+    but only the bound Todo's resume proof and Monitor clocks. Keep those
+    observations verbatim; prose and completion instructions are not inputs.
+    """
+    facts = compact_todo_resume_items(items)
+    bound_fields = (
+        "resume_condition", "last_checked_at", "next_due_at", "result_hash",
+        "material_change", "cadence", "expires_at", "watch_only", "done",
+    )
+    for source, row in zip((item for item in items if item.get("todo_id")), facts):
+        if source.get("todo_id") == todo_id:
+            row.update({field: source[field] for field in bound_fields if field in source})
+    return facts
 
 
 def require_blocked_retry_wait(
@@ -30,11 +51,11 @@ def require_blocked_retry_wait(
     try:
         result = effect_runtime_result("quota.settlement.read", {
             "schema_version": "loopx_quota_blocked_wait_request_v0",
-            "todos": items,
+            "todos": compact_settlement_wait_todos(items, todo_id=todo_id),
             "todo_id": todo_id,
             "observed_at": observed_at,
             "allow_turn_settlement_retry": allow_turn_settlement_retry,
-        })
+        }, large_local_snapshot=True)
     except EffectRuntimeRejected as exc:
         raise ValueError(str(exc)) from exc
     if not isinstance(result, dict):
@@ -139,7 +160,10 @@ def overlay_active_turn_retries(
         seen.add(todo_id)
         retry = active_turn_retry_for_run(run, observed_at=observed_at)
         if retry is not None:
-            waits[todo_id] = retry
+            waits[todo_id] = {
+                **retry, "goal_id": goal_id, "agent_id": agent_id,
+                "turn_instance_id": run["turn_instance_id"],
+            }
     if not waits:
         return status_payload
     queue = status_payload.get("attention_queue")
@@ -170,6 +194,7 @@ def overlay_active_turn_retries(
                     and todo.get("status") == "open"
                     and todo.get("task_class") == "advancement_task"
                     and not todo.get("resume_when")
+                    and todo.get("claimed_by") in (None, agent_id)
                 ):
                     resume = retry["resume_when"]
                     projected_rows.append(
@@ -177,10 +202,15 @@ def overlay_active_turn_retries(
                             **todo,
                             "resume_when": resume,
                             "resume_ready": False,
+                            # Read-only Run provenance; never persist these fields
+                            # into the canonical Todo or treat them as admission.
+                            "blocked_retry": retry,
+                            "next_due_at": retry["due_at"],
                             "resume_condition": {
                                 "kind": "resume_at",
                                 "resume_when": resume,
                                 "satisfied": False,
+                                "blocked_retry": retry,
                             },
                         }
                     )
@@ -223,3 +253,36 @@ def overlay_active_turn_retries(
         if changed
         else status_payload
     )
+
+
+def overlay_status_turn_retries(
+    history: dict[str, Any], queue: dict[str, Any], *, observed_at: str
+) -> dict[str, Any]:
+    """Transport the existing per-agent retry projection into status readers.
+
+    History is the uncompressed control-plane snapshot, not the display tail.
+    Qualification, supersession and clocks stay with the existing retry owner.
+    No canonical Todo, receipt, scheduler or quota mutation is performed here.
+    """
+    payload = {"run_history": history, "attention_queue": queue}
+    for goal in history.get("goals") or []:
+        if not isinstance(goal, dict) or not goal.get("id"):
+            continue
+        semantic = goal.get("semantic_history")
+        runs = (
+            semantic.get("active_blocked_retry_runs")
+            if isinstance(semantic, dict)
+            and isinstance(semantic.get("active_blocked_retry_runs"), list)
+            else goal.get("latest_runs") or []
+        )
+        agents = dict.fromkeys(
+            run["agent_id"] for run in runs
+            if isinstance(run, dict) and isinstance(run.get("agent_id"), str)
+            and run["agent_id"]
+        )
+        for agent_id in agents:
+            payload = overlay_active_turn_retries(
+                payload, goal_id=goal["id"], agent_id=agent_id,
+                observed_at=observed_at,
+            )
+    return payload["attention_queue"]

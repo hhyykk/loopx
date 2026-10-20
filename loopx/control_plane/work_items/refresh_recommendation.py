@@ -41,6 +41,7 @@ def load_refresh_planning_source(
     state_path: Path,
     *,
     require_display: bool,
+    registry_path: Path | None = None,
 ) -> RefreshPlanningSource:
     """Read one shared planning snapshot without repairing its display.
 
@@ -49,9 +50,19 @@ def load_refresh_planning_source(
     """
     events = load_rollout_events(rollout_event_log_path(runtime_root, goal_id))
     canonical = read_canonical_todos_if_promoted(runtime_root=runtime_root, goal_id=goal_id)
+    if canonical is not None:
+        from ..goals.acceptance import observe_canonical_goal_acceptance
+        oracle_registry = registry_path
+        if canonical.get("goal_acceptance_oracle_observation_basis") is not None and oracle_registry is not None:
+            from .recommendation_source_io import load_recommendation_source_goal
+            # A shared roster's checkout is display data, including on refresh
+            # paths without --next-action. Observe the current source workspace.
+            oracle_registry, _ = load_recommendation_source_goal(oracle_registry, goal_id)
+        acceptance = observe_canonical_goal_acceptance(canonical,
+            registry_path=oracle_registry, goal_id=goal_id)
     fields = canonical_todo_summary_fields(
         canonical["todos"], rollout_events=events,
-        goal_acceptance_contract=canonical.get("goal_acceptance_contract"),
+        goal_acceptance_contract=acceptance,
         goal_acceptance_work_guards=canonical.get("goal_acceptance_work_guards"),
     ) if canonical is not None else None
     try:
@@ -216,6 +227,7 @@ def resolve_refresh_recommendation(
         context = lane_recommendation_context(source_context, agent_id=agent_id,
             selected_todo=selected, task=task,
             prior_resolution=latest_bound_recommendation(runs or [], agent_id),
+            settlement_identity=settlement_identity,
             write={"text": next_step, "expected_basis": next_step_basis} if next_step else None)
         if next_step:
             resolved = context["resolution"]

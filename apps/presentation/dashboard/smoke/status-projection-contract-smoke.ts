@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   parseStatusPayload,
   todoItemSchema,
+  todoGroupSchema,
+  projectAssetTodoSummarySchema,
   todoIndexItemSchema,
   periodicReportIndexItemSchema,
   periodicReportIndexResponseSchema,
@@ -76,6 +78,52 @@ function goal(id: string, activation: "active" | "stopped") {
     unique_runs: 1,
     latest_runs: [],
   };
+}
+
+// Host delivery-window diagnostics must survive the public status decoder so
+// the personal-workspace view can distinguish observed staleness from absence.
+const deliveryWindowStatus = basePayload({
+  run_history: {
+    available: true,
+    goal_count: 1,
+    run_count: 0,
+    goals: [{
+      ...goal("window", "active"),
+      host_thread_activity: {
+        completeness: "complete",
+        threads: [{
+          agent_id: "codex",
+          host_surface: "codex-app",
+          state: "idle",
+          last_event_at: "2026-10-14T18:00:00Z",
+          delivery_window: {
+            schema_version: "loopx_host_delivery_window_v0",
+            state: "stale",
+            last_observed_at: "2026-10-14T18:00:00Z",
+            age_hours: 2.5,
+            expected_interval_minutes: 30,
+            window_minutes: 60,
+            tolerance: 2,
+            source: "installed_automation",
+          },
+        }],
+      },
+    }],
+    recent_runs: [],
+  },
+});
+equal(deliveryWindowStatus.run_history.goals[0].host_thread_activity?.threads[0].delivery_window?.state,
+  "stale", "host activity window state survives status parsing");
+equal(deliveryWindowStatus.run_history.goals[0].host_thread_activity?.threads[0].delivery_window?.age_hours,
+  2.5, "host activity window age survives status parsing");
+
+// A status source may omit totals while still returning a useful bounded list.
+// Preserve that absence before the workspace adapter and typed digest see it.
+for (const [schema, field] of [[todoGroupSchema, "done_count"], [projectAssetTodoSummarySchema, "done"]] as const) {
+  const missing = schema.parse({ items: [] });
+  equal((missing as Record<string, unknown>)[field], undefined, "Missing completion total stays unknown");
+  const measured = schema.parse({ items: [], [field]: 0 });
+  equal((measured as Record<string, unknown>)[field], 0, "Measured zero is retained");
 }
 
 // Native Todo identity is the stable todo_id; a Markdown source index is only

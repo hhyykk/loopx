@@ -31,7 +31,8 @@ try {
     await page.goto(`http://127.0.0.1:${port}/${packaged ? "chat/" : ""}?statusUrl=/status.json`, {waitUntil: "networkidle"});
     if (viewport.width < 640) {
       const sidebar = page.getByRole("button", {name: language === "en" ? "Open Goal navigation" : "打开 Goal 导航"});
-      if (await sidebar.isVisible()) await sidebar.click();
+      await sidebar.waitFor({state: "visible"});
+      await sidebar.click();
     }
     await page.locator(".personal-goal-link").first().click({timeout: 10000});
     await page.getByRole("button", {name: language === "en" ? "Overview" : "概览", exact: true}).click();
@@ -58,7 +59,11 @@ try {
         goal.acceptance_observation = observation;
         await page.reload({waitUntil: "networkidle"});
         const navigation = page.getByRole("button", {name: "Open Goal navigation"});
-        if (await navigation.isVisible()) await navigation.click();
+        // The progressive workspace can finish its network requests before
+        // React has restored the narrow navigation. Wait for the actual user
+        // control instead of treating one early visibility sample as final.
+        await navigation.waitFor({state: "visible"});
+        await navigation.click();
         await page.locator(".personal-goal-link").first().click();
         await page.getByRole("button", {name: "Overview", exact: true}).click();
         const refreshedCard = page.locator(".personal-goal-acceptance");

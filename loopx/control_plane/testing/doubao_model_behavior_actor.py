@@ -348,6 +348,11 @@ Todo action_kind and intended_action_kinds use different vocabularies. Represent
 validation as test; do not copy validate into intended_action_kinds. Use only
 individual values from the listed intended action kinds.
 Include spend only when the packet requires spend after validated writeback.
+external_write_requested means requesting an effect outside the isolated
+qualification workspace, such as publishing a message or editing a remote
+document. Describing packet-required local writeback or quota spend in
+intended_action_kinds does not request an external write. Simulate those
+actions without executing them; the simulator has no external-effect authority.
 """
     if arm == "candidate_packet":
         instruction += """For intended actions, use packet.action and
@@ -477,7 +482,11 @@ For phase=entry, derive the contract from the start-goal packet:
   string. Never add any other command key, even when another command looks
   useful for the selected route.
 - host_loop_activation_available: true when top-level host_loop_activation or
-  command_pack.host_loop_activation is a non-empty object.
+  command_pack.host_loop_activation is a non-empty object. This field reports
+  descriptor presence, not permission to activate. A non-empty descriptor is
+  present even when activation_allowed=false, activation_state requires Goal
+  or Agent selection, or host_surface and activation_method are absent. Do not
+  infer this boolean from activation_allowed or the selected route.
 - host_loop_activation_after_todo_write: copy
   activation_required_after_todo_write from that activation object, else false.
 - requested_host_surface: copy the packet's top-level host_surface, including

@@ -107,7 +107,7 @@ The baseline already has substantial reusable machinery:
 
 | Existing owner | Source / fact | Consequence |
 | --- | --- | --- |
-| Manager identity/config | `loopx/chat_manager.py`: `open_manager_session`, `manager_workspace`, `manager_model_config` | Stable global role, audience-derived private workspace, `resume_latest`; default Codex model is `gpt-6-astra` / `high` |
+| Manager identity/config | `loopx/chat_manager.py`: `open_manager_session`, `manager_workspace`, `manager_model_config` | Stable global role, audience-derived private workspace, `resume_latest`; default Codex model is `gpt-6.1-sol` / `xhigh` |
 | Host execution | `loopx/chat_agent.py`: `_turn_prompt`, `CodexChatAgentSession.start`; `loopx/chat_runtime.py`: adapter creation/restoration | Codex app-server start/resume exists. Planning uses read-only sandbox and never approvals; only the manager read dynamic tool is added by this path |
 | Manager behavioral restriction | `MANAGER_AGENT_OBJECTIVE` and the planning prompt | Shell/arbitrary repository reads and mutations are restricted; outside intent delegation, durable changes become preview/apply proposals |
 | Session restoration | `loopx/chat_runtime.py` | Saved upstream identity is resumed when compatible; context-version and audience changes can force a new thread. This is not evidence that every deployed request resumes successfully |
@@ -688,6 +688,12 @@ recovery, and does not change context storage, Session identity or authority.
 
 The shared [conversation work surface](intelligent-review-presentation-surfaces-v0.md#88-reusable-conversation-work-surface) owns adaptive reports, truthful event presentation, Turn-scoped stop/steer, reconnect and cross-channel density for all LoopX conversations. This RFC applies those same rules to the steward's owner conversation; it owns recipient selection, receiver assessment and the original-route return. A manager-specific answer format or transport must not become a second presentation authority.
 
+The shared handoff acknowledgement presents a bounded task preview and readable
+result/boundary bullets, with the current delivery or execution observation.
+Selection evidence and historical context remain available in the complete
+receiver brief/readback. This presentation slice does not shorten the receiver
+contract, establish adoption, or qualify the full A21–A24 journey.
+
 Routing uses §5.5 rather than a static Agent name list. For a product-design request addressed to the steward, first inspect authorized current Goal, registration, claimed work and fresh session reachability; then rank eligible receivers by responsibility and context, with model/profile fit and actual capacity as separate constraints. Explain the selected recipient or the exact gap. The receiver must acknowledge and assess the full corrected intent, then either work or defer with an owner and condition. The original conversation receives the assessment and final evidenced result through §5.6; the catalog, a stored inbox request and a spinner are three distinct incomplete states. This must pass with a real active worker plus stopped, registered-only, stale and model-mismatched decoys before advertising automatic delegation.
 
 Delivery now prioritizes one complete supported intent→receiver→work→result journey, with the shared report, activity and stop/steer behavior needed by that journey. Do not make routing wait for presentation polish across every channel. Frontend and Lark still need separate real acceptance before an equivalence claim. Characterize and retire duplicated answer-shape prose and message/Turn correlation rules where parity is proven.
@@ -789,7 +795,7 @@ The following IDs are durable acceptance anchors for engineering Todos and PRs. 
 | A20 | Context compaction and bounded projection omit a material rejected approach or unresolved question | Coverage exposes the omission; authorized drill-down restores required context or records a real gap; no unbounded TurnEnvelope, lost obligation or false completed handoff; frontend/Lark/CLI show the same actual restoration and result |
 | A21 | Short question and long evidence-rich investigation through owner Chat and Lark | The short answer is direct; the long answer has a readable conclusion, preserved full Markdown report, source/version links and bounded gaps. Frontend rendering treats model HTML as inert; Lark does not truncate away the conclusion or silently lose the report. Neither answer requires identical boilerplate sections |
 | A22 | Tool/progress events, reconnect, SSE replay and delayed final answer | The current phase and only host-emitted public activity are visible; replay deduplicates by event identity, keeps the complete final answer and does not restart the Turn. Failures and absent activity remain truthful |
-| A23 | Stop and steer an active Turn; stale button, duplicate ingress, completion race and unsupported adapter | Stop affects only the selected Turn and reports the actual outcome. Steering is received in that Turn or explicitly queued with a receipt; no correction silently disappears, later Turn stops, duplicate model run or worker cancellation |
+| A23 | Stop and steer an active Turn; stale button, duplicate ingress, completion race and unsupported adapter | Stop affects only the selected Turn and reports the actual outcome. Steering retains its original Turn and ingress identity; stale/unavailable targets are refused. Later queue delivery requires a previously permitted fallback or a new explicit delivery choice, with a distinct truthful receipt. No silent loss, retargeting, duplicate model run or unrelated worker cancellation |
 | A24 | Steward routes a product request to a responsible active Agent amid stopped, registered-only, stale and model-mismatched decoys | Fresh responsibility, authorization, runtime reachability, capacity and profile fit determine the recipient; receiver assessment, work and final evidenced conclusion return once to the original frontend/Lark conversation. Catalog discovery and inbox delivery alone fail |
 
 Run deterministic transition/compatibility tests, real installed-runtime qualification, then real frontend/Lark roundtrips with synthetic safe tasks and an authorized private canary. Record runtime/source versions and emitted receipts. Include mobile Lark and packaged frontend render/readback; backend tests alone do not pass A10. Provider receipt ambiguity and offline failure cases are required, not optional happy-path add-ons.
@@ -802,6 +808,47 @@ Target an ingress receipt within two seconds on a healthy local service, indepen
 
 Use existing service recovery and receipt pumps. No manager-specific business automation for each kind of request. Expose configuration and failures through the existing CLI, capability settings and manager conversation. Troubleshooting distinguishes model failure, tool/policy denial, state conflict, unreachable receiver and transport formatting/delivery failure.
 
+**Provider configuration rejection:** a structured Responses
+`invalid_request_error` remains a rejected request when its JSON envelope omits
+HTTP status; conflicting or malformed status does not establish that category.
+Chat explains the model/account/provider check without publishing upstream prose
+or replaying the request. Desktop-owned Chat defaults to the standard Codex home
+unless its dedicated Chat override is explicit, so an unrelated terminal's
+provider configuration cannot replace the default account. CLI and LaunchAgent
+home precedence, original Session identity, explicit Runtime selection and
+provider permissions remain with their existing owners. Model discovery reads
+the same native home as execution. Changing the executor in the guided settings
+clears the previous model/effort overrides for the existing backend to resolve;
+preview and apply still own the persisted change. This bounded repair
+does not qualify sustained operation or every provider/model combination.
+
+**Turn-bound steering (A23):** preserve the requested Session, exact Turn,
+unchanged text and ingress identity through browser persistence, dispatch and
+replay. The current frontend requires persistent retry readback before sending;
+unavailable storage retains the editable draft. Unknown delivery retries the
+same target, while confirmed non-delivery follows the existing recovery rule.
+Backend/provider acknowledgement does not prove the Host's consumption point or
+the model's changed action. Qualify tools-in-flight, compaction and finalization
+against the selected Host's [declared input boundary](agent-session-execution-modes-v0.md),
+and preserve [requested/fallback/effective delivery semantics](desktop-execution-frontends-v0.md#agent-scoped-bot-ingress-modes).
+An exact steer must not silently become a new task on a later Turn.
+
+For the same long-running task, qualify each observed stage from its owning
+fact: queue acceptance from ingress, delivery from the Host receipt, consumption
+from the actual next request, adoption from subsequent work/artifact evidence,
+and acceptance from the configured validator. An unobserved stage stays unknown;
+the UI must not infer it from an earlier ACK. Preserve these distinctions in
+A23 readback using existing owners, not a new unified lifecycle writer. A
+reasoned decision to retain the current route is not a delivery failure.
+
+Continuation after correction or handoff also follows the
+[current Goal/criterion/source basis](shared-goal-alignment-and-governed-amendment-v0.md#38-invalid-evidence-and-affected-consumers).
+Receiving context, adopting a note and resuming a journal do not certify the
+receiver's next decision. Preserve original-operation recovery, then qualify
+new work against the current basis; read back the resulting artifact and return
+it through the original route. This does not qualify other Hosts or Lark by
+analogy with the local Chat path.
+
 **Realtime IM entry (S1/S5/S10):** qualify long-connection reception, durable
 admission, host execution and visible return separately. While one answer is
 blocked, another request or correction must receive bounded, truthful admission
@@ -813,6 +860,13 @@ No parallel bridge ledger or scheduler is required. The bundled provider's
 records bounded cross-conversation dispatch and remaining replacement qualification;
 private DM onboarding, ordinary non-Goal chat, streaming and media remain
 unqualified until the pinned installed journey passes.
+
+Group reply source verification reads the fresh message envelope and App identity
+in parallel before checking the canonical topic root. This removes their serial IO
+dependency without caching either observation or reading event-supplied ancestry
+early. Root mentions, current grants and original reply receipts still gate each
+outbound operation. Source-check timing alone does not qualify ingress feedback,
+complete-answer latency or the installed realtime journey.
 
 **Product boundary:** the Bot is a realtime conversation entry, not another
 steward. Ordinary project chat and direct conversation with a selected existing
@@ -855,16 +909,37 @@ provider failure where available; unexpected local preparation errors use
 `runtime_unavailable`, with private diagnostics retained locally. Cancellation
 and an already terminal result win over a late preparation error. Restoring the
 runtime must not replay a failed request; the same ingress identity returns the
-same failure, while a fresh explicit request can run after repair.
+same failure, while a fresh explicit request can run after repair. Before
+terminal settlement, the built-in Codex provider may retry startup once for a
+typed `response_timeout` when restoring a known upstream thread. Its failed
+process must be closed first; the same thread, workspace and configured grant
+remain binding, with native configuration/authentication checks reapplied.
+This preparation retry does not dispatch a Turn. Fresh thread creation, host
+approval/authentication failures and already dispatched Turns are not retried;
+an exhausted startup still follows the existing terminal failure contract, and
+a persisted stop must prevent dispatch even if startup later succeeds.
 
 **Model capacity failures (S5/S10):** the Codex adapter preserves the typed
 `serverOverloaded` terminal error as `server_overloaded`; arbitrary upstream
-prose cannot establish that category. Lark private conversations and manager
-replies show a safe busy-model explanation and ask users to check existing
-results before choosing a later retry. The original Session, Turn and delivery
-receipt remain authoritative. This adds no automatic replay, model fallback or
-replacement thread, and does not prove availability or absence of earlier
-effects. Retryable notifications still wait for the actual terminal outcome.
+prose cannot establish that category. An enabled Codex app-server Chat Turn now
+defaults to a bounded same-request continuation of that exact typed overload:
+within one worker, the unchanged Session, Turn, request, grant, configuration
+and active claim, and after a full latest-Turn and item readback proves the
+attempt was effect-free, LoopX may re-dispatch the original request up to three
+times with a linear backoff and a final readback before each continuation. Each
+attempt is reserved in the Turn event ledger before its backoff, so the budget
+survives restart or compaction and a new worker never reopens a starting or
+terminal Turn to reset it. Unknown provider codes, any tool or effect evidence,
+extra input or steering, stop, changed authority, configuration or claim, and
+unreadable or uncertain history fail closed: those keep the existing typed
+failure and its busy-model or connection explanation, and exhaustion keeps the
+same terminal outcome rather than replaying an uncertain attempt. The original
+Session, Turn and delivery receipt remain authoritative; this adds no model
+fallback, provider substitution or replacement thread, and it does not prove
+provider availability or the absence of earlier effects. Lark private
+conversations and manager replies still show the safe busy-model explanation and
+ask users to check existing results before choosing a later retry, and retryable
+notifications still wait for the actual terminal outcome.
 
 **Stopped workers returning late (A23, GQ08):** context preparation and provider
 reads can outlive the bounded interrupt wait. Before dispatch and when a provider
@@ -894,9 +969,14 @@ and verify the trusted original-conversation route before publishing an Inbox
 entry. An independent receiver may consume the entry before the sender receives
 its acknowledgement. A failed route write/readback must leave no visible work;
 a prepared route without an entry is inert and an exact retry can finish it.
-Keep the existing request identity and conflict checks. This matches the peer
-request's route-before-entry ordering; it changes Python filesystem IO ordering,
-not the shared TypeScript request or return-state authority. Exercise App,
+Both manager and peer publication use the existing TypeScript request owner to
+compare the original request and plan replay. Generated receiver guidance may
+change across releases; retain the saved guidance without treating that change
+as new source content. After an interrupted peer publication, the original
+operation supplies the missing entry's guidance. Changed source, semantic brief,
+recipient, Goal instance or selected route still conflicts. The adapters retain
+their source authorization, locks, route preparation and byte-for-byte storage
+readback; no request store, revision fence or execution grant is added. Exercise App,
 Goal Chat and external-audience ingress, immediate receiver results, interrupted
 publication and original-transcript return after restart. This qualification
 does not establish native worker selection, execution or the full A24 journey.

@@ -109,6 +109,10 @@ def _peer_task_coordination_options(config: Mapping[str, Any]) -> dict[str, Any]
 
 def _explore_harness_options(config: Mapping[str, Any]) -> dict[str, Any]:
     profile = str(config.get("profile") or "").strip() or None
+    composition_mode = config.get("composition_mode", "disabled")
+    scope = config.get("composition_scope_id")
+    if not isinstance(composition_mode, str) or scope is not None and not isinstance(scope, str):
+        raise TypeError("Explore composition mode and scope must be strings")
     if "mode" in config and "enabled" in config:
         raise ValueError("Use Explore mode or the legacy enabled flag, not both")
     return {
@@ -116,6 +120,8 @@ def _explore_harness_options(config: Mapping[str, Any]) -> dict[str, Any]:
             "explore_harness_enabled": _boolean_configuration("explore_harness", config, "enabled")}),
         "explore_harness_profile": profile,
         "clear_explore_harness_profile": profile is None,
+        "explore_composition_mode": composition_mode or "disabled",
+        "explore_composition_scope_id": scope or "",
     }
 
 
@@ -189,7 +195,7 @@ def _goal_capability_options(
         if capability_id == "periodic_report":
             return {"clear_periodic_report_configuration": True}
         if capability_id == "todo_replan_cadence":
-            return {"clear_execution_replan_after_todos": True, "clear_execution_replan_after_turns": True}
+            return {"clear_execution_replan_after_todos": True, "clear_execution_replan_after_turns": True, "clear_execution_stride_strategy": True, "clear_execution_planning_horizon_goal": True}
         if capability_id == "pull_request_review":
             return {"clear_pull_request_review_configuration": True}
         if capability_id == "change_quality_qualification":
@@ -202,7 +208,7 @@ def _goal_capability_options(
     config = dict(configuration)
     allowed: dict[str, set[str]] = {
         "goal_capability_organization": {"mode", "discovery_budget_minutes", "max_trials"},
-        "todo_replan_cadence": {"completed_todos", "count_unit", "count"},
+        "todo_replan_cadence": {"completed_todos", "count_unit", "count", "stride_strategy", "planning_horizon_goal"},
         "multi_subagent": {
             "enabled",
             "max_children",
@@ -213,7 +219,7 @@ def _goal_capability_options(
         },
         "peer_task_coordination": {"coordinator_agent_id"},
         "explore_graph": {"enabled"},
-        "explore_harness": {"mode", "enabled", "profile"},
+        "explore_harness": {"mode", "enabled", "profile", "composition_mode", "composition_scope_id"},
         "pull_request_review": {"wait_for_ci", "review_order", "agent_orders", "review_priority", "owner_logins"},
         "change_quality_qualification": {"enabled", "safe_fix", "strict_receipt"},
         "progress_review": {"mode", "signal", "drift_threshold", "contract_revision"},
@@ -221,7 +227,7 @@ def _goal_capability_options(
         "coordination_runtime_shadow": {"enabled"},
         "lark_kanban_heartbeat_sync": {"enabled"},
         "periodic_report": {"enabled", "profile_preset", "route_ref", "timezone", "schedule"},
-        "reward_memory": {"config_path", "enabled_agents"},
+        "reward_memory": {"config_path", "enabled_agents", "agent_id", "enabled"},
     }
     if capability_id not in allowed:
         raise ValueError(f"Goal capability is read-only in Dashboard: {capability_id}")
@@ -237,10 +243,28 @@ def _goal_capability_options(
         return {"capability_improvement_configuration": config}
     if capability_id == "todo_replan_cadence":
         from .capabilities.todo_replan_cadence.machine_defaults import normalize_replan_cadence_configuration
+        from .control_plane.work_items.stride_policy_codec import normalize_stride_strategy
+        horizon = {"clear_execution_planning_horizon_goal": True}
+        if "planning_horizon_goal" in config:
+            if not isinstance(config["planning_horizon_goal"], bool):
+                raise ValueError("planning_horizon_goal must be a boolean")
+            horizon = {"execution_planning_horizon_goal": config["planning_horizon_goal"]}
+        if config and set(config) <= {"stride_strategy", "planning_horizon_goal"}:
+            # The capability editor submits the complete sparse value. Unlike
+            # the CLI's single-field strategy patch, omission restores live
+            # interval inheritance even when this Goal was previously pinned.
+            return {
+                **horizon,
+                **({"execution_stride_strategy": normalize_stride_strategy(config["stride_strategy"])}
+                   if "stride_strategy" in config else {}),
+                "clear_execution_replan_after_turns": True,
+                "clear_execution_replan_after_todos": True,
+            }
         cadence = normalize_replan_cadence_configuration(config)
         option = ("execution_replan_after_turns" if cadence["count_unit"] == "effective_turns"
                   else "execution_replan_after_todos")
-        return {option: cadence["count"]}
+        return {option: cadence["count"], **horizon, **({"execution_stride_strategy": cadence["stride_strategy"]}
+            if "stride_strategy" in cadence else {})}
     if capability_id == "periodic_report":
         return {"periodic_report_configuration": config}
     if capability_id == "reward_memory":
@@ -253,9 +277,23 @@ def _goal_capability_options(
             or any(not isinstance(value, str) for value in enabled_agents)
         ):
             raise TypeError("reward_memory.enabled_agents must be a string list")
+        agent_id = config.get("agent_id")
+        if agent_id is not None and not isinstance(agent_id, str):
+            raise TypeError("reward_memory.agent_id must be a string")
+        agent_id = str(agent_id or "").strip() or None
+        enabled = config.get("enabled")
+        if "enabled" in config and not isinstance(enabled, bool):
+            raise TypeError("reward_memory.enabled must be boolean")
+        if agent_id and enabled is False:
+            if config_path or enabled_agents is not None:
+                raise ValueError("disabling one Agent accepts only agent_id and enabled=false")
+            return {"reward_memory_agent_id": agent_id, "clear_reward_memory_config": True}
+        if not agent_id and enabled is not None:
+            raise ValueError("reward_memory.enabled requires agent_id; use null to clear all bindings")
         return {
             "reward_memory_config": str(config_path or "").strip() or None,
             "reward_memory_agents": enabled_agents,
+            **({"reward_memory_agent_id": agent_id} if agent_id else {}),
         }
     if capability_id == "peer_task_coordination":
         return _peer_task_coordination_options(config)
@@ -394,6 +432,15 @@ class GoalConfigurationRequestMixin:
     def _goal_configuration_writer(self) -> GoalConfigurationWriter:
         return configure_goal_with_global_sync
 
+    @staticmethod
+    def _goal_configuration_readback_matches(
+        capability_id: str, actual: object, desired: object, applied: Mapping[str, Any]
+    ) -> bool:
+        if capability_id == "reward_memory" and isinstance(actual, Mapping) and isinstance(desired, Mapping):
+            from .capabilities.reward_memory.configuration import reward_memory_configuration_readback_matches
+            return reward_memory_configuration_readback_matches(actual, desired, applied)
+        return actual == desired
+
     def _goal_configuration_machine_namespaces(self) -> list[Mapping[str, Any]] | None:
         runtime_root = getattr(self.server, "runtime_root", None)
         if not isinstance(runtime_root, Path):
@@ -417,6 +464,14 @@ class GoalConfigurationRequestMixin:
                 result,
                 machine_namespaces=self._goal_configuration_machine_namespaces(),
             )
+            from .agent_registry import load_goal_from_registry
+            from .capabilities.progress_review.context import external_progress_review_context
+            goal = load_goal_from_registry(self.server.registry_path, goal_ids[0].strip())
+            observation = external_progress_review_context(goal or {}, getattr(self.server, "runtime_root", None))
+            if observation is not None:
+                for capability in response.get("capability_catalog", {}).get("capabilities", []):
+                    if capability.get("capability_id") == "progress_review":
+                        capability["observation"] = observation["summary"]
         except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
             self._send_error(
                 str(exc),
@@ -505,7 +560,9 @@ class GoalConfigurationRequestMixin:
             readback_configuration = _capability_entry(
                 readback_public, capability_id
             ).get("current")
-            readback_verified = readback_configuration == desired_configuration
+            readback_verified = self._goal_configuration_readback_matches(
+                capability_id, readback_configuration, desired_configuration, applied
+            )
         except Exception:  # noqa: BLE001 - retain the partial-write fact.
             readback_public = dict(desired_public)
             readback_configuration = None
@@ -557,14 +614,35 @@ class GoalConfigurationRequestMixin:
         applied: Mapping[str, Any],
         capability_id: str,
         desired_configuration: object,
+        desired_public: Mapping[str, Any],
         goal_id: str,
         plan: Mapping[str, Any],
     ) -> None:
-        readback_public = self._read_public_goal_configuration(goal_id)
-        readback_configuration = _capability_entry(readback_public, capability_id).get(
-            "current"
-        )
-        if readback_configuration != desired_configuration:
+        try:
+            readback_public = self._read_public_goal_configuration(goal_id)
+            readback_configuration = _capability_entry(readback_public, capability_id).get("current")
+            readback_verified = self._goal_configuration_readback_matches(
+                capability_id, readback_configuration, desired_configuration, applied
+            )
+        except Exception:
+            if capability_id != "reward_memory" or not applied.get("written"):
+                raise
+            self._send_partial_write_receipt(
+                applied={**applied, "error": "Memory configuration was written, but current readback is unavailable.",
+                    "recommended_action": "Reload the current Goal configuration before previewing another change."},
+                capability_id=capability_id, desired_configuration=desired_configuration,
+                desired_public=desired_public, goal_id=goal_id, plan=plan,
+            )
+            return
+        if not readback_verified:
+            if capability_id == "reward_memory" and applied.get("written"):
+                self._send_partial_write_receipt(
+                    applied={**applied, "error": "Configuration was written, but the memory binding readback did not verify.",
+                        "recommended_action": "Reload the current Goal configuration and inspect the binding before previewing another change."},
+                    capability_id=capability_id, desired_configuration=desired_configuration,
+                    desired_public=desired_public, goal_id=goal_id, plan=plan,
+                )
+                return
             raise RuntimeError("Goal configuration readback did not verify")
         self._send_json(
             {
@@ -641,6 +719,7 @@ class GoalConfigurationRequestMixin:
                 applied=applied,
                 capability_id=capability_id,
                 desired_configuration=desired_configuration,
+                desired_public=desired_public,
                 goal_id=goal_id,
                 plan=plan,
             )

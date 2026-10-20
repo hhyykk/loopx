@@ -5,6 +5,8 @@ from copy import deepcopy
 from typing import Any
 
 from ..configuration_transaction import configuration_payload_revision
+from ..control_plane.goals.goal_vision_policy import MAX_EFFECTIVE_TURN_REPLAN_THRESHOLD
+from ..control_plane.work_items.stride_policy_codec import stride_strategy_options
 
 from .progress_review.policy import (
     PROGRESS_REVIEW_MAX_DRIFT_THRESHOLD,
@@ -82,7 +84,21 @@ def capability_configuration_editor(
     # same values instead of restating them: a form cannot submit an executor or
     # effort the owning namespace would reject.
     steward_endpoints, steward_efforts = _steward_executor_editor_options()
+    from .native_chat.machine_defaults import codex_profile_options
     definitions: dict[str, dict[str, Any]] = {
+        "codex_chat": {
+            "supported_scopes": ["machine"], "writable_scopes": ["machine"],
+            "fields": [
+                _field("codex_profile", "Codex configuration profile", "select", nullable=True,
+                       options=codex_profile_options(), description="Existing native account/configuration home; credentials are not copied."),
+                _field("model", "Conversation model", "text", nullable=True,
+                       description="For example gpt-6.1-sol. Blank inherits this Codex profile's default."),
+                _field("reasoning_effort", "Reasoning effort", "select", nullable=True,
+                       options=list(steward_efforts)),
+                _field("service_tier", "Service tier", "text", nullable=True,
+                       description="For example fast. This is independent of the model and reasoning effort; the native provider validates support."),
+            ],
+        },
         "goal_capability_organization": {
             "supported_scopes": ["goal"], "writable_scopes": ["goal"],
             "fields": [
@@ -98,7 +114,7 @@ def capability_configuration_editor(
                               options=["file", "sqlite"], required=True,
                               description="Fixed at creation. Existing Goals need a separate backed-up migration."),
                        _field("canonical_creation", "Create canonical authority", "boolean", required=True,
-                              description="Enabled by default for new Goals. Disabled retains the post-promotion target behavior."),
+                              description="Required for new Goals in 2.0. Enable before creating a Goal; import existing Markdown Goals separately."),
                        _field("new_goal_handoff_mode", "New Goal execution policy", "select",
                               options=["soft_claim", "hard_lease"], required=True,
                               description="Used only with canonical creation. Agents inherit the Goal policy; this grants no tool permissions.")],
@@ -110,8 +126,14 @@ def capability_configuration_editor(
                 _field("count_unit", "Count between reviews", "select",
                        options=["completed_todos", "effective_turns"], required=True,
                        description="Existing completed-Todo values keep their units until explicitly changed."),
-                _field("count", "Review interval", "number", minimum=1, maximum=5, required=True,
-                       description="Effective Turns require accepted work settlement. Retries and observation-only polls do not count."),
+                _field("count", "Review interval", "number", minimum=1,
+                       maximum=MAX_EFFECTIVE_TURN_REPLAN_THRESHOLD, required=True,
+                       description="Effective Turns: 1–6; completed Todos: 1–5. Effective Turns require accepted work settlement. Retries and observation-only polls do not count."),
+                _field("planning_horizon_goal", "Show Goal in planning horizon", "boolean",
+                       description="Default off. Include the full original Goal and acceptance before choosing work; replan Goal reading, stride and execution authority are unchanged."),
+                _field("stride_strategy", "Stride strategy", "select",
+                       options=list(stride_strategy_options()),
+                       description="Off retains ordinary review. Evidence-conditioned v1 independently reviews work-slice size, route changes and validation scope; fresh Vision path reviews require a structured proposal, without automatic execution."),
             ],
         },
         "periodic_report": {
@@ -297,6 +319,10 @@ def capability_configuration_editor(
                     "select",
                     options=explore_harness_profiles,
                 ),
+                _field("composition_mode", "Composition policy", "select", options=["disabled", "explicit_only"],
+                       description="Replan requires an exact experiment successor or typed result; it grants no execution authority."),
+                _field("composition_scope_id", "Research coverage scope", "text", nullable=True,
+                       description="An opaque scope id required by the explicit-only composition policy."),
             ],
         },
         "change_quality_qualification": {
@@ -393,6 +419,17 @@ def capability_configuration_editor(
             "writable_scopes": ["goal"],
             "fields": [
                 _field(
+                    "agent_id", "Independent Agent binding", "text",
+                    description=(
+                        "Select one registered Goal Agent to change only its route. "
+                        "Leave blank to edit the legacy shared binding."
+                    ),
+                ),
+                _field(
+                    "enabled", "Enable this Agent binding", "boolean",
+                    description="Disabling one Agent preserves all shared and sibling bindings.",
+                ),
+                _field(
                     "config_path",
                     "Local-private configuration path",
                     "text",
@@ -408,7 +445,7 @@ def capability_configuration_editor(
                     "string_list",
                     description=(
                         "One already registered Goal-local Agent id per line. Private "
-                        "bindings currently accept exactly one Agent."
+                        "bindings accept exactly one Agent. Used only when editing the shared binding."
                     ),
                 ),
             ],
@@ -570,6 +607,11 @@ def _merge_goal_feature(
         capability_id,
         explore_harness_profiles=feature.get("profiles") or explore_harness_profiles,
     )
+    if capability_id == "reward_memory":
+        for field in entry["configuration_editor"]["fields"]:
+            if field["key"] == "agent_id":
+                field["input_kind"] = "select"
+                field["options"] = list((entry.get("current") or {}).get("registered_agents") or [])
     if "machine" in entry["available_scopes"]:
         entry["effective_value_policy"] = "goal_override_over_live_machine_default"
 
@@ -589,6 +631,29 @@ def _attach_effective_configuration(entry: dict[str, Any]) -> None:
     capability_default = (
         entry.get("default") if isinstance(entry.get("default"), Mapping) else None
     )
+    if (
+        entry["capability_id"] == "todo_replan_cadence"
+        and goal_override is not None
+        and bool(goal_override)
+        and set(goal_override) <= {"stride_strategy", "planning_horizon_goal"}
+    ):
+        from .todo_replan_cadence.machine_defaults import (
+            cadence_configuration_value,
+            default_replan_cadence_configuration,
+        )
+
+        # The Goal chooses the strategy while the existing review cadence stays
+        # live. Keep `current` sparse so readback does not claim a pinned count.
+        inherited_cadence = (
+            cadence_configuration_value(machine_default)
+            if machine_default is not None
+            else default_replan_cadence_configuration()
+        )
+        goal_override = {
+            **inherited_cadence,
+            **goal_override,
+        }
+        entry["effective_value_policy"] = "goal_stride_over_live_review_cadence"
     entry["effective_configuration"] = resolve_capability_configuration(
         str(entry["capability_id"]),
         goal_override=goal_override,

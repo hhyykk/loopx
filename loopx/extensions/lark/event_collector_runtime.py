@@ -366,6 +366,8 @@ def _is_profile_self_message(
 
 def _reply_source_content(message: Mapping[str, Any]) -> str:
     """Extract visible provider text, never card callback/operation payloads."""
+    if message.get("deleted") is True:
+        return ""
     body = message.get("body")
     raw = body.get("content") if isinstance(body, Mapping) else message.get("content")
     if not isinstance(raw, str):
@@ -409,8 +411,13 @@ def enrich_lark_event_reply_context(
     configured_chat_id: str,
     attempts: int = 3,
     sleeper: Sleeper = time.sleep,
+    current_message: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Verify whether an event structurally replies to this profile's bot."""
+    """Verify a reply, optionally reusing this invocation's provider read.
+
+    ``current_message`` is an authenticated transport observation, not an
+    event field or caller-supplied context. It grants no admission authority.
+    """
 
     enriched = dict(event)
     enriched.pop("reply_context", None)
@@ -421,14 +428,18 @@ def enrich_lark_event_reply_context(
     message_id = str(event.get("message_id") or "").strip()
     if not MESSAGE_ID_PATTERN.fullmatch(message_id):
         return enriched
-    current, current_status = _read_message_with_status(
-        runner=runner,
-        command_prefix=command_prefix,
-        profile=profile,
-        message_id=message_id,
-        attempts=attempts,
-        sleeper=sleeper,
-    )
+    if current_message is None:
+        current, current_status = _read_message_with_status(
+            runner=runner,
+            command_prefix=command_prefix,
+            profile=profile,
+            message_id=message_id,
+            attempts=attempts,
+            sleeper=sleeper,
+        )
+    else:
+        current = current_message if current_message.get("message_id") == message_id else None
+        current_status = "message_context_verified" if current else "message_context_unavailable"
     enriched["message_context_status"] = current_status
     if current is None or str(current.get("chat_id") or "") != configured_chat_id:
         return enriched
@@ -849,7 +860,7 @@ def run_lark_event_collector(
         stdout=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace",
         bufsize=1,
-    )
+    ) if config["collect_messages"] else None
     callback_process: subprocess.Popen[str] | None = None
     callback_thread: threading.Thread | None = None
     result_recovery_thread: threading.Thread | None = None
@@ -1061,8 +1072,11 @@ def run_lark_event_collector(
     self_message_skipped_count = 0
     routed_chat_ids: set[str] = set()
     try:
-        assert process.stdout is not None
-        for line in process.stdout:
+        # Callback-only collection shares the existing callback/recovery owner;
+        # it must not start or ingest another text-message stream.
+        message_lines = () if process is None else process.stdout
+        assert message_lines is not None
+        for line in message_lines:
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError:
@@ -1149,7 +1163,11 @@ def run_lark_event_collector(
             routed_chat_ids.add(chat_id)
             verified_count += int(enriched.get("reply_context_verified") is True)
             reply_to_bot_count += int(enriched.get("reply_to_bot") is True)
-        returncode = process.wait()
+        if process is not None:
+            returncode = process.wait()
+        else:
+            assert callback_process is not None
+            returncode = callback_process.wait()
     finally:
         result_recovery_stop.set()
         for child in (process, callback_process):
@@ -1213,6 +1231,8 @@ def run_lark_event_collector(
         "local_paths_returned": False,
         "private_content_returned": False,
     }
+    if not config["collect_messages"]:
+        result["collect_messages"] = False
     if callbacks_enabled:
         result.update(
             {

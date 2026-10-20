@@ -9,7 +9,7 @@ from threading import Barrier
 
 import pytest
 from canonical_authority_fixture import (
-    initialize_canonical_authority, single_snapshot_page,
+    initialize_canonical_authority, isolate_sqlite_runtime, single_snapshot_page,
     promoted_create_fixture as _promoted_create_fixture,
 )
 
@@ -37,8 +37,6 @@ from loopx.control_plane.todos import (
 )
 from loopx.control_plane.todos.active_state_editing import (
     TODO_SECTION_HEADINGS,
-    section_bounds,
-    todo_blocks,
 )
 from loopx.control_plane.todos.completion_validation_projection import (
     completion_validation_declaration_sha256,
@@ -51,6 +49,7 @@ from loopx.control_plane.todos.completion_validation_store import (
 from loopx.control_plane.todos.provider_update import (
     update_canonical_todo_if_promoted,
 )
+from loopx.control_plane.todos.summary_item import todo_text_content_revision
 from loopx.control_plane.todos.contract import format_todo_metadata_line
 from loopx.todos import (
     add_goal_todo,
@@ -151,7 +150,9 @@ def test_engaged_fence_reads_typescript_provider_result(
     _engage_fence(tmp_path)
     calls: list[tuple[str, float]] = []
 
-    def _read(method: str, _params: object, *, timeout: float) -> dict[str, object]:
+    def _read(method: str, _params: object, *, timeout: float,
+              large_local_snapshot: bool) -> dict[str, object]:
+        assert large_local_snapshot is True
         calls.append((method, timeout))
         return single_snapshot_page({
             "status": "loaded",
@@ -174,7 +175,7 @@ def test_engaged_fence_reads_typescript_provider_result(
     )
     assert result is not None
     assert result["todos"][0]["todo_id"] == "todo_a"
-    assert calls == [("coordination.local_authority.todo_snapshot_page", 15.0)]
+    assert calls == [("coordination.local_authority.todo_snapshot", 15.0)]
 
 
 def test_promoted_claim_adapter_invokes_typescript_without_markdown_fallback(
@@ -942,10 +943,9 @@ def _seed_promoted_store(
             }
         ],
     )
-    # main's builder carries no handoff mode and the claim owner reads a missing
-    # mode as legacy; this branch's builder defaults to hard_lease, so seed the
-    # legacy mode explicitly unless a test asks for another one.
-    projection["handoff_mode"] = str(handoff_mode) if handoff_mode is not None else "legacy"
+    # Normal claim tests need a current policy; historical wire shape does not
+    # imply the retired ownership strategy. Explicit modes stay caller-owned.
+    projection["handoff_mode"] = str(handoff_mode) if handoff_mode is not None else "soft_claim"
     state_path = runtime_root / "ACTIVE_GOAL_STATE.md"
     if not state_path.exists():
         state_path.write_text(
@@ -1029,9 +1029,11 @@ def test_promoted_claim_protocol_failure_stays_infrastructure_outage(
     assert not isinstance(exc_info.value, LocalCoordinationAuthorityRejection)
 
 
-def test_promoted_claim_folds_agent_id_whitespace_like_legacy(tmp_path: Path) -> None:
+def test_canonical_claim_uses_public_agent_id_whitespace_normalization(
+    tmp_path: Path,
+) -> None:
     """Every Python whitespace character (including U+0085 NEL, U+001C..U+001F,
-    tabs, NBSP) in claimed_by must fold to '-' identically before and after promotion.
+    tabs, NBSP) in claimed_by must fold to '-' through the public normalizer.
     """
     from loopx.control_plane.todos.contract import normalize_todo_claimed_by
 
@@ -1485,12 +1487,12 @@ Continue provider-first delivery.
     # The extra bounded crossing admits/replays before resolving private argv.
     assert terminal_phases == ["resolve_validation", "execute_validation", "applied"]
     assert runtime_calls == [
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
         "coordination.local_authority.todo_terminal",
         "coordination.local_authority.todo_terminal",
         "coordination.local_authority.todo_terminal",
-        "coordination.local_authority.todo_snapshot_page",
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
+        "coordination.local_authority.todo_snapshot",
     ]
     successor_id = completed["generated_successor_todo_ids"][0]
 
@@ -1511,10 +1513,10 @@ Continue provider-first delivery.
     assert superseded["superseded"] is True
     assert superseded["projection_delivery"] == "delivered"
     assert runtime_calls == [
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
         "coordination.local_authority.todo_terminal",
-        "coordination.local_authority.todo_snapshot_page",
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
+        "coordination.local_authority.todo_snapshot",
     ]
 
     canonical = read_canonical_todos_if_promoted(
@@ -1542,10 +1544,10 @@ Continue provider-first delivery.
     assert archived["moved_count"] == 2
     assert archived["projection_delivery"] == "delivered"
     assert runtime_calls == [
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
         "coordination.local_authority.todo_archive",
-        "coordination.local_authority.todo_snapshot_page",
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
+        "coordination.local_authority.todo_snapshot",
         "coordination.local_authority.todo_archive_ack",
     ]
     canonical_after_archive = read_canonical_todos_if_promoted(
@@ -1575,10 +1577,10 @@ Continue provider-first delivery.
         assert no_change["moved_count"] == 0
         assert no_change["provider_revision"] == archive_revision
         assert runtime_calls == [
-            "coordination.local_authority.todo_snapshot_page",
+            "coordination.local_authority.todo_snapshot",
             "coordination.local_authority.todo_archive",
-            "coordination.local_authority.todo_snapshot_page",
-            "coordination.local_authority.todo_snapshot_page",
+            "coordination.local_authority.todo_snapshot",
+            "coordination.local_authority.todo_snapshot",
         ]
         unchanged = read_canonical_todos_if_promoted(
             runtime_root=runtime_root,
@@ -1593,9 +1595,14 @@ Continue provider-first delivery.
     assert "Continue provider-first delivery." in rendered
 
 
-def test_public_terminal_optional_prose_matches_before_and_after_promotion(
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
+def test_public_terminal_optional_prose_matches_canonical_providers(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
 ) -> None:
+    if provider == "sqlite":
+        isolate_sqlite_runtime(tmp_path, monkeypatch)
     cases = [
         ("note", None, None),
         ("note", "", None),
@@ -1614,7 +1621,7 @@ def test_public_terminal_optional_prose_matches_before_and_after_promotion(
         ("reason", " first\u0085  second ", "first second"),
     ]
 
-    def exercise(root: Path, *, promoted: bool) -> dict[str, object]:
+    def exercise(root: Path) -> dict[str, object]:
         runtime_root = root / "runtime"
         project = root / "project"
         state_file = project / "ACTIVE_GOAL_STATE.md"
@@ -1674,17 +1681,17 @@ def test_public_terminal_optional_prose_matches_before_and_after_promotion(
             ),
             encoding="utf-8",
         )
-        if promoted:
-            initialize_canonical_authority(
-                runtime_root,
-                "goal-a",
-                build_todo_runtime_shadow_projection(
-                    goal_id="goal-a",
-                    todos=records,
-                    handoff_mode="soft_claim",
-                ),
-                state_path=state_file,
-            )
+        initialize_canonical_authority(
+            runtime_root,
+            "goal-a",
+            build_todo_runtime_shadow_projection(
+                goal_id="goal-a",
+                todos=records,
+                handoff_mode="soft_claim",
+            ),
+            state_path=state_file,
+            provider=provider,
+        )
 
         for index, (field, value, _expected) in enumerate(cases, start=1):
             common = {
@@ -1707,44 +1714,36 @@ def test_public_terminal_optional_prose_matches_before_and_after_promotion(
                 )
                 assert result["completed"] is True
 
-        if promoted:
-            projection = read_canonical_todos_if_promoted(
-                runtime_root=runtime_root,
-                goal_id="goal-a",
-            )
-            assert projection is not None
-            todos = projection["todos"]
-        else:
-            lines = state_file.read_text(encoding="utf-8").splitlines()
-            bounds = section_bounds(lines, "agent")
-            assert bounds is not None
-            todos = todo_blocks(
-                lines,
-                bounds[0],
-                bounds[1],
-                role="agent",
-                source_section=bounds[2],
-            )
+        projection = read_canonical_todos_if_promoted(
+            runtime_root=runtime_root,
+            goal_id="goal-a",
+        )
+        assert projection is not None
+        todos = projection["todos"]
         by_id = {todo["todo_id"]: todo for todo in todos}
         return {
             f"{field}:{index}": by_id[f"todo_prose_{index:02d}"].get(field)
             for index, (field, _value, _expected) in enumerate(cases, start=1)
         }
 
-    legacy = exercise(tmp_path / "legacy", promoted=False)
-    canonical = exercise(tmp_path / "canonical", promoted=True)
+    canonical = exercise(tmp_path / provider)
     expected = {
         f"{field}:{index}": value
         for index, (field, _input, value) in enumerate(cases, start=1)
     }
-    assert legacy == expected
     assert canonical == expected
 
 
-def test_illegal_terminal_actor_is_a_domain_valueerror_before_and_after_promotion(
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
+def test_illegal_terminal_actor_is_rejected_by_canonical_provider(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
 ) -> None:
-    def rejected(root: Path, *, promoted: bool) -> ValueError:
+    if provider == "sqlite":
+        isolate_sqlite_runtime(tmp_path, monkeypatch)
+
+    def rejected(root: Path) -> ValueError:
         runtime_root = root / "runtime"
         project = root / "project"
         state_file = project / "ACTIVE_GOAL_STATE.md"
@@ -1782,31 +1781,31 @@ def test_illegal_terminal_actor_is_a_domain_valueerror_before_and_after_promotio
             ),
             encoding="utf-8",
         )
-        if promoted:
-            initialize_canonical_authority(
-                runtime_root,
-                "goal-a",
-                build_todo_runtime_shadow_projection(
-                    goal_id="goal-a",
-                    handoff_mode="soft_claim",
-                    todos=[
-                        {
-                            "schema_version": "todo_item_v0",
-                            "index": 1,
-                            "done": False,
-                            "text": "Reject an illegal terminal actor",
-                            "todo_id": "todo_terminal_actor",
-                            "role": "agent",
-                            "status": "open",
-                            "archive_state": "active",
-                            "source_section": TODO_SECTION_HEADINGS["agent"],
-                            "task_class": "advancement_task",
-                            "claimed_by": "agent-a",
-                        }
-                    ],
-                ),
-                state_path=state_file,
-            )
+        initialize_canonical_authority(
+            runtime_root,
+            "goal-a",
+            build_todo_runtime_shadow_projection(
+                goal_id="goal-a",
+                handoff_mode="soft_claim",
+                todos=[
+                    {
+                        "schema_version": "todo_item_v0",
+                        "index": 1,
+                        "done": False,
+                        "text": "Reject an illegal terminal actor",
+                        "todo_id": "todo_terminal_actor",
+                        "role": "agent",
+                        "status": "open",
+                        "archive_state": "active",
+                        "source_section": TODO_SECTION_HEADINGS["agent"],
+                        "task_class": "advancement_task",
+                        "claimed_by": "agent-a",
+                    }
+                ],
+            ),
+            state_path=state_file,
+            provider=provider,
+        )
         with pytest.raises(ValueError) as exc_info:
             complete_goal_todo(
                 registry_path=registry_path,
@@ -1820,9 +1819,7 @@ def test_illegal_terminal_actor_is_a_domain_valueerror_before_and_after_promotio
             )
         return exc_info.value
 
-    legacy = rejected(tmp_path / "legacy", promoted=False)
-    canonical = rejected(tmp_path / "canonical", promoted=True)
-    assert not isinstance(legacy, LocalCoordinationAuthorityUnavailable)
+    canonical = rejected(tmp_path / provider)
     assert isinstance(canonical, LocalCoordinationAuthorityRejection)
     assert canonical.code == "actor_not_registered"
 
@@ -2014,7 +2011,7 @@ def test_promoted_terminal_retry_reuses_receipt_after_projection_crash(
     with pytest.raises(OSError, match="projection delivery crash"):
         complete_goal_todo(**request)
     assert runtime_calls == [
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
         "coordination.local_authority.todo_terminal",
     ]
 
@@ -2027,12 +2024,12 @@ def test_promoted_terminal_retry_reuses_receipt_after_projection_crash(
     assert replay["provider_status"] == "replayed"
     assert replay["idempotent_replay"] is True
     assert runtime_calls == [
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
         "coordination.local_authority.todo_terminal",
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
         "coordination.local_authority.todo_terminal",
-        "coordination.local_authority.todo_snapshot_page",
-        "coordination.local_authority.todo_snapshot_page",
+        "coordination.local_authority.todo_snapshot",
+        "coordination.local_authority.todo_snapshot",
     ]
     canonical = read_canonical_todos_if_promoted(
         runtime_root=runtime_root, goal_id="goal-a"
@@ -2397,7 +2394,7 @@ def test_real_canonical_provider_preserves_complete_complex_todo_semantics(
     created_item = next(
         item for item in after_create["todos"] if item["todo_id"] == created["todo_id"]
     )
-    assert created_item["text"] == "Create directly against promoted provider"
+    assert created_item["text"] == "[P1] Create directly against promoted provider"
     assert created_item["claimed_by"] == "agent-a"
     assert after_create["authority_read"]["todo_read_model"]["todo_count"] == 4
     assert claimed_item["note"] == "Correction context"
@@ -2441,14 +2438,21 @@ def test_real_canonical_provider_preserves_complete_complex_todo_semantics(
     assert not state_file.exists()
     after_edit = list_goal_todos(registry_path=registry_path, goal_id="goal-a")
     edited_by_id = {item["todo_id"]: item for item in after_edit["todos"]}
+    edited_text = "[P0] Edit provider-owned work"
+    edited_content_revision = todo_text_content_revision(edited_text)
+    assert edited_content_revision is not None
     assert edited_by_id["todo_claimable"] == {
         **claimed_item,
-        "text": "[P0] Edit provider-owned work",
+        "text": edited_text,
         "title": "Edit provider-owned work",
         "note": "compatibility edit",
+        "content_revision": edited_content_revision,
         "last_actor_agent_id": "agent-a",
         "updated_at": edited_by_id["todo_claimable"]["updated_at"],
     }
+    assert edited_by_id["todo_claimable"]["content_revision"] != claimed_item[
+        "content_revision"
+    ]
     assert edited_by_id["todo_claimable"]["updated_at"] != claimed_item["updated_at"]
     assert edited_by_id["todo_complex"] == by_id["todo_complex"]
     assert edited_by_id["todo_successor"] == by_id["todo_successor"]

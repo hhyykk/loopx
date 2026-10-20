@@ -8,9 +8,11 @@ import pytest
 from loopx.control_plane.scheduler import scheduler_hint as scheduler_hint_module
 from loopx.control_plane.scheduler.arbitration import (
     SchedulerDisposition,
-    build_scheduler_arbitration,
 )
-from loopx.control_plane.scheduler.scheduler_hint import build_scheduler_hint
+from tests.control_plane.scheduler_arbitration_fixture import (
+    build_native_scheduler_hint as build_scheduler_hint,
+    project_native_arbitration,
+)
 from loopx.control_plane.scheduler.execution_context import (
     scheduler_execution_context_for_runtime_profile,
 )
@@ -182,7 +184,7 @@ def test_interaction_contract_drives_scheduler(
     disposition: SchedulerDisposition,
     cadence: str,
 ) -> None:
-    arbitration = build_scheduler_arbitration(
+    arbitration = project_native_arbitration(
         payload,
         agent_scope_frontier_actions=AGENT_SCOPE_ACTIONS,
     )
@@ -547,3 +549,52 @@ def test_structurally_invalid_contract_fails_closed() -> None:
         "interaction_contract.agent_channel.quiet_noop_allowed_must_be_boolean"
         in hint["consistency_error"]["errors"]
     )
+
+
+@pytest.mark.parametrize("flag", [None, 0, 1, "false"])
+def test_python_source_codec_does_not_coerce_non_boolean_authority(flag) -> None:
+    payload = _payload(mode="\u0085bounded_delivery\u001c", should_run=True,
+        user_required=False, must_attempt=True, delivery_allowed=True, quiet_noop_allowed=False)
+    payload["interaction_contract"]["user_channel"]["action_required"] = flag
+    original = deepcopy(payload)
+
+    arbitration = project_native_arbitration(payload)
+
+    assert arbitration.mode == "bounded_delivery"
+    assert arbitration.disposition is SchedulerDisposition.CONSISTENCY_REPAIR
+    assert arbitration.errors == ("interaction_contract.user_channel.action_required_must_be_boolean",)
+    assert payload == original
+
+
+@pytest.mark.parametrize("minutes,progression", [
+    (1, [1]), (11, [10, 11]), (25, [10, 20, 25]), (61, [10, 20, 30, 60]),
+])
+def test_automatic_dated_wait_bounds_rechecks_without_finite_stop(minutes, progression):
+    payload = _payload(mode="agent_scope_wait", should_run=False, user_required=False,
+        must_attempt=False, delivery_allowed=False, quiet_noop_allowed=True)
+    evaluated = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    due = (evaluated + timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
+    resume = f"resume_at:{due}"
+    payload["vision_wait_state"] = {
+        "schema_version": "goal_vision_wait_state_v0", "state": "waiting",
+        "reason_code": "exact_blocked_successor", "automatic_resume": True,
+        "agent_id": payload["agent_identity"]["agent_id"], "waiting_todo_count": 1,
+        "selected_todo_id": "todo_scheduled", "selected_todo_status": "deferred",
+        "resume_when": resume, "resume_condition": {
+            "schema_version": "todo_resume_condition_v0", "kind": "resume_at",
+            "resume_when": resume, "target": due, "satisfied": False,
+            "scheduled_for": due, "evaluated_at": "2099-01-01T00:00:00Z",
+            "clock_provider": "runtime_clock", "material_change": False,
+            "material_change_generation": 0, "resume_receipt": None,
+        },
+    }
+    original = deepcopy(payload)
+    hint = build_scheduler_hint(payload, agent_scope_frontier_actions=AGENT_SCOPE_ACTIONS,
+        scheduler_execution_context=scheduler_execution_context_for_runtime_profile("generic_cli"),
+        include_detail=True)
+    local = hint["cold_path_detail"]["local_scheduler"]
+    assert hint["action"] == "backoff_until_state_change"
+    assert local["example_progression_minutes"] == progression
+    assert all(limit is None for limit in hint["unchanged_poll"]["limits"].values())
+    assert set(hint["unchanged_poll"]["after_limits"].values()) == {"continue"}
+    assert payload == original

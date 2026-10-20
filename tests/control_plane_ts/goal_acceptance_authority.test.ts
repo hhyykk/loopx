@@ -20,15 +20,20 @@ import {shadowManagementStatePath} from "../../loopx/control_plane/coordination/
 import {authorityProjectionFixture, todoFixtureRecord} from "./authority_projection_fixture.ts";
 import {acceptanceCompletionRequirements, acceptanceWorkGuard, goalAcceptanceTodoDigest, goalAcceptanceWorkDigest,
   normalizeGoalAcceptanceDocument, projectGoalAcceptance, readGoalAcceptance, validateAcceptanceCompletion} from "../../loopx/control_plane/goals/acceptance_contract.ts";
-import {commitGoalAcceptanceVerification, commitLocalGoalAcceptance, commitLocalGoalAcceptanceVerification,
-  configureGoalAcceptance, inspectGoalAcceptance, inspectLocalGoalAcceptance} from "../../loopx/control_plane/goals/acceptance_authority.ts";
+import {commitGoalAcceptanceVerification, commitLocalGoalAcceptance, commitLocalGoalAcceptanceLifecycleTransition,
+  commitLocalGoalAcceptanceVerification, configureGoalAcceptance, inspectGoalAcceptance, inspectLocalGoalAcceptance,
+  transitionGoalAcceptanceLifecycle} from "../../loopx/control_plane/goals/acceptance_authority.ts";
 import {decodeCompletionValidationRevision, planCompletionValidationRevision}
   from "../../loopx/control_plane/todos/completion_validation_revision.ts";
 
+import {acceptanceOracleBasis} from "../../loopx/control_plane/goals/acceptance_oracle.ts";
+
 const goal = "goal-acceptance-test";
+const goalA = {goal_id: goal, goal_instance_id: "ginst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"};
+const goalB = {goal_id: goal, goal_instance_id: "ginst_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"};
 test("documented owner configuration satisfies the canonical acceptance contract", async () => {
   const reference = await readFile(new URL("../../docs/reference/goal-acceptance-observations.md", import.meta.url), "utf8");
-  const example = reference.match(/```json\n([\s\S]*?)\n```/);
+  const example = reference.match(/```json\r?\n([\s\S]*?)\r?\n```/);
   assert.ok(example, "the operation guide must include a runnable configuration");
   assert.doesNotThrow(() => normalizeGoalAcceptanceDocument(JSON.parse(example[1])));
 });
@@ -177,6 +182,18 @@ async function verifyRequest(store: AuthorityStore, extra: JsonObject = {}): Pro
     revision: basis.revision, contract_digest: basis.contract_digest,
     results: ["outcome", "prerequisite"].map(criterion_id => ({criterion_id, passed: true, exit_code: 0})), ...extra};
 }
+async function lifecycleTransition(
+  store: AuthorityStore,
+  transition: JsonObject,
+  operationId = randomUUID(),
+): Promise<JsonObject> {
+  return transitionGoalAcceptanceLifecycle(store, {
+    goal_id: goal,
+    actor_agent_id: null,
+    operation_id: operationId,
+    transition,
+  });
+}
 async function update(store: AuthorityStore, todoId: string, patch: JsonObject) {
   const current = await head(store);
   const previous = (current.head.todos as JsonObject[]).find(item => item.todo_id === todoId);
@@ -216,6 +233,256 @@ async function fixture(t: TestContext, provider: typeof providers[number]): Prom
 for (const provider of providers) {
   const options = {skip: (provider === "postgresql" && !process.env.LOOPX_TEST_POSTGRES_URL) ||
     (provider === "sqlite" && !sqliteQualified)};
+  test(`${provider}: a scoped reviewed plan survives unrelated progress with exact native replay`, options, async t => {
+    const store = await fixture(t, provider); await seed(store);
+    const doc = {...document(), scope: {kind: "selected_work", todo_ids: ["todo_first"]},
+      bindings: [{todo_id: "todo_first", criterion_ids: ["prerequisite"]}]};
+    const request = await configureRequest(store, {document: doc});
+    const before = await head(store);
+    const preview = await configureGoalAcceptance(store, {...request, dry_run: true});
+    assert.deepEqual(await head(store), before);
+    assert.equal(typeof preview.review_context_digest, "string");
+    await update(store, "todo_second", {text: "Changed independent work"});
+    await update(store, "todo_first", {note: "Observed progress"});
+    const stable = await head(store);
+    assert.equal((await configureGoalAcceptance(store, request)).reason_code, "goal_acceptance_provider_revision_mismatch",
+      "without explicit reviewed context, original CAS remains strict");
+    assert.deepEqual(await head(store), stable);
+    const reviewed = {...request, review_context_digest: preview.review_context_digest};
+    const applied = await configureGoalAcceptance(store, reviewed);
+    assert.equal(applied.status, "applied");
+    const committed = await head(store);
+    await update(store, "todo_second", {note: "Later unrelated observation"});
+    const replay = await configureGoalAcceptance(store, reviewed);
+    assert.equal(replay.status, "replayed");
+    assert.equal(replay.review_context_digest, applied.review_context_digest, "receipt retains the original configured context");
+    assert.notEqual((await head(store)).provider_revision, committed.provider_revision);
+    assert.equal((await configureGoalAcceptance(store, {...reviewed,
+      document: {...doc, objective: "Different approved effect"}})).reason_code, "coordination_operation_identity_mismatch");
+    await assert.rejects(() => configureGoalAcceptance(store, {...reviewed, operation_id: randomUUID(), actor_agent_id: "worker"}));
+  });
+  test(`${provider}: reviewed context retains exact CAS against a competing write`, options, async t => {
+    const store = await fixture(t, provider); await seed(store);
+    const request = await configureRequest(store);
+    const preview = await configureGoalAcceptance(store, {...request, dry_run: true});
+    const commit = store.commitAuthority.bind(store);
+    store.commitAuthority = async value => {
+      store.commitAuthority = commit;
+      await update(store, "todo_first", {note: "A competing commit after admission"});
+      return commit(value);
+    };
+    assert.equal((await configureGoalAcceptance(store, {...request,
+      review_context_digest: preview.review_context_digest})).status, "conflict");
+    assert.equal((await store.readReceipt(String(request.operation_id))).status, "missing");
+    assert.equal((await head(store)).head.goal_acceptance, undefined);
+  });
+  test(`${provider}: reviewed context rejects covered work and current-contract changes without effects`, options, async t => {
+    const store = await fixture(t, provider); await seed(store);
+    const request = await configureRequest(store);
+    const preview = await configureGoalAcceptance(store, {...request, dry_run: true});
+    await update(store, "todo_first", {text: "New covered requirements"});
+    const changed = await head(store);
+    assert.equal((await configureGoalAcceptance(store, {...request,
+      review_context_digest: preview.review_context_digest})).reason_code, "goal_acceptance_review_context_mismatch");
+    assert.deepEqual(await head(store), changed);
+    const next = await configureRequest(store);
+    const nextPreview = await configureGoalAcceptance(store, {...next, dry_run: true});
+    assert.equal((await configureGoalAcceptance(store, {...next, operation_id: randomUUID()})).status, "applied");
+    const configured = await head(store);
+    assert.equal((await configureGoalAcceptance(store, {...next,
+      review_context_digest: nextPreview.review_context_digest})).reason_code, "goal_acceptance_review_context_mismatch");
+    assert.deepEqual(await head(store), configured);
+  });
+  test(`${provider}: optional oracle source and exact versions survive canonical commit and revoke on changed work`, options, async t => {
+    const store = await fixture(t, provider); await seed(store);
+    const doc = normalizeGoalAcceptanceDocument({scope: {kind: "selected_work", todo_ids: ["todo_first"]}, objective: "Check exact output", non_goals: [],
+      bindings: [{todo_id: "todo_first", criterion_ids: ["oracle"]}], criteria: [{id: "oracle", description: "Owner-approved checker",
+        validation_argv: ["python3", "check.py"], validation_files: [{path: "check.py", sha256: "a".repeat(64)}],
+        oracle: {kind: "owner_pinned_oracle", source_id: "owner-checker", input_refs: [], output_refs: ["output.txt"]}}]});
+    assert.equal((await configureGoalAcceptance(store, await configureRequest(store, {document: doc}))).status, "applied");
+    const beforeInvalidInvocation = await head(store);
+    await assert.rejects(configureGoalAcceptance(store, await configureRequest(store, {document: {
+      ...doc, criteria: [{...doc.criteria[0], validation_argv: ["/usr/bin/true", "check.py"]}],
+    }})), /oracle requires/);
+    assert.deepEqual(await head(store), beforeInvalidInvocation, "rejected source invocation must not write canonical state");
+    const evidence = {source_id: "owner-checker", source_digest: acceptanceOracleBasis(doc.criteria[0]), checked_at: "2026-01-01T00:00:00Z",
+      input_versions: [], output_versions: [{ref: "output.txt", sha256: "b".repeat(64)}]};
+    const results = [{criterion_id: "oracle", passed: true, exit_code: 0, oracle_evidence: evidence}];
+    await assert.rejects(commitGoalAcceptanceVerification(store, await verifyRequest(store, {actor_agent_id: "worker", results})));
+    assert.equal((await commitGoalAcceptanceVerification(store, await verifyRequest(store, {results}))).status, "applied");
+    const view = (await inspectGoalAcceptance(store, goal)).goal_acceptance_contract as JsonObject;
+    assert.deepEqual(((view.verification as JsonObject).results as JsonObject[])[0].oracle_evidence, evidence);
+    assert.equal((((view.criteria as JsonObject[])[0]).oracle as JsonObject).state, "recorded", "canonical rows alone do not attest current filesystem bytes");
+    await update(store, "todo_first", {text: "Changed output requirement"});
+    const stale = (await inspectGoalAcceptance(store, goal)).goal_acceptance_contract as JsonObject;
+    assert.equal((((stale.criteria as JsonObject[])[0]).oracle as JsonObject).state, "stale");
+    const ordinary = {...doc, criteria: doc.criteria.map(({oracle: _oracle, ...criterion}) => criterion)};
+    assert.equal((await configureGoalAcceptance(store, await configureRequest(store, {document: ordinary}))).status, "applied");
+    const rolledBack = (await inspectGoalAcceptance(store, goal)).goal_acceptance_contract as JsonObject;
+    assert.equal(rolledBack.verification, null, "ordinary rollback cannot reuse an oracle success");
+    assert.equal(Object.hasOwn((rolledBack.criteria as JsonObject[])[0], "oracle"), false);
+  });
+  test(`${provider}: first exact acceptance mutation binds the current instance atomically`, options, async t => {
+    const store = await fixture(t, provider); await seed(store);
+    const request = await configureRequest(store, {goal_ref: goalA});
+    const before = await head(store);
+    assert.equal((await configureGoalAcceptance(store, {...request, dry_run: true})).status, "planned");
+    assert.deepEqual(await head(store), before);
+    assert.equal((await configureGoalAcceptance(store, request)).status, "applied");
+    const current = await head(store);
+    assert.deepEqual(current.head.goal_acceptance_lifecycle, {
+      schema_version: "loopx_goal_acceptance_lifecycle_v0",
+      state: "active",
+      goal_ref: goalA,
+    });
+    assert.deepEqual((current.head.goal_acceptance as JsonObject).owner_goal_ref, goalA);
+    assert.equal((await inspectGoalAcceptance(store, goal, undefined, goalA)).status, "loaded");
+  });
+  test(`${provider}: historical recreation migration keeps legacy acceptance with the retired instance`, options, async t => {
+    const store = await fixture(t, provider); await seed(store);
+    assert.equal((await configureGoalAcceptance(store, await configureRequest(store))).status, "applied");
+    assert.equal((await lifecycleTransition(store, {
+      kind: "reconcile_recreated",
+      retired_goal_ref: goalA,
+      goal_ref: goalB,
+    })).status, "applied");
+    const migrated = await head(store);
+    assert.deepEqual(migrated.head.goal_acceptance_lifecycle, {
+      schema_version: "loopx_goal_acceptance_lifecycle_v0",
+      state: "active",
+      goal_ref: goalB,
+    });
+    assert.deepEqual((migrated.head.goal_acceptance as JsonObject).owner_goal_ref, goalA);
+    assert.deepEqual(projectGoalAcceptance(migrated.head, goal), {
+      lifecycle_state: "active",
+      goal_ref: goalB,
+    });
+    assert.equal(acceptanceWorkGuard(migrated.head, goal, "todo_first"), null);
+  });
+  test(`${provider}: historical recreation replay does not reactivate a retiring successor`, options, async t => {
+    const store = await fixture(t, provider); await seed(store);
+    assert.equal((await lifecycleTransition(store, {
+      kind: "reconcile_recreated",
+      retired_goal_ref: goalA,
+      goal_ref: goalB,
+    })).status, "applied");
+    assert.equal((await lifecycleTransition(store, {
+      kind: "retire",
+      goal_ref: goalB,
+    })).status, "applied");
+    const replay = await lifecycleTransition(store, {
+      kind: "reconcile_recreated",
+      retired_goal_ref: goalA,
+      goal_ref: goalB,
+    });
+    assert.equal(replay.status, "no_change");
+    assert.deepEqual(replay.goal_acceptance_lifecycle, {
+      schema_version: "loopx_goal_acceptance_lifecycle_v0",
+      state: "retiring",
+      goal_ref: goalB,
+    });
+  });
+  test(`${provider}: exact lifecycle migration fences retirement and same-alias replacement`, options, async t => {
+    const store = await fixture(t, provider); await seed(store);
+    const legacyConfigure = await configureRequest(store);
+    assert.equal((await configureGoalAcceptance(store, legacyConfigure)).status, "applied");
+    const legacyVerification = await verifyRequest(store);
+    assert.equal((await commitGoalAcceptanceVerification(store, legacyVerification)).status, "applied");
+
+    const bindOperation = randomUUID();
+    assert.equal((await lifecycleTransition(store, {kind: "bind_existing", goal_ref: goalA}, bindOperation)).status, "applied");
+    const bound = await head(store);
+    assert.deepEqual(bound.head.goal_acceptance_lifecycle, {
+      schema_version: "loopx_goal_acceptance_lifecycle_v0",
+      state: "active",
+      goal_ref: goalA,
+    });
+    assert.deepEqual((bound.head.goal_acceptance as JsonObject).owner_goal_ref, goalA);
+    assert.equal((bound.head.goal_acceptance as JsonObject).schema_version, "loopx_goal_acceptance_v2");
+    assert.equal(acceptanceWorkGuard(bound.head, goal, "todo_first")?.allowed, true);
+    assert.equal(projectGoalAcceptance(bound.head, goal).status, "accepted",
+      "migration preserves A's verification as A history");
+    await assert.rejects(inspectGoalAcceptance(store, goal), /requires goal_ref/);
+    assert.equal((await inspectGoalAcceptance(store, goal, undefined, goalA)).status, "loaded");
+    assert.equal((await configureGoalAcceptance(store, await configureRequest(store))).reason_code,
+      "goal_acceptance_goal_instance_missing");
+    const noChangeOperation = randomUUID();
+    assert.equal((await lifecycleTransition(store,
+      {kind: "bind_existing", goal_ref: goalA}, noChangeOperation)).status, "no_change");
+    assert.equal((await store.readReceipt(noChangeOperation)).status, "found");
+    assert.equal((await lifecycleTransition(store, {
+      kind: "activate_successor",
+      retired_goal_ref: goalA,
+      goal_ref: goalB,
+    })).reason_code, "goal_acceptance_goal_instance_mismatch");
+
+    const staleWriter = await configureRequest(store, {goal_ref: goalA});
+    assert.equal((await lifecycleTransition(store, {kind: "retire", goal_ref: goalA})).status, "applied");
+    const retiring = await head(store);
+    assert.equal((retiring.head.goal_acceptance_lifecycle as JsonObject).state, "retiring");
+    assert.equal(acceptanceWorkGuard(retiring.head, goal, "todo_first")?.allowed, false);
+    assert.equal(acceptanceWorkGuard(retiring.head, goal, "todo_first")?.reason_code,
+      "goal_acceptance_goal_retiring");
+    assert.throws(() => acceptanceCompletionRequirements(retiring.head, goal, "todo_first"),
+      /goal_acceptance_goal_retiring/);
+    assert.equal((await configureGoalAcceptance(store, staleWriter)).status, "conflict");
+
+    const retiringConfigure = await configureRequest(store, {goal_ref: goalA});
+    assert.equal((await configureGoalAcceptance(store, retiringConfigure)).reason_code,
+      "goal_acceptance_goal_retiring");
+    const retiringVerification = {...legacyVerification, operation_id: randomUUID(), goal_ref: goalA,
+      expected_provider_revision: retiringConfigure.expected_provider_revision};
+    assert.equal((await commitGoalAcceptanceVerification(store, retiringVerification)).reason_code,
+      "goal_acceptance_goal_retiring");
+    const replayWhileRetiring = await configureGoalAcceptance(store, legacyConfigure);
+    assert.equal(replayWhileRetiring.status, "replayed");
+    assert.deepEqual(replayWhileRetiring.goal_acceptance_contract, {
+      lifecycle_state: "retiring",
+      goal_ref: goalA,
+    });
+
+    assert.equal((await lifecycleTransition(store, {
+      kind: "activate_successor",
+      retired_goal_ref: goalA,
+      goal_ref: goalB,
+    })).status, "applied");
+    const replaced = await head(store);
+    assert.deepEqual(projectGoalAcceptance(replaced.head, goal), {
+      lifecycle_state: "active",
+      goal_ref: goalB,
+    });
+    assert.equal(acceptanceWorkGuard(replaced.head, goal, "todo_first"), null);
+    const historicalReplay = await configureGoalAcceptance(store, legacyConfigure);
+    assert.equal(historicalReplay.status, "replayed");
+    assert.deepEqual(historicalReplay.goal_acceptance_contract, {
+      lifecycle_state: "active",
+      goal_ref: goalB,
+    });
+    const lifecycleReplay = await lifecycleTransition(store,
+      {kind: "bind_existing", goal_ref: goalA}, bindOperation);
+    assert.equal(lifecycleReplay.status, "replayed");
+    assert.deepEqual(lifecycleReplay.goal_acceptance_lifecycle, {
+      schema_version: "loopx_goal_acceptance_lifecycle_v0",
+      state: "active",
+      goal_ref: goalB,
+    });
+    assert.equal((await lifecycleTransition(store, {
+      kind: "activate_successor",
+      retired_goal_ref: goalA,
+      goal_ref: goalB,
+    })).reason_code, "goal_acceptance_goal_instance_mismatch",
+    "only the original durable receipt may replay an already active successor");
+
+    const staleInstance = await configureRequest(store, {goal_ref: goalA});
+    assert.equal((await configureGoalAcceptance(store, staleInstance)).reason_code,
+      "goal_acceptance_goal_instance_mismatch");
+    const replacement = await configureRequest(store, {goal_ref: goalB});
+    assert.equal((await configureGoalAcceptance(store, replacement)).status, "applied");
+    const replacementHead = await head(store);
+    assert.deepEqual((replacementHead.head.goal_acceptance as JsonObject).owner_goal_ref, goalB);
+    assert.equal((replacementHead.head.goal_acceptance as JsonObject).revision, 1);
+    assert.equal(acceptanceWorkGuard(replacementHead.head, goal, "todo_first")?.allowed, true);
+  });
   test(`${provider}: selected work isolates admission and verification without weakening its own guard`, options, async t => {
     const store = await fixture(t, provider); await seed(store);
     const doc = {...document(), scope: {kind: "selected_work", todo_ids: ["todo_first"]},
@@ -291,10 +558,10 @@ for (const provider of providers) {
       actor_agent_id: "agent-a"})), /trusted owner/);
     assert.deepEqual(await head(store), before);
   });
-  test(`${provider}: default off, owner configure, private inspection and public held work`, options, async t => {
+  test(`${provider}: default review, owner check configuration, private inspection and public held work`, options, async t => {
     const store = await fixture(t, provider); await seed(store);
     const before = await head(store);
-    assert.deepEqual(projectGoalAcceptance(before.head, goal), {enabled: false});
+    assert.deepEqual(projectGoalAcceptance(before.head, goal), {});
     assert.equal(acceptanceWorkGuard(before.head, goal, "todo_first"), null);
     assert.equal(acceptanceCompletionRequirements(before.head, goal, "todo_first"), null);
     assert.deepEqual(await head(store), before);
@@ -372,11 +639,11 @@ for (const provider of providers) {
     const disable = await configureRequest(store, {document: null, disable: true});
     await assert.rejects(() => configureGoalAcceptance(store, {...disable, actor_agent_id: "agent"}));
     assert.equal((await configureGoalAcceptance(store, disable)).status, "applied");
-    assert.deepEqual(projectGoalAcceptance((await head(store)).head, goal), {enabled: false});
+    assert.deepEqual(projectGoalAcceptance((await head(store)).head, goal), {});
     assert.equal((await configureGoalAcceptance(store, winner)).status, "replayed");
     assert.equal(acceptanceWorkGuard((await head(store)).head, goal, "todo_first"), null);
     assert.equal((await configureGoalAcceptance(store, await configureRequest(store))).status, "applied");
-    assert.equal(projectGoalAcceptance((await head(store)).head, goal).revision, 2);
+    assert.equal(projectGoalAcceptance((await head(store)).head, goal).revision, 3);
     assert.equal((await store.readReceipt(String(winner.operation_id))).status, "found");
     assert.equal((await store.readReceipt(String(disable.operation_id))).status, "found");
   });
@@ -600,7 +867,7 @@ test("normalization is deterministic and digest includes work declarations but e
     assert.notEqual(goalAcceptanceTodoDigest({...original, ...patch}), goalAcceptanceTodoDigest(original));
   }
   assert.throws(() => projectGoalAcceptance({...originalHead(), goal_acceptance: null}, goal), /object/);
-  assert.deepEqual(projectGoalAcceptance({}, goal), {enabled: false}, "feature off preserves legacy callers without a read model");
+  assert.deepEqual(projectGoalAcceptance({}, goal), {}, "no configured checks preserves callers without a read model");
 });
 
 test("work fingerprints ignore row permutations without weakening canonical read-model validation", () => {
@@ -626,7 +893,7 @@ for (const provider of ["file", "sqlite"] as const) {
     const store = await openLocalAuthorityStore(root, goal); await seed(store);
     const before = await inspectLocalGoalAcceptance({runtime_root: root, goal_id: goal});
     assert.equal(before.status, "loaded");
-    assert.deepEqual(before.goal_acceptance_contract, {enabled: false});
+    assert.deepEqual(before.goal_acceptance_contract, {});
     const request = {...await configureRequest(store), runtime_root: root};
     assert.equal((await commitLocalGoalAcceptance(request)).status, "applied");
     const inspect = await inspectLocalGoalAcceptance({runtime_root: root, goal_id: goal, todo_id: "todo_first"});
@@ -643,12 +910,24 @@ for (const provider of ["file", "sqlite"] as const) {
     assert.equal((await commitLocalGoalAcceptance({...await configureRequest(store), runtime_root: root})).status, "applied");
     const verified = await commitLocalGoalAcceptanceVerification({...await verifyRequest(store), runtime_root: root});
     assert.equal((verified.goal_acceptance_contract as JsonObject).status, "accepted");
+    assert.equal((await commitLocalGoalAcceptanceLifecycleTransition({
+      runtime_root: root,
+      goal_id: goal,
+      actor_agent_id: null,
+      operation_id: randomUUID(),
+      transition: {kind: "bind_existing", goal_ref: goalA},
+    })).status, "applied");
+    assert.equal((await inspectLocalGoalAcceptance({
+      runtime_root: root,
+      goal_id: goal,
+      goal_ref: goalA,
+    })).status, "loaded");
     assert.equal((await loadLegacyCoordinationWriterFence(root, goal)).status, "missing", "acceptance never promotes a provider");
     // An unreadable maintenance state is not permission to bypass the writer.
     await writeFile(shadowManagementStatePath(root, goal), "invalid maintenance state");
     const blocked = await commitLocalGoalAcceptance({...await configureRequest(store), runtime_root: root});
     assert.equal(blocked.status, "failed");
-    assert.equal((await inspectLocalGoalAcceptance({runtime_root: root, goal_id: goal})).status, "loaded");
+    assert.equal((await inspectLocalGoalAcceptance({runtime_root: root, goal_id: goal, goal_ref: goalA})).status, "loaded");
   });
 }
 
@@ -662,7 +941,8 @@ test("legacy omitted scope preserves document bytes, bindings and global admissi
     bindings: doc.bindings.map(binding => ({...binding, revision: 1, confirmed_by: "owner",
       todo_semantic_digest: goalAcceptanceTodoDigest(records.find(row => row.todo_id === binding.todo_id)!)}))};
   const value = authorityProjectionFixture(goal, records, [], "native", {goal_acceptance: state});
-  assert.deepEqual(readGoalAcceptance(value, goal), state);
+  const {enabled: _legacyFlag, ...declaration} = state;
+  assert.deepEqual(readGoalAcceptance(value, goal), {...declaration, schema_version: "loopx_goal_acceptance_v2", owner_goal_ref: null});
   assert.equal(acceptanceWorkGuard(value, goal, "todo_first")?.allowed, true);
   assert.equal(acceptanceWorkGuard(value, goal, "todo_new")?.state, "unbound");
 });

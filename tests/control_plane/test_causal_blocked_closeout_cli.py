@@ -20,10 +20,13 @@ MONITOR_ID = "todo_causal_monitor"
 
 
 @pytest.mark.parametrize("provider", ["file", "sqlite"])
-@pytest.mark.parametrize("kind,defer", [("monitor_changed", False), ("todo_done", False), ("todo_done", True)])
+@pytest.mark.parametrize("kind,defer,cycle", [
+    ("monitor_changed", False, False), ("todo_done", False, False),
+    ("todo_done", True, False), ("todo_done", False, True),
+])
 def test_pending_causal_wait_settles_once_and_releases_independent_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-    provider: str, kind: str, defer: bool,
+    provider: str, kind: str, defer: bool, cycle: bool,
 ) -> None:
     if provider == "sqlite":
         isolate_sqlite_runtime(tmp_path, monkeypatch)
@@ -65,12 +68,17 @@ def test_pending_causal_wait_settles_once_and_releases_independent_work(
         f"  <!-- loopx:todo todo_id={MONITOR_ID} status=open "
         f"claimed_by={dependency_owner} {dependency_metadata} -->\n"
     ))
+    if cycle:
+        state.write_text(state.read_text() + (
+            "\n- [ ] [P2] Complete the transitive prerequisite.\n"
+            f"  <!-- loopx:todo todo_id=todo_cycle_third status=open claimed_by={dependency_owner} task_class=advancement_task -->\n"
+        ))
     rc, listed = cli("todo", "list", "--goal-id", GOAL_ID)
     assert rc == 0, listed
     if defer:
         next(todo for todo in listed["todos"] if todo["todo_id"] == TODO_ID)["claimed_by"] = AGENT_ID
     initialize_canonical_authority(runtime, GOAL_ID, build_todo_runtime_shadow_projection(
-        goal_id=GOAL_ID, todos=listed["todos"], handoff_mode="legacy" if defer else "soft_claim", leases=[],
+        goal_id=GOAL_ID, todos=listed["todos"], handoff_mode="hard_lease" if defer else "soft_claim", leases=[],
     ), state_path=state, provider=provider)
     binding = ("--agent-id", AGENT_ID, "--todo-id", TODO_ID,
                "--turn-instance-id", f"causal-blocked-{kind}-{provider}")
@@ -81,21 +89,26 @@ def test_pending_causal_wait_settles_once_and_releases_independent_work(
     assert rc == 0, original
     digest = original["todo"]["completion_validation_sha256"]
     if defer:
-        # An unsatisfied todo_done wait fences execution. Acquire the lease
-        # before installing that wait, then defer and release it atomically.
-        rc, successor = cli("todo", "update", "--goal-id", GOAL_ID,
-                            "--todo-id", TODO_ID, "--agent-id", AGENT_ID,
-                            "--successor-todo-id", ALTERNATIVE_TODO_ID)
-        assert rc == 0, successor
+        # Admit the existing executable work before its dependency is installed.
+        # A new lease after the causal wait would violate the completion fence.
         rc, acquired = cli("task-lease", "acquire", "--goal-id", GOAL_ID, "--todo-id", TODO_ID,
                            "--owner", AGENT_ID, "--idempotency-key", "execution-wait", "--ttl-seconds", "900")
         assert rc == 0, acquired
+        rc, wait = cli("todo", "update", "--goal-id", GOAL_ID, "--todo-id", TODO_ID,
+                       "--agent-id", AGENT_ID, "--resume-when", f"{kind}:{MONITOR_ID}",
+                       "--successor-todo-id", ALTERNATIVE_TODO_ID,
+                       "--task-lease-idempotency-key", "execution-wait",
+                       "--task-lease-expected-version", str(acquired["lease"]["version"]))
+        assert rc == 0, wait
+        # The atomic owner-deferral accepts only unchanged work and its wait.
+        # Link planning is a separate fenced edit, not part of lease retirement.
         rc, suspended = cli("todo", "update", "--goal-id", GOAL_ID, "--todo-id", TODO_ID,
                             "--agent-id", AGENT_ID, "--status", "deferred",
                             "--resume-when", f"{kind}:{MONITOR_ID}", "--reason", "Dependency pending",
                             "--task-lease-idempotency-key", "execution-wait",
                             "--task-lease-expected-version", str(acquired["lease"]["version"]))
         assert rc == 0, json.dumps(suspended, indent=2)
+        assert suspended["deferred_transition"]["lease_retirement"] == "released"
         rc, lease = cli("task-lease", "inspect", "--goal-id", GOAL_ID, "--todo-id", TODO_ID)
         assert rc == 0 and lease["lease"]["status"] == "released", lease
     else:
@@ -104,6 +117,31 @@ def test_pending_causal_wait_settles_once_and_releases_independent_work(
                        "--resume-when", f"{kind}:{MONITOR_ID}",
                        "--successor-todo-id", ALTERNATIVE_TODO_ID)
         assert rc == 0, wait
+    if cycle:
+        for todo_id, target in [(MONITOR_ID, "todo_cycle_third"), ("todo_cycle_third", TODO_ID)]:
+            rc, changed = cli("todo", "update", "--goal-id", GOAL_ID,
+                              "--todo-id", todo_id, "--agent-id", dependency_owner,
+                              "--resume-when", f"todo_done:{target}",
+                              "--successor-todo-id", ALTERNATIVE_TODO_ID)
+            assert rc == 0, changed
+        rc, current = cli("todo", "list", "--goal-id", GOAL_ID, "--todo-id", TODO_ID)
+        assert rc == 0, current
+        assert current["todo"]["resume_condition"]["invalid_state"] == "dependency_cycle"
+        rc, recovery = cli("quota", "should-run", "--codex-app", "--goal-id", GOAL_ID,
+                           *binding, "--scan-path", str(project))
+        assert rc == 0, recovery
+        repair = recovery["unsettled_host_turn_recovery"]
+        assert repair["repair"] == "dependency"
+        assert repair["binding_id"] == TODO_ID and repair["turn_instance_id"] == binding[-1]
+        assert recovery["normal_delivery_allowed"] is False
+        assert "selected_todo" not in recovery
+        assert _spend_run_count(runtime) == 0
+        # The actual owner repairs the obsolete back edge. The bound Turn then
+        # follows its original ordinary wait and settles exactly once below.
+        rc, repaired = cli("todo", "update", "--goal-id", GOAL_ID,
+                           "--todo-id", "todo_cycle_third", "--agent-id", dependency_owner,
+                           "--clear-resume-when", "--reason", "Reviewed mistaken back edge")
+        assert rc == 0, repaired
     refresh_args = ("refresh-state", "--goal-id", GOAL_ID,
                     "--classification", "causal_wait_writeback", "--delivery-batch-scale", "single_surface",
                     "--delivery-outcome", "outcome_gap", *binding,

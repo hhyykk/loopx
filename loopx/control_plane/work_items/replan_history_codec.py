@@ -14,12 +14,17 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Literal
 
 from ..effect_runtime import MAX_REQUEST_BYTES, EffectRuntimeRejected, effect_runtime_result
-from ..runtime.time import parse_timestamp
+from ..runtime.time import now_utc, parse_timestamp
+from ..goals.goal_vision_policy import normalize_effective_turn_replan_threshold
 from ..todos.contract import normalize_todo_claimed_by, normalize_todo_id, normalize_todo_id_list
 from ..todos.resume_planning import build_todo_resume_planning_request
 
 REPLAN_HISTORY_NEUTRAL_CLASSIFICATIONS = {
     "quota_slot_spent", "quota_slot_voided", "delivery_completion_spend_accounted_v0",
+    # A rejected/no-change review is an observation, not new work that can
+    # trigger or expire another review. Reuse these canonical writeback values
+    # for history projection, retained ACK windows and lane selection alike.
+    "replan_noop", "repair_noop",
 }
 
 
@@ -36,12 +41,7 @@ def effective_turn_cadence_context(
     threshold = profile.get("replan_after_effective_turns")
     if threshold is None:
         return None
-    if (
-        isinstance(threshold, bool)
-        or not isinstance(threshold, int)
-        or not 1 <= threshold <= 5
-    ):
-        raise ValueError("replan_after_effective_turns must be an integer from 1 to 5")
+    threshold = normalize_effective_turn_replan_threshold(threshold)
     if runtime_root is None or not goal.get("id"):
         raise ValueError("effective Turn cadence requires the Goal settlement runtime")
     if goal_ref is None and goal.get("goal_instance_id"):
@@ -96,7 +96,7 @@ def _run_fact(run: Mapping[str, Any], ack_recorded: Callable[..., bool]) -> dict
     }
 
 
-def _todo_facts(value: Any, *, include_resume: bool) -> dict[str, Any]:
+def _todo_facts(value: Any, *, include_resume: bool, frontier: bool = False) -> dict[str, Any]:
     value = value if isinstance(value, dict) else {}
     raw_monitors = value.get("monitor_open_items")
     monitors = []
@@ -104,11 +104,14 @@ def _todo_facts(value: Any, *, include_resume: bool) -> dict[str, Any]:
         if not isinstance(item, dict):
             continue
         try:
-            count = int(str(item.get("consecutive_no_change") or "0"))
-        except ValueError:
+            raw_count = item.get("consecutive_no_change") or 0
+            count = int(raw_count) if frontier else int(str(raw_count))
+        except (TypeError, ValueError):
             count = 0
         monitors.append({
-            "id": normalize_todo_id(item.get("todo_id")),
+            # Frontier trigger identities are existing read labels, not a
+            # canonical execution lookup. Preserve the caller's public shape.
+            "id": item.get("todo_id") if frontier else normalize_todo_id(item.get("todo_id")),
             "claim": normalize_todo_claimed_by(item.get("claimed_by")),
             "public_claim": str(item.get("claimed_by") or "").strip() or None,
             "target": str(item.get("target_key") or item.get("todo_id") or "monitor").strip(),
@@ -150,7 +153,7 @@ def _todo_facts(value: Any, *, include_resume: bool) -> dict[str, Any]:
 
 def project_replan_history(
     runs: Iterable[Mapping[str, Any]] = (), *,
-    operation: Literal["all", "progress", "periodic", "monitor_streak"] = "all",
+    operation: Literal["all", "progress", "periodic", "monitor_streak", "frontier_monitor_streak"] = "all",
     agent_id: str | None = None, agent_todos: Any = None,
     ack_recorded: Callable[..., bool] | None = None,
     neutral_classifications: set[str] | None = None,
@@ -176,8 +179,13 @@ def project_replan_history(
         "stall_threshold": max(2, int(stall_threshold)),
         "periodic_threshold": periodic_threshold, "monitor_threshold": monitor_threshold,
         "streak_threshold": streak_threshold, "monitor_schema": monitor_schema,
-        "todos": _todo_facts(agent_todos, include_resume=needs_resume),
+        "todos": _todo_facts(agent_todos, include_resume=needs_resume,
+                             frontier=operation == "frontier_monitor_streak"),
     }
+    if operation in {"monitor_streak", "frontier_monitor_streak"}:
+        # Carry one observation for the complete current source. Expiry is
+        # interpreted by the shared TypeScript Monitor owner, not this codec.
+        params["observed_at"] = now_utc().timestamp()
     if effective_turn_cadence is not None:
         params["settlement_source"] = effective_turn_cadence["settlement_source"]
         params["periodic_threshold"] = effective_turn_cadence["threshold"]

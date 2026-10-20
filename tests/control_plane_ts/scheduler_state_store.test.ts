@@ -205,7 +205,7 @@ test("sanitized-equivalent scheduler scopes have distinct bounded paths", () => 
   assert.equal(new Set(agentPaths).size, agentPaths.length);
   assert.equal(new Set(surfacePaths).size, surfacePaths.length);
   for (const path of [...goalPaths, ...agentPaths, ...surfacePaths]) {
-    for (const segment of path.split("/")) assert.ok(segment.length <= 64);
+    for (const segment of path.split(/[\\/]/)) assert.ok(segment.length <= 64);
   }
 });
 
@@ -257,7 +257,7 @@ test("overlong legacy scope loads as missing state, not an effect rejection", as
     "canonical path components must stay bounded",
   );
   assert.ok(
-    Math.max(...canonical.split("/").map((part) => part.length)) <= 64,
+    Math.max(...canonical.split(/[\\/]/).map((part) => part.length)) <= 64,
     "canonical path component must not exceed the scoped-segment bound",
   );
 });
@@ -310,13 +310,58 @@ test("state store writes atomically and recognizes replay", async (t) => {
   );
 });
 
-test("malformed persisted JSON is a missing state, not partial truth", async (t) => {
+test("a missing state is a successful empty read", async (t) => {
+  const runtimeRoot = await mkdtemp(join(tmpdir(), "loopx-scheduler-state-"));
+  t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+
+  const result = await loadSchedulerState(storeRequest(runtimeRoot));
+
+  assert.equal(result.state, null);
+  assert.equal(result.read_status, "read");
+});
+
+test("malformed persisted JSON is unreadable, not partial truth", async (t) => {
   const runtimeRoot = await mkdtemp(join(tmpdir(), "loopx-scheduler-state-"));
   t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
   const path = schedulerStatePath(runtimeRoot, scope);
   await writeSchedulerState(storeRequest(runtimeRoot, { state: state() }));
   await writeFile(path, "{truncated", "utf8");
-  assert.equal((await loadSchedulerState(storeRequest(runtimeRoot))).state, null);
+  const result = await loadSchedulerState(storeRequest(runtimeRoot));
+  assert.equal(result.state, null);
+  assert.equal(result.read_status, "unreadable");
+});
+
+test("malformed legacy persisted JSON is unreadable, not missing", async (t) => {
+  const runtimeRoot = await mkdtemp(join(tmpdir(), "loopx-scheduler-state-"));
+  t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const legacyPath = join(
+    runtimeRoot,
+    "goals",
+    scope.goalId,
+    "scheduler-state",
+    scope.agentId,
+    scope.surface,
+    "8a41f410c67e7c0e.json",
+  );
+  await mkdir(dirname(legacyPath), { recursive: true });
+  await writeFile(legacyPath, "{truncated", "utf8");
+
+  const result = await loadSchedulerState(storeRequest(runtimeRoot));
+
+  assert.equal(result.state, null);
+  assert.equal(result.read_status, "unreadable");
+});
+
+test("a directory at the persisted state path is unreadable", async (t) => {
+  const runtimeRoot = await mkdtemp(join(tmpdir(), "loopx-scheduler-state-"));
+  t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const path = schedulerStatePath(runtimeRoot, scope);
+  await mkdir(path, { recursive: true });
+
+  const result = await loadSchedulerState(storeRequest(runtimeRoot));
+
+  assert.equal(result.state, null);
+  assert.equal(result.read_status, "unreadable");
 });
 
 test("concurrent same-key writes serialize without partial state", async (t) => {

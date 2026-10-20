@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -32,13 +33,29 @@ def unique_archive_path(archive_root: Path, goal_id: str, timestamp: str) -> Pat
     return candidate
 
 
+def _validate_archive_destination(source: Path, destination: Path) -> None:
+    source_path = source.resolve()
+    destination_path = Path(os.path.abspath(destination))
+    if destination.resolve().is_relative_to(source_path) or any(
+        parent.resolve() == source_path for parent in destination_path.parents
+    ):
+        raise ValueError(
+            "archive destination must be outside the runtime goal directory"
+        )
+
+
 def _archive_source_registry_paths(
     registry: dict[str, Any],
     *,
     registry_path: Path,
     goal_id: str,
 ) -> tuple[Path, ...]:
+    from .control_plane.projects.registry_codec import SOURCE_SESSION_PROFILE_ID
+
     paths: set[Path] = set()
+    resolved_registry_path = registry_path.expanduser().resolve()
+    if registry.get("profile_id") == SOURCE_SESSION_PROFILE_ID:
+        paths.add(resolved_registry_path)
     for goal in registry_goals(registry):
         if str(goal.get("id")) != goal_id:
             continue
@@ -47,9 +64,45 @@ def _archive_source_registry_paths(
             continue
         path = Path(raw_path).expanduser()
         if not path.is_absolute():
-            path = registry_path.expanduser().resolve().parent / path
+            path = resolved_registry_path.parent / path
         paths.add(path.resolve())
     return tuple(sorted(paths, key=str))
+
+
+def _archive_source_goal_refs(
+    source_registry_paths: tuple[Path, ...],
+    *,
+    goal_id: str,
+) -> tuple[tuple[Path, str, str], ...]:
+    from .control_plane.goals.source_session_registry_state import current_goal_ref
+    from .control_plane.projects.registry_codec import (
+        SOURCE_SESSION_PROFILE_ID,
+        load_project_registry,
+    )
+
+    refs: list[tuple[Path, str, str]] = []
+    for source_registry_path in source_registry_paths:
+        source_registry = load_project_registry(source_registry_path)
+        if source_registry.get("profile_id") != SOURCE_SESSION_PROFILE_ID:
+            continue
+        if not any(
+            str(goal.get("id")) == goal_id
+            for goal in registry_goals(source_registry)
+        ):
+            continue
+        goal_ref, _goal = current_goal_ref(
+            source_registry,
+            goal_id=goal_id,
+            require_active=False,
+        )
+        refs.append(
+            (
+                source_registry_path,
+                goal_ref["goal_id"],
+                goal_ref["goal_instance_id"],
+            )
+        )
+    return tuple(refs)
 
 
 def archive_runtime_goal(
@@ -71,7 +124,9 @@ def archive_runtime_goal(
     registered_ids = {str(goal.get("id")) for goal in registry_goals(registry)}
     registry_member = safe_goal_id in registered_ids
     if registry_member and not allow_registered:
-        raise ValueError("goal exists in registry; pass --allow-registered only after confirming it is obsolete")
+        raise ValueError(
+            "goal exists in registry; pass --allow-registered only after confirming it is obsolete"
+        )
 
     source = runtime_root / "goals" / safe_goal_id
     if not source.exists():
@@ -84,8 +139,11 @@ def archive_runtime_goal(
         raise ValueError("runtime goal directory resolved outside the goals root")
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    archive_base = archive_root.expanduser() if archive_root else runtime_root / "archived-goals"
+    archive_base = (
+        archive_root.expanduser() if archive_root else runtime_root / "archived-goals"
+    )
     destination = unique_archive_path(archive_base, safe_goal_id, timestamp)
+    _validate_archive_destination(source, destination)
 
     if execute:
         from .control_plane.coordination.shadow_management import (
@@ -98,6 +156,15 @@ def archive_runtime_goal(
         from .control_plane.goals.source_session_registry_state import guard_path
         from .file_lock import exclusive_cross_runtime_file_lock
 
+        source_registry_paths = _archive_source_registry_paths(
+            registry,
+            registry_path=registry_path,
+            goal_id=safe_goal_id,
+        )
+        source_goal_refs = _archive_source_goal_refs(
+            source_registry_paths,
+            goal_id=safe_goal_id,
+        )
         with ExitStack() as locks:
             resolved_runtime_root = runtime_root.resolve()
             locks.enter_context(
@@ -112,11 +179,7 @@ def archive_runtime_goal(
             )
             # Exact writers enter source before maintenance. Match that order so
             # archive cannot overtake a writer between its admission locks.
-            for source_registry in _archive_source_registry_paths(
-                registry,
-                registry_path=registry_path,
-                goal_id=safe_goal_id,
-            ):
+            for source_registry in source_registry_paths:
                 locks.enter_context(
                     exclusive_cross_runtime_file_lock(
                         guard_path(source_registry, safe_goal_id),
@@ -140,6 +203,21 @@ def archive_runtime_goal(
                 )
             )
             locked_registry = load_registry(registry_path)
+            locked_source_registry_paths = _archive_source_registry_paths(
+                locked_registry,
+                registry_path=registry_path,
+                goal_id=safe_goal_id,
+            )
+            if locked_source_registry_paths != source_registry_paths:
+                raise ValueError("source registry route changed during archive preflight")
+            if (
+                _archive_source_goal_refs(
+                    locked_source_registry_paths,
+                    goal_id=safe_goal_id,
+                )
+                != source_goal_refs
+            ):
+                raise ValueError("goal instance changed during archive preflight")
             registry_member = safe_goal_id in {
                 str(goal.get("id")) for goal in registry_goals(locked_registry)
             }
@@ -163,6 +241,7 @@ def archive_runtime_goal(
                 safe_goal_id,
                 timestamp,
             )
+            _validate_archive_destination(source, destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source), str(destination))
 
@@ -182,6 +261,7 @@ def archive_runtime_goal(
             "goal id is a single path segment",
             "source runtime goal directory exists",
             "source resolves under runtime_root/goals",
+            "archive destination resolves outside the source directory",
             "registry membership checked",
         ],
     }

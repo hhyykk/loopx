@@ -234,7 +234,44 @@ function clockRequest(items: JsonObject[], fields: JsonObject = {}): JsonObject 
     item_limit: 8, has_deferred_count: false, has_visible_deferred_count: false}};
 }
 
-test("quota v3 derives due and gap from the same clock, preserving priority presentation and fences", () => {
+test("quota v4 references shared lane records while preserving the v3 decision", () => {
+  const first = {todo_id: "same-id", text: "First fact", nested: {value: null}};
+  const second = {todo_id: "same-id", text: "Different fact"};
+  const items = [first, second, first].map(payload => row(String(payload.todo_id), {
+    payload, required: [], targets: [], due_at: null, expires_at: null,
+  }));
+  const input = clockRequest(items);
+  const legacy = projectTodoQuotaPlanning(input);
+  const wire = projectTodoQuotaPlanning({...input, schema_version: "todo_quota_planning_request_v4"});
+  assert.equal(wire.schema_version, "todo_quota_planning_wire_v1");
+  const records = wire.records as JsonObject[];
+  assert.equal(records.length, 2);
+  const restored = structuredClone(wire.planning) as JsonObject;
+  const lanes = restored.lanes as JsonObject;
+  for (const name of wire.record_lanes as string[]) {
+    lanes[name] = (lanes[name] as number[]).map(index => structuredClone(records[index]!));
+  }
+  assert.deepEqual(restored, legacy);
+});
+
+test("quota v4 keeps a large complete read model below the inline response limit", () => {
+  const items = Array.from({length: 1000}, (_, index) => row(`todo-${index}`, {
+    payload: {todo_id: `todo-${index}`, text: `Artifact ${index}: ` + "bounded work ".repeat(32)},
+    index, claim: "agent-a", raw_claimed: true,
+    required: [], targets: [], due_at: null, expires_at: null,
+  }));
+  const input = clockRequest(items);
+  const legacy = projectTodoQuotaPlanning(input);
+  const wire = projectTodoQuotaPlanning({...input, schema_version: "todo_quota_planning_request_v4"});
+  assert.ok(Buffer.byteLength(JSON.stringify(legacy)) > 2 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(wire)) < 2 * 1024 * 1024);
+  assert.equal((wire.records as JsonObject[]).length, 1000);
+  const lanes = (wire.planning as JsonObject).lanes as JsonObject;
+  assert.equal((lanes.all_open_items as number[]).length, 1000);
+  assert.deepEqual(lanes.all_open_items, lanes.executable_items);
+});
+
+test("quota v3 derives due and gap from one clock, selecting older due work before display order", () => {
   const monitor = (id: string, fields: JsonObject = {}) => row(id, {task_class: "continuous_monitor",
     due_at: null, expires_at: null, required: [], targets: [], ...fields});
   const items = [monitor("gap-first", {index: 1}), monitor("gap-owned", {index: 2, claim: "agent-a"}),
@@ -248,12 +285,82 @@ test("quota v3 derives due and gap from the same clock, preserving priority pres
   const input = clockRequest(items), before = structuredClone(input);
   const lanes = projectTodoQuotaPlanning(input).lanes as JsonObject;
   assert.deepEqual(ids(lanes.monitor_schedule_gap_items), ["gap-first", "gap-owned"]);
-  assert.deepEqual(ids(lanes.monitor_due_items), ["due", "watch-due"]);
+  assert.deepEqual(ids(lanes.monitor_due_items), ["watch-due", "due"]);
   assert.deepEqual(ids(lanes.monitor_capability_blocked_due_items), ["capability"]);
   assert.deepEqual(ids(lanes.watch_only_monitor_due_items), ["watch-due"]);
   assert.deepEqual(input, before);
   const unsupported = projectTodoQuotaPlanning(clockRequest(items, {monitor_supported: false})).lanes as JsonObject;
   assert.deepEqual(unsupported.monitor_schedule_gap_items, []);
+  assert.deepEqual(unsupported.monitor_due_items, []);
+});
+
+test("recurring monitors cannot hide older due work behind an earlier display coordinate", () => {
+  const monitor = (id: string, index: number, due_at: number) => row(id, {
+    task_class: "continuous_monitor", claim: "agent-a", watch_only: true,
+    index, due_at, expires_at: null, required: [], targets: [],
+  });
+  for (const observed_at of [100, 200, 300]) {
+    const recent = monitor("frequent", 1, observed_at);
+    const older = monitor("overdue", 25, 50);
+    for (const items of [[recent, older], [older, recent]]) {
+      const input = clockRequest(items, {observed_at, visibility_limit: 0, backlog_limit: 0});
+      const before = structuredClone(input);
+      const lanes = projectTodoQuotaPlanning(input).lanes as JsonObject;
+      // This is the full eligible set consumed by the one-row quota projection.
+      assert.deepEqual(ids(lanes.monitor_due_items), ["overdue", "frequent"]);
+      assert.deepEqual(ids((lanes.monitor_due_items as JsonObject[]).slice(0, 1)), ["overdue"]);
+      assert.deepEqual(ids(lanes.watch_only_monitor_due_items), ["overdue", "frequent"]);
+      assert.deepEqual(input, before);
+    }
+  }
+});
+
+test("due-time fairness retains claim, profile and priority ranks, with stable time/index ties", () => {
+  const monitor = (id: string, fields: JsonObject = {}) => row(id, {
+    task_class: "continuous_monitor", claim: "agent-a", due_at: 90,
+    expires_at: null, required: [], targets: [], ...fields,
+  });
+  const items = [
+    monitor("unclaimed", {claim: null, due_at: 1}),
+    monitor("ordinary-profile", {profile_rank: 2, due_at: 2}),
+    monitor("lower-priority", {priority: 2, due_at: 3}),
+    monitor("later", {index: 1, due_at: 90}),
+    monitor("tie-b", {index: 8, due_at: 20}),
+    monitor("tie-a", {index: 8, due_at: 20}),
+    monitor("first-index", {index: 7, due_at: 20}),
+    monitor("older", {index: 99, due_at: 19.999999}),
+    monitor("higher-priority", {priority: 0, due_at: 99}),
+    monitor("preferred-profile", {profile_rank: 0, due_at: 100}),
+  ];
+  const lanes = projectTodoQuotaPlanning(clockRequest(items)).lanes as JsonObject;
+  assert.deepEqual(ids(lanes.monitor_due_items), [
+    "preferred-profile", "higher-priority", "older", "first-index", "tie-b", "tie-a",
+    "later", "lower-priority", "ordinary-profile", "unclaimed",
+  ]);
+  // General presentation is not repurposed as a scheduling order.
+  assert.deepEqual(ids(lanes.monitor_items), [
+    "preferred-profile", "higher-priority", "later", "first-index", "tie-b", "tie-a",
+    "older", "lower-priority", "ordinary-profile", "unclaimed",
+  ]);
+});
+
+test("an older date grants no eligibility and unsupported providers have no due lane", () => {
+  const monitor = (id: string, fields: JsonObject = {}) => row(id, {
+    task_class: "continuous_monitor", due_at: 1, expires_at: null,
+    required: [], targets: [], ...fields,
+  });
+  const items = [
+    monitor("peer", {claim: "agent-b"}), monitor("excluded", {excluded: ["agent-a"]}),
+    monitor("blocked", {actionable: false}), monitor("removed", {removed: true}),
+    monitor("expired", {expires_at: 100}), monitor("future", {due_at: 101}),
+    monitor("missing-date", {due_at: null}), monitor("capability", {required: ["network"]}),
+    monitor("recent", {index: 1, due_at: 90}), monitor("old", {index: 99, due_at: 20}),
+  ];
+  const lanes = projectTodoQuotaPlanning(clockRequest(items)).lanes as JsonObject;
+  assert.deepEqual(ids(lanes.monitor_due_items), ["old", "recent"]);
+  assert.deepEqual(ids(lanes.non_watch_only_monitor_due_items), ["old", "recent"]);
+  assert.deepEqual(ids(lanes.monitor_capability_blocked_due_items), ["capability"]);
+  const unsupported = projectTodoQuotaPlanning(clockRequest(items, {monitor_supported: false})).lanes as JsonObject;
   assert.deepEqual(unsupported.monitor_due_items, []);
 });
 
@@ -300,7 +407,7 @@ test("quota v2 validates closure in the existing batch while retaining v0/v1 wir
 });
 
 
-function planningDeadline(monitors: JsonObject[], gates: JsonObject[], fields: JsonObject = {}) {
+function planningDeadline(monitors: JsonObject[], gates: JsonObject[], fields: JsonObject = {}, retries: JsonObject[] = []) {
   const items = [...monitors.map(payload => row(String(payload.todo_id),
     {payload, task_class: "continuous_monitor", required: [], targets: []})), ...gates.map(payload => row(String(payload.todo_id),
     {payload, task_class: "user_gate", gate: true, required: [], targets: []}))];
@@ -311,7 +418,13 @@ function planningDeadline(monitors: JsonObject[], gates: JsonObject[], fields: J
       has_deferred_count: false, has_visible_deferred_count: false, deferred_count: null,
       available_capabilities: null, sources: Object.fromEntries(["items", "backlog_items", "first_open_items",
         "deferred_items", "deferred_resume_candidates", "resume_blocked_items", "monitor_open_items",
-        "current_agent_claimed_monitor_items", "claimed_monitor_open_items"].map(key => [key, []]))}});
+        "current_agent_claimed_monitor_items", "claimed_monitor_open_items"].map(key => [key,
+          key === "items" || key === "resume_blocked_items" ? retries.map(payload => ({
+            payload: {text: "Wait for an authorized retry.", ...payload}, id: payload.todo_id,
+            status: payload.status, claim: payload.claimed_by ?? null, excluded: [], done: false,
+            resume: payload.resume_when, ready: false, ready_truthy: false, priority: 1, index: 1,
+            target_id: null, target_status: null, target_class: "advancement_task",
+          })) : []]))}});
 }
 test("the existing batch keeps full gate deadlines before transport caps, scope and equal-time source", () => {
   const early = {todo_id: "early", next_due_at: "2026-10-01T08:01:00.000001+08:00"};
@@ -347,4 +460,43 @@ test("planning clock retains fresh projection extensions and rechecks stale/raw 
   assert.equal((planningDeadline([], [{title: "Review", next_due_at: "1969-12-31T23:59:59.000001Z"}],
     {current_time: "1969-12-31T23:59:58Z"}).frontier_deadline as JsonObject).next_due_at,
     "1969-12-31T23:59:59.000001+00:00");
+});
+
+
+test("receipt retries precede later full-source caches without losing hidden earlier deadlines", () => {
+  const due = "2026-10-01T00:05:00Z";
+  const retry = {schema_version: "quota_blocked_retry_v0", source: "turn_settlement",
+    todo_id: "retry", observed_at: "2026-10-01T00:00:00Z", due_at: due,
+    resume_when: `resume_at:${due}`, goal_id: "goal-a", agent_id: "agent-a", turn_instance_id: "turn-old"};
+  const row = {todo_id: "retry", status: "open", task_class: "advancement_task", claimed_by: "agent-a",
+    resume_ready: false, resume_when: retry.resume_when, next_due_at: due, blocked_retry: retry,
+    resume_condition: {kind: "resume_at", satisfied: false}};
+  const cache = {schema_version: "todo_frontier_deadline_v0", identity: "hidden-monitor",
+    source: "continuous_monitor", next_due_at: "2026-10-01T00:25:00Z", candidate_count: 25};
+  const before = structuredClone({cache, row});
+  assert.deepEqual(planningDeadline([], [], {frontier_deadline: cache}, [row, row]).frontier_deadline,
+    {schema_version: "todo_frontier_deadline_v0", identity: "retry", source: "turn_settlement",
+      next_due_at: "2026-10-01T00:05:00+00:00", blocked_retry: retry, candidate_count: 26});
+  const later = Array.from({length: 8}, (_, index) => {
+    const id = `later-${index}`, due = "2026-10-01T00:20:00Z", resume = `resume_at:${due}`;
+    return {...row, todo_id: id, next_due_at: due, resume_when: resume,
+      blocked_retry: {...retry, todo_id: id, due_at: due, resume_when: resume}};
+  });
+  assert.equal((planningDeadline([], [], {frontier_deadline: cache}, [...later, row])
+    .frontier_deadline as JsonObject).identity, "retry");
+  const earlier = {...cache, next_due_at: "2026-10-01T00:01:00Z", extension: {retained: true}};
+  assert.deepEqual(planningDeadline([], [], {frontier_deadline: earlier}, [row]).frontier_deadline, earlier);
+  for (const next_due_at of ["2026-10-01T00:01:00Z", due, "2026-10-01T00:25:00Z"]) {
+    const result = planningDeadline([], [], {frontier_deadline: {...cache, next_due_at}}, [...later, row]);
+    assert.deepEqual(result.blocked_retry_wait, retry, "the ninth retry retains identity independently of the earliest wakeup");
+  }
+  const replaced = {...cache, identity: "retry", source: "turn_settlement", candidate_count: 1};
+  assert.equal((planningDeadline([], [], {frontier_deadline: replaced}, [row]).frontier_deadline as JsonObject)
+    .candidate_count, 1);
+  assert.deepEqual({cache, row}, before);
+  for (const invalid of [{...row, claimed_by: "agent-b"}, {...row, blocked_retry: {...retry, agent_id: "agent-b"}},
+    {...row, blocked_retry: {...retry, due_at: "2026-10-01T00:31:00Z"}}, {...row, resume_when: "todo_done:other"}]) {
+    assert.deepEqual(planningDeadline([], [], {frontier_deadline: cache}, [invalid]).frontier_deadline, cache);
+    assert.equal(planningDeadline([], [], {frontier_deadline: cache}, [invalid]).blocked_retry_wait, undefined);
+  }
 });

@@ -1,7 +1,8 @@
 """Storage adapters for the typed team-plan transaction.
 
-Legacy records and their operation receipt share one atomic Markdown write.
-Promoted goals use the existing AuthorityStore transaction and projection outbox.
+Canonical Goals use the existing AuthorityStore transaction and projection outbox.
+Pre-cutoff Markdown receipts remain read-only historical results.
+Source locks and historical receipt readers remain shared IO.
 Neither adapter grants receiver adoption or execution authority.
 """
 from __future__ import annotations
@@ -22,28 +23,18 @@ from ...file_lock import (
 )
 from ...registry import find_registry_goal
 from ...state_refresh import now_local
-from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
+from ..effect_runtime import effect_runtime_result
 from ..runtime.public_safety import validate_public_safe_value
-from ..coordination.local_authority import read_canonical_todos_if_promoted
-from ..coordination.local_authority_shadow_adapter import effective_runtime_root
-from ..coordination.legacy_writer_fence import (
-    legacy_coordination_todo_lock_path, legacy_todo_write_transaction,
+from ..coordination.local_authority import (
+    raise_canonical_write_failure,
+    read_canonical_todos_if_promoted,
+    require_canonical_authority,
 )
+from ...paths import effective_runtime_root
+from ..coordination.legacy_writer_fence import legacy_coordination_todo_lock_path
 from ..coordination.shadow_management import shadow_maintenance_lock_target
-from ..coordination.runtime_shadow_writer_adapter import (
-    begin_todo_runtime_shadow_capture, write_captured_todo_state,
-    settle_todo_runtime_shadow_capture,
-)
 from ..todos.path_resolution import resolve_todo_state_path
-from ..runtime.document_io import verify_state_text_durable
-from ..todos.active_state_editing import (
-    insert_into_existing_section, insert_new_section, section_bounds,
-    replace_updated_at,
-)
-from ..todos.contract import (
-    TODO_ACTION_KIND_ADVANCEMENT_VALUES, format_todo_metadata_line,
-    parse_todo_metadata_line,
-)
+from ..todos.contract import TODO_ACTION_KIND_ADVANCEMENT_VALUES
 from ..todos.provider_projection import settle_canonical_todo_projection
 
 
@@ -96,9 +87,11 @@ def team_plan_state_fingerprint(
         state_digest = None
     canonical = read_canonical_todos_if_promoted(
         runtime_root=effective_runtime_root(registry_path, None), goal_id=goal_id)
+    if canonical is None:
+        require_canonical_authority(goal_id=goal_id, operation="team_plan")
     payload = {
         "registry": registry_digest,
-        "provider_revision": canonical.get("provider_revision") if canonical else None,
+        "provider_revision": canonical.get("provider_revision"),
         "goal_id": goal_id,
         "active_state": state_digest,
         "intent_basis": steward_team_plan_source_basis(
@@ -146,7 +139,10 @@ def apply_team_plan(
     runtime = effective_runtime_root(registry_path, None)
     if find_registry_goal(load_registry(registry_path), goal_id) is None:
         raise ValueError("steward team plan proposal names an unknown Goal")
-    project, state = resolve_todo_state_path(registry_path=registry_path, goal_id=goal_id)
+    # The registered route is still required, but a missing display must not
+    # prevent the typed owner from recovering an exact canonical receipt.
+    project, state = resolve_todo_state_path(
+        registry_path=registry_path, goal_id=goal_id, require_existing=False)
     request = {
         "goal_id": goal_id, "plan": dict(proposal),
         "actor_agent_id": agent_id,
@@ -162,7 +158,8 @@ def apply_team_plan(
         goal = find_registry_goal(load_registry(registry_path), goal_id)
         if goal is None:
             raise ValueError("steward team plan proposal names an unknown Goal")
-        _, current_state = resolve_todo_state_path(registry_path=registry_path, goal_id=goal_id)
+        _, current_state = resolve_todo_state_path(
+            registry_path=registry_path, goal_id=goal_id, require_existing=False)
         if (effective_runtime_root(registry_path, None).resolve() != runtime.resolve()
                 or current_state.resolve() != state.resolve()):
             raise TeamPlanCommitError("team_plan_preview_stale", "team plan source binding changed after preview")
@@ -183,97 +180,67 @@ def apply_team_plan(
             raise ValueError("duplicate team plan operation receipts")
         return json.loads(base64.b64decode(matches[0], validate=True)) if matches else None
 
-    canonical = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id=goal_id)
-    if canonical is not None:
-        targets = (
-            shadow_maintenance_lock_target(runtime, goal_id),
-            legacy_coordination_todo_lock_path(runtime_root=runtime, goal_id=goal_id),
-            state, registry_path,
-        )
-        with ExitStack() as guards:
-            for target in targets[:-1]:
-                guards.enter_context(exclusive_cross_runtime_file_lock(target, operation="team_plan_commit"))
-            try:
-                # Registry administration can hold R before T/S. Like promotion,
-                # never wait for R while holding source locks in reverse order.
-                guards.enter_context(exclusive_cross_runtime_file_lock(
-                    registry_path, operation="team_plan_commit", timeout_seconds=0))
-            except LockAcquireTimeoutError:
-                raise TeamPlanCommitError("team_plan_commit_failed",
-                    "team plan registry is busy; retry the original confirmation") from None
-            read_source_request()
-            # Pre-promotion receipts remain historical facts; never fall back
-            # to a legacy writer for a promoted Goal.
-            previous = previous_receipt(state.read_text(encoding="utf-8"))
-            if previous is not None:
-                return dict(effect_runtime_result("work_items.team_plan.plan", {
-                    **request, "previous_receipt": previous})["result"])
-            response = effect_runtime_result("work_items.team_plan.commit", {
-                **request, "runtime_root": str(runtime.resolve()),
-                "expected_provider_revision": canonical["provider_revision"],
-                "current_state_fingerprint": read_fingerprint() if read_fingerprint else None,
-                "source": {
-                    "registry": str(registry_path.resolve()), "state_file": str(state.resolve()),
-                    "registry_sha256": hashlib.sha256(registry_path.read_bytes()).hexdigest(),
-                    "state_sha256": hashlib.sha256(state.read_bytes()).hexdigest(),
-                },
-                "locks": [cross_runtime_lock_witness(target) for target in targets],
-            })
-        if response.get("status") not in {"applied", "recovered", "replayed", "no_change"}:
-            raise TeamPlanCommitError(str(response.get("reason_code") or "team_plan_commit_failed"),
-                str(response.get("reason") or "team plan commit could not be verified"),
-                read_fingerprint() if read_fingerprint else None)
-        projected = settle_canonical_todo_projection(dict(response), registry_path=registry_path,
-            runtime_root=runtime, goal_id=goal_id, project=project, state_file=state)
-        if projected.get("projection_delivery") == "pending":
-            raise TeamPlanCommitError("team_plan_projection_pending", "Tasks committed; display readback is pending")
-        result = dict(response["result"])
-        result["projection_delivery"] = projected.get("projection_delivery")
-        return result
-
-    with exclusive_cross_runtime_file_lock(registry_path, operation="team_plan_commit"), \
-            legacy_todo_write_transaction(registry_path, goal_id, state, agent_id,
-            "todo_add", False, runtime_root=runtime):
-        read_source_request()
-        original = state.read_text(encoding="utf-8")
-        previous = previous_receipt(original)
-        existing = [metadata for line in original.splitlines()
-                    if (metadata := parse_todo_metadata_line(line)) is not None]
-        current_fingerprint = read_fingerprint() if read_fingerprint else None
+    targets = (
+        shadow_maintenance_lock_target(runtime, goal_id),
+        legacy_coordination_todo_lock_path(runtime_root=runtime, goal_id=goal_id),
+        state, registry_path,
+    )
+    with ExitStack() as guards:
+        for target in targets[:-1]:
+            guards.enter_context(exclusive_cross_runtime_file_lock(target, operation="team_plan_commit"))
         try:
-            planned = effect_runtime_result("work_items.team_plan.plan", {
-                **request, "previous_receipt": previous, "todos": existing,
-                "current_state_fingerprint": current_fingerprint,
-            })
-        except EffectRuntimeRejected as error:
-            raise TeamPlanCommitError(error.diagnostic_code, str(error), current_fingerprint) from None
-        result = dict(planned["result"])
-        if planned["replayed"]:
-            verify_state_text_durable(state, original)
-            return result
-        capture = begin_todo_runtime_shadow_capture(registry_path=registry_path,
-            runtime_root=runtime, goal_id=goal_id, state_path=state,
-            write_class="todo_add", original_text=original)
-        lines = original.splitlines()
-        for todo in planned["todos"]:
-            metadata = format_todo_metadata_line(**{key: todo[key] for key in (
-                "todo_id", "status", "task_class", "action_kind", "claimed_by",
-                "updated_at") if key in todo})
-            block = f"- [ ] {todo['text']}\n{metadata}"
-            bounds = section_bounds(lines, "agent")
-            if bounds:
-                insert_into_existing_section(lines, bounds[0], bounds[1], block)
-            else:
-                insert_new_section(lines, "agent", block)
-        # Store outside Todo sections so archival and canonical projections do
-        # not remove operation history. Encoded JSON cannot terminate a comment.
-        encoded = base64.b64encode(json.dumps(planned["receipt"], ensure_ascii=False,
-            separators=(",", ":")).encode()).decode()
-        first_heading = next((i for i, line in enumerate(lines) if line.startswith("#")), len(lines))
-        lines[first_heading:first_heading] = [marker + encoded + " -->", ""]
-        text = replace_updated_at("\n".join(lines) + "\n", str(request["observed_at"]))
-        write_captured_todo_state(capture, runtime_root=runtime, goal_id=goal_id,
-                                  state_path=state, text=text)
-        verify_state_text_durable(state, text)
-    return settle_todo_runtime_shadow_capture(result, registry_path=registry_path,
-        runtime_root=runtime, goal_id=goal_id, capture=capture)
+            # Registry administration can hold R before T/S. Like promotion,
+            # never wait for R while holding source locks in reverse order.
+            guards.enter_context(exclusive_cross_runtime_file_lock(
+                registry_path, operation="team_plan_commit", timeout_seconds=0))
+        except LockAcquireTimeoutError:
+            raise TeamPlanCommitError("team_plan_commit_failed",
+                "team plan registry is busy; retry the original confirmation") from None
+        read_source_request()
+        # Observe the selected provider under the transition/source locks:
+        # provider loss never authorizes a fallback to historical source.
+        canonical = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id=goal_id)
+        try:
+            source_bytes = state.read_bytes()
+        except FileNotFoundError:
+            source_bytes = None
+        try:
+            source_text = source_bytes.decode("utf-8") if source_bytes is not None else None
+        except UnicodeDecodeError:
+            if canonical is None:
+                raise
+            # Canonical history can still be read, but these bytes cannot
+            # establish fresh Goal intent or a historical Markdown receipt.
+            source_text = None
+        # An exact pre-cutoff receipt is read-only recovery, not fresh work.
+        previous = previous_receipt(source_text) if source_text is not None else None
+        if previous is not None:
+            return dict(effect_runtime_result("work_items.team_plan.plan", {
+                **request, "previous_receipt": previous})["result"])
+        if canonical is None:
+            require_canonical_authority(goal_id=goal_id, operation="team_plan")
+        response = effect_runtime_result("work_items.team_plan.commit", {
+            **request, "runtime_root": str(runtime.resolve()),
+            "expected_provider_revision": canonical["provider_revision"],
+            "current_state_fingerprint": read_fingerprint() if read_fingerprint else None,
+            "source": {
+                "registry": str(registry_path.resolve()), "state_file": str(state.resolve()),
+                "registry_sha256": hashlib.sha256(registry_path.read_bytes()).hexdigest(),
+                # Absence is an observation, never a fresh source witness.
+                # The native owner checks receipts before source admission.
+                "state_sha256": hashlib.sha256(source_bytes).hexdigest() if source_text is not None else None,
+            },
+            "locks": [cross_runtime_lock_witness(target) for target in targets],
+        })
+    raise_canonical_write_failure(response, goal_id=goal_id, operation="team_plan")
+    if response.get("status") not in {"applied", "recovered", "replayed", "no_change"}:
+        raise TeamPlanCommitError(str(response.get("reason_code") or "team_plan_commit_failed"),
+            str(response.get("reason") or "team plan commit could not be verified"),
+            read_fingerprint() if read_fingerprint else None)
+    projected = settle_canonical_todo_projection(dict(response), registry_path=registry_path,
+        runtime_root=runtime, goal_id=goal_id, project=project, state_file=state)
+    if projected.get("projection_delivery") == "pending":
+        raise TeamPlanCommitError("team_plan_projection_pending", "Tasks committed; display readback is pending")
+    result = dict(response["result"])
+    result["projection_delivery"] = projected.get("projection_delivery")
+    return result

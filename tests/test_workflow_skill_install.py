@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -151,6 +153,62 @@ def test_install_is_idempotent_and_uninstall_removes_managed_skills(
         ARK_MANAGED_AGENT_REQUIRED_SKILL_IDS
     )
     assert not (skills_dir / SKILL_INSTALL_READBACK_FILENAME).exists()
+
+
+def test_failed_skill_publish_preserves_the_previous_install_for_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "skills" / "example"
+    source.mkdir()
+    target.mkdir(parents=True)
+    (source / "SKILL.md").write_text("new\n", encoding="utf-8")
+    (target / "SKILL.md").write_text("old\n", encoding="utf-8")
+    backup = target.with_name(f".{target.name}.previous.{os.getpid()}")
+    real_replace = Path.replace
+
+    def fail_publish_and_restore(path: Path, destination: Path) -> Path:
+        destination = Path(destination)
+        if path == target and destination == backup:
+            return real_replace(path, destination)
+        if destination == target:
+            raise OSError("synthetic skill publish failure")
+        return real_replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_and_restore)
+
+    with pytest.raises(OSError, match="synthetic skill publish failure"):
+        install_module._install_one_skill(source, target)
+
+    assert not target.exists()
+    assert (backup / "SKILL.md").read_text(encoding="utf-8") == "old\n"
+
+
+@pytest.mark.parametrize("live_exists", [False, True])
+def test_stale_skill_backup_is_preserved_for_manual_recovery(
+    tmp_path: Path,
+    live_exists: bool,
+) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "skills" / "example"
+    source.mkdir()
+    target.parent.mkdir()
+    (source / "SKILL.md").write_text("new\n", encoding="utf-8")
+    if live_exists:
+        target.mkdir()
+        (target / "SKILL.md").write_text("current\n", encoding="utf-8")
+    backup = target.with_name(f".{target.name}.previous.interrupted")
+    backup.mkdir()
+    (backup / "SKILL.md").write_text("recoverable\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="backup.*requires inspection"):
+        install_module._install_one_skill(source, target)
+
+    assert target.exists() is live_exists
+    if live_exists:
+        assert (target / "SKILL.md").read_text(encoding="utf-8") == "current\n"
+    assert (backup / "SKILL.md").read_text(encoding="utf-8") == "recoverable\n"
 
 
 def test_install_upgrades_legacy_unversioned_skills(tmp_path: Path) -> None:
@@ -378,7 +436,8 @@ def test_frozen_bundle_install_lifecycle(
     bundled_skills = bundle / layout
     for skill_id in PACKAGED_HOST_SKILL_IDS:
         shutil.copytree(canonical / skill_id, bundled_skills / skill_id)
-    shutil.copy2(Path(install_module.__file__).with_name("lexical_retrieval.py"),
+    shutil.copy2((Path(install_module.__file__).parent / "capabilities" / "context_providers"
+                  / "lexical_retrieval.py"),
                  bundled_skills / "loopx-self-repair/scripts/lexical_retrieval.py")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     if with_meipass:
@@ -493,3 +552,34 @@ def test_frozen_bundle_layout_precedence(
     expected = "share/loopx/skills" if complete_wheel_layout else "skills"
     assert source["available"] is True
     assert source["skills_root"] == tmp_path / expected
+
+
+@pytest.mark.parametrize("damage", ("remove", "edit"))
+def test_installed_scenario_references_are_reachable_and_drift_is_detected(
+    tmp_path: Path, damage: str,
+) -> None:
+    skills_dir = tmp_path / "isolated host" / "skills"
+    installed = workflow_skill_install(skills_dir=skills_dir, execute=True)
+    assert installed["ok"] is True
+    skill_root = skills_dir / "loopx-project"
+    source = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+    destinations = {
+        destination.split("#", 1)[0]
+        for destination in re.findall(r"\[[^\]]+\]\((references/[^)]+)\)", source)
+    }
+    assert destinations
+    for destination in destinations:
+        assert (skill_root / destination).is_file(), destination
+    recurring = skill_root / "references/heartbeat-hosts.md"
+    assert "LoopX managed heartbeat bootstrap v2" in recurring.read_text(encoding="utf-8")
+    assert "../../AGENTS.md" not in (skills_dir / "loopx-pr-review/SKILL.md").read_text(encoding="utf-8")
+    repeated = workflow_skill_install(skills_dir=skills_dir, execute=True)
+    assert set(repeated["installed"].values()) == {"unchanged"}
+
+    if damage == "remove":
+        recurring.unlink()
+    else:
+        recurring.write_text("unreviewed replacement\n", encoding="utf-8")
+    readback = workflow_skill_install(skills_dir=skills_dir)["before"]
+    assert readback["ready"] is False
+    assert "loopx-project" in readback["digest_mismatches"]

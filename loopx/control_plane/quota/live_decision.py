@@ -10,6 +10,7 @@ from ...quota import build_quota_should_run
 from ...agent_registry import load_goal_from_registry
 from ..agent_context import project_agent_context, project_goal_agent_context
 from ..runtime.time import now_utc_iso
+from ..goals.goal_frontier.fallback_source import live_fallback_authority_items
 from ..capability_hooks import (
     InteractionProjectionHookRegistration,
     dispatch_interaction_projection_hooks,
@@ -17,6 +18,7 @@ from ..capability_hooks import (
 from .effect_program import ReceiptBoundReplayPhase
 from .blocked_retry import overlay_active_turn_retries
 from .settlement import (
+    QuotaSettlementReadback,
     attach_settlement_progress,
     read_heartbeat_settlement,
 )
@@ -33,11 +35,30 @@ from ..scheduler.execution_context import (
 from .unsettled_host_turn import (
     apply_unsettled_host_turn_recovery_if_required,
     apply_receipt_bound_wait_recovery,
+    restore_receipt_bound_todo_source,
 )
 
 
 HostObservationResolver = Callable[..., Mapping[str, Any]]
 BoundedResearchFrontierProjector = Callable[..., Mapping[str, Any] | None]
+
+
+def _receipt_bound_guard_fields(
+    readback: QuotaSettlementReadback | None,
+    obligation_id: str | None,
+) -> dict[str, Any]:
+    """Adapt the recorded guard identity and time for the shared decision owner."""
+    guard = getattr(readback, "semantic_replan_guard", None)
+    receipt = getattr(readback, "heartbeat_receipt", None) or {}
+    return {
+        "receipt_bound_replan_guard_scoped": bool(
+            isinstance(guard, Mapping)
+            and guard.get("scope") == "turn_guard"
+            and guard.get("selected_obligation_id") == obligation_id
+        ),
+        "receipt_bound_guard_recorded_at": receipt.get("recorded_at"),
+        "receipt_bound_successor_replan": bool(getattr(readback, "successor_replan_pending", False)),
+    }
 
 
 def _apply_retained_action_selection_reentry(
@@ -57,11 +78,8 @@ def _apply_retained_action_selection_reentry(
     normalized_retained = normalize_todo_id(retained_todo_id)
     if normalized_retained is None:
         return
-    selected = (
-        payload.get("selected_todo")
-        if isinstance(payload.get("selected_todo"), Mapping)
-        else {}
-    )
+    selected_value = payload.get("selected_todo")
+    selected = selected_value if isinstance(selected_value, Mapping) else {}
     projected_todo_id = normalize_todo_id(selected.get("todo_id"))
     verdict = reconcile_retained_action_selection(
         retained_todo_id=normalized_retained,
@@ -570,11 +588,8 @@ def build_live_quota_should_run_decision(
     receipt_bound_replay_phase = (
         settlement_readback.replay_phase if settlement_readback else None
     )
-    semantic_guard = getattr(settlement_readback, "semantic_replan_guard", None)
-    receipt_bound_replan_guard_scoped = bool(
-        receipt_bound_replan_obligation_id and isinstance(semantic_guard, Mapping)
-        and semantic_guard.get("scope") == "turn_guard"
-        and semantic_guard.get("selected_obligation_id") == receipt_bound_replan_obligation_id
+    receipt_bound_guard_fields = _receipt_bound_guard_fields(
+        settlement_readback, receipt_bound_replan_obligation_id,
     )
     fresh_operator_inbox_read = _fresh_operator_inbox_read_required(
         turn_start_hook_dispatch
@@ -602,13 +617,26 @@ def build_live_quota_should_run_decision(
                 for item in queue.get("items") or []
             ],
         }
+    decision_status_payload = restore_receipt_bound_todo_source(
+        decision_status_payload, registry_path=registry_path, runtime_root=runtime_root,
+        goal_id=goal_id, todo_id=receipt_bound_todo_id,
+        replay_phase=receipt_bound_replay_phase,
+        replan_guard_scoped=receipt_bound_guard_fields["receipt_bound_replan_guard_scoped"],
+    )
     decision_status_payload = overlay_active_turn_retries(
         decision_status_payload,
         goal_id=goal_id,
         agent_id=agent_id,
         observed_at=now_utc_iso(),
     )
-    payload = build_quota_should_run(
+    authoritative_fallback_todo_items = live_fallback_authority_items(
+        decision_status_payload,
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id=goal_id,
+        agent_id=agent_id,
+    )
+    payload: dict[str, Any] = build_quota_should_run(
         decision_status_payload,
         goal_id=goal_id,
         agent_id=agent_id,
@@ -631,11 +659,12 @@ def build_live_quota_should_run_decision(
         receipt_bound_monitor_phase=receipt_bound_monitor_phase,
         receipt_bound_replay_phase=receipt_bound_replay_phase,
         receipt_bound_replan_obligation_id=receipt_bound_replan_obligation_id,
-        receipt_bound_replan_guard_scoped=receipt_bound_replan_guard_scoped,
+        **receipt_bound_guard_fields,
         turn_instance_id=turn_instance_id,
         runtime_root=runtime_root,
         workspace_path=workspace_path,
         goal_ref=goal_ref,
+        authoritative_fallback_todo_items=authoritative_fallback_todo_items,
     )
     _apply_retained_action_selection_reentry(
         payload,
@@ -713,12 +742,18 @@ def build_live_quota_should_run_decision(
         and payload.get("effective_action") != EffectiveAction.UNSETTLED_HOST_TURN_RECOVERY.value
         and (payload.get("selected_todo") or {}).get("todo_id") != receipt_bound_todo_id
     ):
+        if settlement_readback is not None:
+            attach_settlement_progress(
+                payload, settlement_readback,
+                registry_path=registry_path, runtime_root=runtime_root, goal_ref=goal_ref,
+            )
         apply_receipt_bound_wait_recovery(
             payload, registry_path=registry_path, runtime_root=runtime_root,
             goal_id=goal_id, agent_id=agent_id, todo_id=receipt_bound_todo_id,
             turn_instance_id=turn_instance_id, available_capabilities=available_capabilities,
             scheduler_execution_context=resolved_context,
             monitor_phase=(receipt_bound_monitor_phase.value if receipt_bound_monitor_phase else None),
+            settlement_progress=settlement_readback.progress if settlement_readback else None,
         )
     if hook_dispatch["failures"]:
         payload["capability_hook_dispatch"] = {

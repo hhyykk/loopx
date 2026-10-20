@@ -48,10 +48,11 @@ need node
 need pnpm
 
 node -e '
-  const [major, minor] = process.versions.node.split(".").map(Number)
-  if (!((major === 22 && minor >= 19) || major >= 24)) process.exit(1)
+  if (!/^\d+\.\d+\.\d+$/.test(process.versions.node)) process.exit(1)
+  const [major, minor, patch] = process.versions.node.split(".").map(Number)
+  if (!((major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || major >= 24)) process.exit(1)
 ' || {
-  echo "install: Node.js 22.19+ (excluding Node.js 23) is required" >&2
+  echo "install: Node.js 22.22.3+ (excluding Node.js 23 and prereleases) is required" >&2
   exit 2
 }
 pnpm_version="$(pnpm --version)"

@@ -121,15 +121,15 @@ def test_short_reply_handoff_preserves_source_and_returns_once(
         options = dict(route=route, text=request_text,
                        work_dir=tmp_path, objective="Inspect the draft.", runtime_controller=controller)
         answer = answer_lark_goal_topic(**options)
-        assert "research / worker" in answer
+        assert "**已转交给 `worker`。**" in answer
         assert "是否已开始处理尚未核实" in answer
-        if context_state == "near_record_limit":
-            assert "完整简报已投递" in answer
-        else:
-            assert handoff_target["brief"]["purpose"] in answer
-            assert handoff_target["brief"]["context"] in answer
-            assert "Do not publish." in answer
+        # The audience-processed model answer survives the handoff. The full
+        # brief is read back from the recipient inbox, not duplicated in Chat.
+        assert answer.startswith("Preparing handoff.\n\n")
+        assert answer.count("Preparing handoff.") == 1
+        assert handoff_target["brief"]["context"] not in answer
         entry, = pending(tmp_path, **target)["items"]
+        assert entry["brief"] == handoff_target["brief"]
         forwarded = entry["message"]
         if context_state in {"not_a_reply", "near_record_limit"}:
             assert forwarded == request_text
@@ -187,7 +187,8 @@ def test_short_reply_handoff_preserves_source_and_returns_once(
         controller.close()
 
 
-@pytest.mark.parametrize("source", ["字" * 32000, "😀" * 24000, "\u0000" * 16000])
+@pytest.mark.parametrize("source", ["字" * 32000, "😀" * 24000, "\u0000" * 16000],
+                         ids=["cjk", "emoji", "escaped-control"])
 def test_source_context_encoded_boundary_still_reads_the_real_ingress_record(tmp_path: Path, source: str) -> None:
     register_ingress(tmp_path, session_id="session", client_turn_id="turn", channel="manager.external.fixture",
                      sender_id="owner", message="Current request", source_id="fixture:current", source_message=source)
@@ -196,7 +197,8 @@ def test_source_context_encoded_boundary_still_reads_the_real_ingress_record(tmp
     assert _read(path)["source_message"] == source
 
 
-@pytest.mark.parametrize("source", ["x" * 32001, "😀" * 26000, "\u0000" * 17000])
+@pytest.mark.parametrize("source", ["x" * 32001, "😀" * 26000, "\u0000" * 17000],
+                         ids=["ascii", "emoji", "escaped-control"])
 def test_oversized_source_is_rejected_before_any_ingress_record(tmp_path: Path, source: str) -> None:
     with pytest.raises(ValueError, match="source context exceeds.*scoped artifact"):
         register_ingress(tmp_path, session_id="session", client_turn_id="turn", channel="manager.external.fixture",

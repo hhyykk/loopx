@@ -361,9 +361,9 @@ example --quota-compute 0 --execute` pauses automatic turns; separately stop
 any active host process before taking an offline backup. Pausing does not
 cancel a transaction already running.
 
-There is deliberately no in-place switch back to file authority after commits:
-that requires an explicit migration with receipt/lineage validation. Do not
-delete the selector to disable the provider. Preserve the database together
+Return to File through a reviewed migration from the **current SQLite head**
+using the steps below. Do not delete the selector to disable the provider.
+Preserve the database together
 with any `-wal`/`-shm` files when recovering an interrupted runtime; use SQLite
 backup facilities or a fully stopped database for a coherent backup. Restoring
 an older snapshot as concurrent live authority is not supported. Disposable
@@ -371,6 +371,175 @@ qualification runtimes may be retired as a whole after their processes stop.
 
 Selection grants local storage use only. It grants no actor/lease ownership,
 external service access, cross-host synchronization or promotion authority.
+
+### Reversible developer trial / 可逆开发者试用
+
+Use the existing at-most-20-person opt-in stage; qualify each entry profile
+separately. A new canonical Goal, an existing canonical File Goal and a cold
+Markdown Goal have different entry requirements. The cold source must complete
+[reviewed import](local-authority-provider-selection.md#proposed-compatibility-cutoff-and-release-sequence);
+it cannot enter by creating an empty database. Existing canonical migration
+uses [Goal data storage](local-authority-provider-selection.md#existing-canonical-goal-storage-in-the-app).
+Do not make every participant wait for unrelated profiles or all formal D2 axes.
+
+Before admission, retain the exact candidate commit/package digest, actual
+Python/Node/embedded SQLite versions, platform and selected Goal/provider/policy.
+Compare the wheel's product Python/TypeScript inventory with that source;
+retired modules must be absent after both clean and repeated builds. Stale
+build output is not compatibility and cannot certify physical retirement.
+Verify its installed CLI and packaged App entry, ordinary Todo metadata/source
+readback, restart/original-operation recovery and a current-write-preserving
+exit in an isolated synthetic Goal. Keep passed, failed and untested cases
+separate. This operation sheet is preparation, not a trial invitation or a
+certificate for a released default.
+
+Bind these checks and later operations to the reviewed installation, not the
+`loopx` currently found on PATH. Two installations can report the same version
+while carrying different source. Set `TRIAL_LOOPX_BIN` to the candidate's
+installed console command or release launcher; resolve it once before the first
+read so a later release-symlink switch cannot retarget the trial. Record the
+installation doctor's runtime identity (release/source, or package fingerprint
+for a normal wheel) and Python executable alongside the candidate digest/source,
+and check that they identify the selected installation.
+The PATH-discovered command in that report is only discovery context. An
+inherited `PYTHONPATH` must not substitute a checkout for the selected package.
+
+Record the selected Host separately from storage readiness. In Chat, a built-in
+CLI endpoint's `available` flag checks executable discovery; it does not prove
+authentication, model access, a completed Turn or restart recovery. For Codex,
+`codex --version` and `codex login status` inspect the existing installation and
+login without sending a model request. Do not copy credentials or another
+session's history to qualify a profile. An actual adapter `thread/start` response
+also establishes only startup: an empty upstream session can still lack a
+recoverable rollout after its process exits. Keep a refused original-session
+resume visible; neither a fresh replacement nor successful startup proves
+original-operation recovery.
+
+Use `turn plan` below to inspect the selected Todo's native decision without
+starting a model, writing state, acknowledging a scheduler or spending quota.
+`outer_controller` describes the hypothetical headless caller; this read-only
+command does not install or activate that controller. A ready route remains a
+plan, and the returned required reads, lease and execution boundaries still
+apply to any later authorized execution. Qualify the cohort's chosen Host and
+workload; unavailable unrelated Hosts do not block an independently qualified
+profile. Keep successful first-Turn execution and its original-operation restart
+readback separate from these non-model checks.
+
+For an already canonical trial Goal, set `TRIAL_REGISTRY`, `TRIAL_RUNTIME` and
+`TRIAL_GOAL` to its reviewed routes; choose `TRIAL_EXIT_PLAN` outside the live
+store. Keep the plan and returned `plan_sha256` privately. This POSIX-shell
+example retains one resolved candidate command for all reads and operations:
+
+```sh
+: "${TRIAL_LOOPX_BIN:?Set the installed command for the reviewed candidate}"
+TRIAL_LOOPX_BIN=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$TRIAL_LOOPX_BIN")
+trial_loopx() {
+  : "${TRIAL_REGISTRY:?Set the reviewed registry}" "${TRIAL_RUNTIME:?Set the reviewed runtime}"
+  : "${TRIAL_GOAL:?Set the reviewed Goal}"
+  env -u PYTHONPATH "$TRIAL_LOOPX_BIN" --registry "$TRIAL_REGISTRY" \
+    --runtime-root "$TRIAL_RUNTIME" --format json "$@"
+}
+trial_loopx doctor --installation-only
+trial_loopx todo list --goal-id "$TRIAL_GOAL"
+: "${TRIAL_AGENT:?Choose the registered trial Agent}" "${TRIAL_TODO:?Choose its eligible Todo}"
+# Use the selected Todo's authorized workspace; repository writes require an independent worktree.
+trial_loopx turn plan --goal-id "$TRIAL_GOAL" --agent-id "$TRIAL_AGENT" \
+  --todo-id "$TRIAL_TODO" --host codex-cli --iteration-context fresh \
+  --execution-mode isolated-headless --scheduler-owner outer_controller \
+  --available-capability filesystem_read
+# These inspection commands do not execute the first Turn or grant a lease.
+trial_loopx todo list --goal-id "$TRIAL_GOAL"
+trial_loopx configure-goal --goal-id "$TRIAL_GOAL" --quota-compute 0 --execute
+# Separately stop owning Hosts/writers and settle active leases/captures.
+: "${TRIAL_EXIT_PLAN:?Choose a private plan path outside the live store}"
+trial_loopx authority-archive plan-migration --goal-id "$TRIAL_GOAL" \
+  --provider file --plan "$TRIAL_EXIT_PLAN"
+# Review the frozen current source and backup; copy its returned plan_sha256.
+: "${TRIAL_EXIT_DIGEST:?Copy the reviewed plan_sha256}"
+trial_loopx authority-archive migrate --goal-id "$TRIAL_GOAL" \
+  --plan "$TRIAL_EXIT_PLAN" --plan-sha256 "$TRIAL_EXIT_DIGEST"
+# Confirm only that unchanged reviewed plan.
+trial_loopx authority-archive migrate --goal-id "$TRIAL_GOAL" \
+  --plan "$TRIAL_EXIT_PLAN" --plan-sha256 "$TRIAL_EXIT_DIGEST" --execute
+trial_loopx todo list --goal-id "$TRIAL_GOAL"
+```
+
+Preview is read-only. Active/expired unsettled leases, active capture and source
+drift remain refusals, not reasons to edit state manually. After an ambiguous
+apply, keep and retry the original plan/digest; do not generate a second apply
+or restore an old pre-trial backup over later writes. Readback must report
+`authority_read.source_authority=file_v0`, `legacy_fallback_used=false` and the
+same full Todo records. Historical completion cannot reselect a superseded
+provider. Keep automatic turns paused until the exit/readback succeeds; restore
+only the reviewed prior quota configuration after owner confirmation.
+
+During the trial, follow each native guard's required reads and admission; after
+validated writeback consume its original refresh/spend continuation. Retry the
+same operation/Turn identity after response loss. Collect actual daily tasks,
+latency/resource/history growth, failures, human interventions and successful
+recovery; an accelerated loop is not elapsed-time evidence. Stop the affected
+lane for data loss, duplicate effects, identity/settlement/fence errors or failed
+recovery. Report the candidate/profile, step, original operation identifiers,
+expected/observed result and whether later writes survive through the project's
+normal issue/review route; redact private text, paths and raw evidence.
+Storage activation grants no Host execution, lease ownership or external access.
+
+Run the plan from the selected Todo's authorized workspace. A repository-writing
+peer Todo inspected outside its independent worktree can correctly return
+`agent_workspace_repair`, even though the installation and storage are healthy.
+Move to the existing authorized worktree and repeat the same read-only plan;
+do not change the Goal route or weaken its workspace guard. A successful process
+exit or `ok=true` alone does not mean a ready route: inspect `route.kind`,
+`route.effective_action`, the envelope obligations and `effects`. Plan-only
+`host_invocation_allowed=false` remains expected even for `ready_for_host`.
+
+新 canonical Goal、已有 canonical File Goal 和冷 Markdown Goal 按各自入组路径
+验收。复用既有不超过 20 人的可逆 opt-in 阶段，冷源先完成审核导入；不能通过创建
+空 SQLite 库替代导入，也不让无关 profile 或全部 D2 轴成为每个人的前置。
+入组前记录精确候选包/提交、实际 runtime/平台、Goal/provider/policy。
+核对 wheel 中产品 Python/TypeScript 文件与当前源码一致；冷构建和重复构建都不得
+夹带已退役模块。陈旧 build 产物不是兼容性，也不能作为物理退役证据。在隔离
+合成 Goal 验证安装 CLI、打包 App、完整 Todo/来源、重启原操作恢复及保留新写入的
+退出。上面的命令是操作准备，不代表已经邀请试用或发布默认资格通过。
+
+把后续检查和操作绑定到已审核的安装，不直接使用 PATH 上碰巧命中的 `loopx`。
+两个安装可以版本相同而源码不同。`TRIAL_LOOPX_BIN` 指向候选安装的 console
+命令或 release launcher，在首次读取前解析一次实际路径，避免后续 release 符号
+链接切换悄悄改变试用来源。doctor 的 runtime identity（release/source，正常 wheel
+为 package fingerprint）和 Python executable 应与候选包/源码一起记录并核对；
+报告中的 PATH 命令只是发现信息。上述 wrapper
+移除继承的 `PYTHONPATH`，防止另一个 checkout 替代候选包；不会更新全局安装。
+
+Host 与存储分别验收。Chat 内置 CLI endpoint 的 `available` 仅检查可执行文件
+能否找到；不是登录、模型访问、Turn 完成或重启恢复证明。Codex 可先用
+`codex --version`、`codex login status` 读取已有安装与登录，不发送模型请求，
+不复制凭据或其他 Session 的历史。真实 `thread/start` 返回也只证明启动；空
+Session 的进程退出后可能尚无可恢复的 rollout。原 Session 恢复拒绝须保留，
+不能用另建 Session 或启动成功证明原操作恢复。
+
+上面的 `turn plan` 只读选定 Todo 的原生决策，不启动模型、写状态、ACK 调度或
+扣额度。`outer_controller` 描述假定的 headless 调用方，并不安装或启动控制器；
+ready 路由仍是计划，后续授权执行须遵守返回的 required reads、lease 和权限边界。
+按试用所选 Host 和负载验收，不让无关 Host 不可用阻塞独立合格的 profile。
+首个真实 Turn 完成及原操作重启读回仍须分别证明，不能从上述非模型检查推断。
+
+从选定 Todo 的授权工作目录读取 plan。带仓库写入的 peer Todo 在独立 worktree
+之外可以合法返回 `agent_workspace_repair`，并不表示安装或存储故障。切换到既有
+授权 worktree 重读同一只读计划，不修改 Goal 路由或弱化 workspace guard。
+进程成功或 `ok=true` 本身不表示路由 ready；读回 `route.kind`、`route.effective_action`、
+envelope 义务和 `effects`。即使 `ready_for_host`，plan-only 的
+`host_invocation_allowed=false` 也仍是预期结果。
+
+退出先暂停自动 Turn，再分别停止 Host/writer、结算 active lease/capture；从当前
+SQLite head 预览 File 迁移，审核冻结来源与备份，再明确应用同一 plan/digest。
+预览不写；过期 active lease、active capture 或来源变化仍拒绝，不能手改状态绕过。
+失响应重试原计划；不恢复试用前旧备份覆盖后来写入。完整 Todo 与来源读回通过后，
+再经 owner 确认恢复原配额。历史 completed 不重新选择已被替代的 provider。
+日常工作遵守本次原生 guard/read/refresh/spend，同 Turn 只结算一次；记录实际使用、
+失败、恢复、资源和人工干预，不把加速循环当自然时间。数据、重复效果、身份、结算、
+fence 或恢复错误停止受影响 lane；通过项目既有 issue/review 路径报告已脱敏的候选/
+profile、步骤、原操作、预期/实际和新增写入保留情况。存储启用不授予 Host、lease
+或外部访问权。正式默认与剩余退役仍按原 RFC 分开验收。
 
 ## Reproduce validation
 

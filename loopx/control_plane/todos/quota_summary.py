@@ -18,7 +18,7 @@ from .todo_semantics import (
 )
 from .succession_warning import build_todo_succession_warning_lanes
 from .summary_item import (
-    compact_todo_summary_item,
+    compact_todo_summary_items,
     todo_planning_source_items,
     todo_summary_source_items,
 )
@@ -67,6 +67,7 @@ QUOTA_PAYLOAD_ITEM_FIELDS = (
     "resume_monitor_generation",
     "resume_condition",
     "resume_ready",
+    "blocked_retry",
     "blocking_monitor_todo_id",
     "no_followup",
     "successor_todo_ids",
@@ -226,12 +227,11 @@ def summarize_user_todos_for_quota(
         and str(item.get("reason") or "").strip()
     ]
     agent_id = str((agent_identity or {}).get("agent_id") or "").strip()
-    recent_completed_advancement_items = [
-        compact_todo_summary_item(item, text=str(item.get("text") or "").strip())
-        for item in (value.get("recent_completed_advancement_items") or [])
+    recent_completed_advancement_items = compact_todo_summary_items([
+        item for item in value.get("recent_completed_advancement_items") or []
         if isinstance(item, dict)
         if not agent_id or agent_scope_item_claimed_by(item) == agent_id
-    ]
+    ], strip_text=True)
     current_agent_blocker_items = [
         item
         for item in blocker_items
@@ -299,6 +299,8 @@ def summarize_user_todos_for_quota(
         summary["closure_intent"] = planning["closure_intent"]
     if planning.get("frontier_deadline"):
         summary["frontier_deadline"] = planning["frontier_deadline"]
+    if planning.get("blocked_retry_wait"):
+        summary["blocked_retry_wait"] = planning["blocked_retry_wait"]
     monitor_writeback = todo_summary_monitor_writeback_contract(value)
     if monitor_writeback:
         summary["monitor_writeback"] = monitor_writeback
@@ -331,27 +333,17 @@ def summarize_user_todos_for_quota(
     if lanes.agent_scope_filter:
         summary["agent_scope_filter"] = lanes.agent_scope_filter
         summary["other_agent_scoped_open_count"] = len(lanes.other_agent_scoped_items)
-        summary["other_agent_scoped_items"] = [
-            compact_todo_summary_item(item, text=str(item.get("text") or "").strip())
-            for item in lanes.other_agent_scoped_items[:TODO_VISIBILITY_LANE_LIMIT]
-        ]
+        summary["other_agent_scoped_items"] = compact_todo_summary_items(lanes.other_agent_scoped_items[:TODO_VISIBILITY_LANE_LIMIT], strip_text=True)
     if filter_user_gate_blocks_agent and lanes.user_action_open_items:
         summary["user_action_open_count"] = len(lanes.user_action_open_items)
-        summary["user_action_items"] = [
-            compact_todo_summary_item(item, text=str(item.get("text") or "").strip())
-            for item in lanes.user_action_open_items[:TODO_VISIBILITY_LANE_LIMIT]
-        ]
+        summary["user_action_items"] = compact_todo_summary_items(lanes.user_action_open_items[:TODO_VISIBILITY_LANE_LIMIT], strip_text=True)
     if lanes.user_action_agent_scope_filter:
         summary["user_action_agent_scope_filter"] = lanes.user_action_agent_scope_filter
         summary["other_agent_bound_user_action_open_count"] = len(
             lanes.other_agent_bound_user_action_items
         )
-        summary["other_agent_bound_user_action_items"] = [
-            compact_todo_summary_item(item, text=str(item.get("text") or "").strip())
-            for item in lanes.other_agent_bound_user_action_items[
-                :TODO_VISIBILITY_LANE_LIMIT
-            ]
-        ]
+        summary["other_agent_bound_user_action_items"] = compact_todo_summary_items(
+            lanes.other_agent_bound_user_action_items[:TODO_VISIBILITY_LANE_LIMIT], strip_text=True)
     return summary
 
 
@@ -514,7 +506,7 @@ def _compact_agent_lane_status_todo_summary(
                 }
             continue
         if isinstance(value, dict):
-            if key in {"monitor_writeback", "work_counts"}:
+            if key in {"monitor_writeback", "work_counts", "deferred_work_counts"}:
                 compact[key] = _compact_quota_payload_nested_warning(value)
             continue
         compact[key] = value
@@ -687,6 +679,8 @@ def summarize_project_asset_todos_for_quota(
     }
     if planning.get("frontier_deadline"):
         summary["frontier_deadline"] = planning["frontier_deadline"]
+    if planning.get("blocked_retry_wait"):
+        summary["blocked_retry_wait"] = planning["blocked_retry_wait"]
     monitor_writeback = todo_summary_monitor_writeback_contract(value)
     if monitor_writeback:
         summary["monitor_writeback"] = monitor_writeback
@@ -711,27 +705,17 @@ def summarize_project_asset_todos_for_quota(
         summary["agent_scope_filter"] = lanes.agent_scope_filter
         summary["all_open_count"] = value.get("open", value.get("open_count", len(all_open_items)))
         summary["other_agent_scoped_open_count"] = len(lanes.other_agent_scoped_items)
-        summary["other_agent_scoped_items"] = [
-            compact_todo_summary_item(item, text=str(item.get("text") or "").strip())
-            for item in lanes.other_agent_scoped_items[:TODO_VISIBILITY_LANE_LIMIT]
-        ]
+        summary["other_agent_scoped_items"] = compact_todo_summary_items(lanes.other_agent_scoped_items[:TODO_VISIBILITY_LANE_LIMIT], strip_text=True)
     if filter_user_gate_blocks_agent and lanes.user_action_open_items:
         summary["user_action_open_count"] = len(lanes.user_action_open_items)
-        summary["user_action_items"] = [
-            compact_todo_summary_item(item, text=str(item.get("text") or "").strip())
-            for item in lanes.user_action_open_items[:TODO_VISIBILITY_LANE_LIMIT]
-        ]
+        summary["user_action_items"] = compact_todo_summary_items(lanes.user_action_open_items[:TODO_VISIBILITY_LANE_LIMIT], strip_text=True)
     if lanes.user_action_agent_scope_filter:
         summary["user_action_agent_scope_filter"] = lanes.user_action_agent_scope_filter
         summary["other_agent_bound_user_action_open_count"] = len(
             lanes.other_agent_bound_user_action_items
         )
-        summary["other_agent_bound_user_action_items"] = [
-            compact_todo_summary_item(item, text=str(item.get("text") or "").strip())
-            for item in lanes.other_agent_bound_user_action_items[
-                :TODO_VISIBILITY_LANE_LIMIT
-            ]
-        ]
+        summary["other_agent_bound_user_action_items"] = compact_todo_summary_items(
+            lanes.other_agent_bound_user_action_items[:TODO_VISIBILITY_LANE_LIMIT], strip_text=True)
     return summary
 
 

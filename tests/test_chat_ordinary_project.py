@@ -70,6 +70,8 @@ def test_http_ordinary_project_continues_native_session_without_goal_or_portfoli
     assert status == 200 and len(projects["projects"]) == 1
     project = projects["projects"][0]
     assert project["title"] == "notes" and "workspace_path" not in project
+    # The same root is offered to the Goal form by its creation reference.
+    assert project["goal_workspace_ref"].startswith("workspace-")
     body = {"context_kind": "project", "project_ref": project["project_ref"]}
     status, opened = request("/api/chat/sessions", body)
     assert status == 201, opened
@@ -193,6 +195,7 @@ def test_writable_project_turns_use_project_skills_without_manager_work_selectio
         assert prompt.endswith(f"Operator user message:\n{message}")
         envelope = json.loads(prompt.split(CHAT_REVIEW_OPEN_TAG, 1)[1].split(CHAT_REVIEW_CLOSE_TAG, 1)[0])
         assert envelope["schema_version"] == "loopx_chat_agent_response_v0"
+        assert envelope["message"] == ""
         assert envelope["proposals"] == []
         assert all(envelope[field] is None for field in ("protected_action", "goal_draft", "context_handoff", "gate"))
     session = store.load_session(sid)
@@ -280,8 +283,11 @@ def test_default_project_host_grant_is_write_and_read_only_launch_is_enforced(or
     _, opened = request("/api/chat/sessions", {"context_kind": "project", "project_ref": projects["projects"][0]["project_ref"]})
     assert opened["goal_id"] is None
     assert runtime.adapters[opened["session_id"]].session.sandbox == "workspace-write"
-    row = json.loads(capture.read_text().splitlines()[-1])
-    assert row["method"] == "thread/start" and row["params"]["sandbox"] == "workspace-write"
+    # Native thread naming may follow startup; verify the permission-bearing
+    # request itself rather than assuming it is the last transport operation.
+    starts = [row for line in capture.read_text().splitlines()
+              if (row := json.loads(line)).get("method") == "thread/start"]
+    assert len(starts) == 1 and starts[0]["params"]["sandbox"] == "workspace-write"
     proof = {"transport_ref": "notes-app", "provider_ref": "c" * 24, "operator_ref": "d" * 24, "verified": True}
     bindings = ChatConversationBindings(root=store.root, project_contexts=contexts, observe=lambda _: proof)
     contexts.conversation_bindings = bindings

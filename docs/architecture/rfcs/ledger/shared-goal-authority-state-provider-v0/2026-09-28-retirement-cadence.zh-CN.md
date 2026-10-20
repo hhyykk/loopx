@@ -1,11 +1,34 @@
 # 合并后的本地权威退役节奏
 
-- 当前计划：2026-10-07，`06b6caa07`；历史核对基线：`ce3862e33`；采用后续核对：`71525ab90`，2026-09-28；[English](2026-09-28-retirement-cadence.md)。
+- 当前实现检查点：2026-10-16，#6396 已合入 `a4483aaec`；历史 1.x 计划：2026-10-07，`06b6caa07`；历史核对基线：`ce3862e33`；采用后续核对：`71525ab90`，2026-09-28；[English](2026-09-28-retirement-cadence.md)。
 - Owner：总 roadmap R3/R4/R5/R6、shared authority D1–D3、TS 迁移 T0–T4。
 - 本记录替代 9 月 27 日 recovery、Host supervision 记录的**当前清单和估算**，
   不替代其历史验证结果。
 
-## 重新核对的基线
+<a id="current-candidate-checkpoint"></a>
+
+## 当前实现检查点（2026-10-16）
+
+贡献者主导的 [#6396](https://github.com/loopx-project/loopx/pull/6396) 已合入 `a4483aaec`，
+与最终 PR head `404433aee` 完整 tree 相同。C1/T4 删除包包含 fork 补缺、原生 Core
+版本修复及 [#6366 已吸收义务](../../../../reference/local-authority-provider-selection.md#retirement-proposal-reconciliation)。
+兼容 1.4.2 已先发布；2.0 截止已进入 main，不等于发布默认或完整采用资格完成。
+
+| 边界 | 已落地事实 | 剩余工作／保留义务 |
+| --- | --- | --- |
+| 普通 Markdown mutation 与 capture producer | 废弃 writer 和普通 producer 已删除；canonical 创建／写入、team-plan、Monitor 和 lease caller 复用既有 typed owner。 | 验证最终 main 的安装 caller，不重做该删除家族；保留永久文档 IO 及受支持导入／恢复。 |
+| 所有权与历史恢复 | fresh 执行／配置接受 soft／hard，历史 legacy codec、精确 release 和原回执保留。 | 验证受影响安装 Host／App、旧 proof、过期未释放租约及后写保持；存储转换不等于生命周期接纳。 |
+| 最终组合 | #7 后的源码及安装修复有明确 tree／source 对应；后续 main 合并等于自动 tree，并含 #6597。 | [已执行证据](https://github.com/loopx-project/loopx/pull/6396#issuecomment-6208115093) 保留原 revision；图等价和合入状态不认证未执行的最终组合。 |
+| 完整备份与身份 | M1 隔离验证／读回已存在，源／导入历史仍可读。 | 既有完整恢复 M2/M3 与 #5206 负责捕获一致性、生命周期／旧 writer／effect drain 及受控接纳；pending outbox 保留原 receipt／cursor／处置 owner。 |
+| 持续／默认资格 | 新 Goal 的 SQLite／hard-lease 源码选择已存在。 | D2 保留正式容量／经过时间失败和缺失项；D3 与 shared-authority 7.2 区分 cohort 和发布默认决定；本计划不启动 cohort／soak。 |
+
+新工作沿 [R5 合入后顺序](../../loopx-overall-roadmap-v0.zh-CN.md#post-6396-delivery-plan)
+和 [TS 当前边界](../../typescript-control-plane-migration-v0.zh-CN.md#当前交付边界2026-10-02)。
+下方具名记录保留原测量与依赖判断；“普通源 writer 仍可达”描述其旧基线，不能当作
+当前 main 尚未实现的工作。后续 adapter 删除须有真实最后 caller／兼容证据；
+历史恢复、provider／OS IO 不因 writer 已退役而变成无用代码。
+
+## 历史核对基线
 
 | 已合并 | 不再计入剩余工作的内容 |
 | --- | --- |
@@ -25,11 +48,11 @@
 不等待无关云端或百 Agent 工作。
 
 **File 是默认 store factory，不等于所有新旧 Goal 默认以 File 为权威。**
-未晋升的 Markdown writer 仍可达。两个 Goal 迁移成功、或 File↔SQLite 传输成功，
+在这个历史基线上，未晋升的 Markdown writer 仍可达。两个 Goal 迁移成功、或 File↔SQLite 传输成功，
 都不能证明旧 writer 已没有消费者。本轮不再沿用“还剩 5–8 个 PR”；以下列出的是
 交付和验证边界，不承诺缺陷数量或合并数量。
 
-## 什么时候删、怎么删
+## 历史最后调用方清单与删除规则
 
 | 边界 | 真实可达的代码／调用方 | 最早删除条件及保留义务 |
 | --- | --- | --- |
@@ -109,10 +132,10 @@ Host IO；C1、D2 和发布默认采用仍是独立验收边界。
 
 <a id="当前收尾验证迁移与删除2026-10-02"></a>
 
-## 当前收尾：验证、迁移与删除（2026-10-07）
+## 历史收尾计划：验证、迁移与删除（2026-10-07）
 
 按 main `06b6caa07` 和所列已合并 PR 重新核对。本节是 **R5 / D1–D3 / T0–T4**
-的当前执行计划，替代旧 A–D 排期；历史测量仍只适用于原源码和负载。R6 单独推进。
+的当时执行计划，替代旧 A–D 排期；历史测量仍只适用于原源码和负载。R6 单独推进。
 存储格式、权威选择、所有权策略是三种不同迁移：有 SQLite 数据库，不代表新 Goal
 已经默认使用 canonical authority，也不代表 `legacy` handoff 策略已经退役。
 
@@ -256,12 +279,16 @@ File → SQLite → 已确认的 Todo 新增／修改／完成 → 新进程读�
 保留前缀，不能充当当前 head 的回退。checkpoint 缺少合格路径决策时，新一轮仍
 须重规划；provider 恢复不能抹掉这项义务，也不能把 Todo 完成当作 Goal 验收。
 
-这补齐了有界 CLI 组合验收，不是完整安装态产品验收。App 的任务所有权编辑器
-只迁移执行策略，尚无已有 Goal 的 File/SQLite 切换交互。下一配套仍复用同一 TS
-migration owner：在现有 Goal 设置中提供不接收调用者路径的 preview/apply，
-失响应／重启后恢复原预览，明确拒绝原因，并单独读回当前选中来源。须用真实
-packaged UI 和后端核验 pending projection/outbox、Host 停止及结算。旧 Markdown
-完整捕获、隔离 checkpoint 导入、全 Goal 恢复、D2 与发布默认决策仍各自验收。
+已有 Goal 设置现已通过同一 TS migration owner 提供 File/SQLite 预览、显式应用、
+失响应／重启后恢复原预览，以及独立的当前来源读回。真实 packaged UI／后端旅程
+将 SQLite 新写入带回 File；历史完成回执不能重新采用旧目标。执行策略迁移仍是
+另一个设置。真实 HTTP／provider 还覆盖预览后新准入的 Host lease：runtime 重启后
+应用仍拒绝，恢复只读；原生 release 改变了 source，结算后仍须审核新计划。
+原生 capture disposition 先在其所属归档保留 prepared outbox 字节，再切换 provider；
+旧计划不能绕过后来启动的 capture。这些只验证本地 canonical 连续性，不证明真实
+Host 进程已停止、旧 Markdown 完整捕获、pending projection 投递、隔离 checkpoint
+导入或全 Goal 恢复。这些更广的验收边界、D2 和发布默认决策各自核验，
+设置旅程不强制 legacy 迁移。
 
 以下是冻结候选版本后的工程窗口，不是承诺发布日期。故障注入只用可丢弃 runtime
 和经过验证的隔离副本，不能为了测试杀掉或改写活跃 Goal。
@@ -354,8 +381,75 @@ Quota 观察复用既有 should-run 摘要：捕获的单 Goal 行序列化由 1
 另一项 148 秒隔离演练通过新进程为两种 provider 各追加 12 笔提交，跨越 checkpoint，
 逐轮验证原回执重放、变更意图拒绝及 projection／hash 一致性。它证明这段有界存储
 流程，**不代表** Host 执行、活跃 Goal 采用或 D2 的十天 soak 已完成。本次不改变活跃
-authority、发布默认值或旧 writer 删除决定。B 仍缺持续负载／平台／容量证据；C 仍需
-consumer／新建入口及受支持升级验收。
+authority、发布默认值或旧 writer 删除决定。C 仍需 consumer／新建入口及受支持升级验收。
+
+原封不动的 `matched-64k` capacity runner 在 `5f51559dc` 源码上完成独立的
+10k／100k 历史：macOS arm64、Node 24.21.0／SQLite 3.53.4、WAL/FULL，
+两轴使用相同且非空的 1,341 文件公共扫描根。正式 ledger 为
+**13 passed／1 failed／11 missing**，进程退出 1，`full_d2_qualified=false`。
+部分 p95 测量如下：
+
+| 测量 | 10k | 100k | 冻结预算／结果 |
+| --- | ---: | ---: | --- |
+| Warm head | 2.360 ms | 4.860 ms | 增长 2.059 倍 > 2 倍：**失败**；绝对值 < 50 ms 通过 |
+| Commit | 4.654 ms | 7.022 ms | 增长 1.509 倍、绝对值 < 100 ms 通过 |
+| Receipt | 5.043 ms | 6.952 ms | 增长 1.379 倍、绝对值 < 50 ms 通过 |
+| 新进程 CLI status | 1,133.177 ms | 1,143.820 ms | < 2,000 ms 通过 |
+| 新进程 CLI mutation | 671.668 ms | 865.628 ms | 增量 193.960 ms < 200 ms 通过 |
+
+真实 CLI 操作、head／receipt 校验和临时存储清理均完成，没有正确性断言失败。
+这两条存储轴不证明完整八 agent／四 writer 负载、稳定 RSS、大历史恢复、consumer
+lag、升级／回退、十日 soak、受支持 runtime 矩阵、promotion、1 MiB payload、
+300k 余量或 60 秒 burst；没有清空 OS 文件缓存。
+[D2 issue #4224](https://github.com/loopx-project/loopx/issues/4224) 已记录 soak 启动，
+须先与既有负责人核实完成报告及其对当前候选的适用性，再决定是否授权替代运行。
+
+在 `9d7680a34` 上完成受控诊断：provider／log／codec 与 `5f51559dc` 字节一致，
+使用真实 64 KiB FULL/WAL 存储及独立 10k／100k 历史。三组未插桩的新进程测量
+保持 3 次 head／2 次 receipt 的读取比例，每组每轴 3,000 个 head 样本。head p95
+范围分别为 2.91–4.84 ms 和 4.96–10.38 ms，说明存在波动，不能记为新的正式通过：
+夹具填充没有穿插读取，测量时历史不增长；未测完整 CLI、并发负载或 OS 冷文件缓存。
+
+真实 head 路径的 SQL 计时和查询字节码定位到随历史增长的成本：连续性聚合通过
+SQLite 的 `Count` opcode 读取覆盖索引，执行均值由 0.145 增至 0.837 ms；head
+其余未分解工作为 0.474／0.419 ms。独立的保留连接对照仍有 count 增长，索引极值
+查询则保持较小。这些是插桩组件对照，不能相加当 p95 预算，也不是替换生产连接的
+方案。V8 capture 指向 `current` 和 `identity`，但不证明 kernel／IO 成本或原来
+2.059 倍越线的精确归因。JS 返回行数有界不代表 SQLite 工作量恒定。回归同时验证
+live proof 窗口外的非尾部 hole：完整极值／head／parent 不能代替连续性校验。
+本次不据此提权威缓存、删 proof、切换 provider 或运行时性能修复。
+
+`233cc76fd` 上的固定历史消费者对照补齐了本诊断缺少的完整读取命令比较。
+macOS arm64、Node 24.21.0／SQLite 3.53.4，复用经完整历史校验的 64 KiB
+FULL/WAL 10k／100k 合成历史，并在隔离副本中执行。每轴各测 20 次 status 和
+20 次 quota，交替历史深度与命令顺序。每个样本新启 Python CLI 和 managed
+Effect runtime，关闭在计时外；保留 OS 文件缓存。两轴采用相同且非空的
+1,353 文件公共扫描根，测量前后输入 digest 不变。
+
+| 完整读取命令 | 10k p50／p95 | 100k p50／p95 |
+| --- | ---: | ---: |
+| `status` | 672／846 ms | 689／875 ms |
+| `quota should-run` | 873／1,111 ms | 894／1,079 ms |
+
+80 次调用均保留 canonical Todo；最终 cursor／完整 projection digest 不变，
+最老／中间原始 receipt 仍能校验，隔离 runtime 已停止并删除。这个单 Todo 读取
+负载没有明显命令增长，既不证明原 warm-head 失败的根因，也不验收原正式 profile。
+它未测 mutation、增长中的历史、并发 writer、安装 wheel／App 或完整领域 Goal
+payload。源码与扫描输入也不同于 `5f51559dc`，不能把这些值称为性能修复前后对比。
+
+处置：保留连续性校验和当前持久格式。这项消费者对照本身不足以支持新增索引、
+缓存决策、计数器或连接池。后续更窄索引／持久证明方案须先明确格式／升级边界，
+保留非尾部 hole 检测、原 digest／receipt，并在真实所属消费者上证明同负载改善，
+再决定实现。继续既有整 Goal 消费者、安装恢复和社区负责人所持正式资格工作，
+不让独立迁移／退役等待微基准全绿。
+
+原失败和预算继续保留；绝对值通过不抵消增长失败行，但按 §7.2 的消费者影响决策，
+这一行也不能单独否决发布默认值。#5805 已让新建默认采用 canonical SQLite／
+`hard_lease`，重复修改此归属不是剩余工作。按源码和支持 profile 对齐已有安装态
+创建、重试、升级及新增写入回退通过证据。十一项缺失属于这份容量报告，不是十一项
+产品功能缺失，也不否定独立恢复证据。B 剩余发布决策应聚焦声明的支持范围、适用的
+持续运行证据、真实消费者回归和未解决的恢复缺口；复用当前 File 对照与既有 soak，
+不要把全部验收重新归零。
 
 ### 合同健康检查的权威归属
 
@@ -518,13 +612,13 @@ Archive restore／audit 已使用 provider 通用的 1–64 个操作批量回�
 样本，File 查询 16 条回执的中位数从 346.2 降至 21.3 毫秒；未改动的 SQLite 对照为
 111.3／111.1 毫秒。每个 provider 的回执结果与权威 head 均保持一致。这是暖读组件
 测量，不是相同完整性工作下的 provider 比较、整次恢复延迟、冷读或 D2／默认项
-验收。File 每恢复一笔仍重写保留的文件；此前一次完整历史恢复超出调用方的
-300 秒超时，随后才发布精确匹配的确认。批量回执优化没有闭合这项恢复成本。
+验收。此前一次完整 File 历史恢复超出调用方的 300 秒超时，随后才发布精确
+匹配的确认。原失败保留；批量回执优化本身没有闭合这项恢复成本。
 CLI 现在区分恢复响应不确定与已知失败，并返回只读的
 `authority-archive restore-receipt` 命令。它有界读取现有、绑定 Goal／摘要／provider
 的历史完成回执，无需再次重放或扫描归档。回执缺失不代表后台仍在运行或已经失败。
-当前完整性仍走原有 audit，不改变 provider 激活或 D2／默认项门槛。下一项恢复成本
-工作仍是已测量的完整文件重写和解码路径，不再增加超时或另一套回执／状态格式。
+当前完整性仍走原有 audit，不改变 provider 激活或 D2／默认项门槛。恢复成本
+工作沿用同一归档和原回执／状态格式，不再增加超时。
 
 下一项已测量的 File 改动，在一个 checkpoint 窗口内复用 `AuthorityStateReplay`，
 不再为每条历史重建重放器、重新规范化未变化的完整状态。非可信 metadata 仍经
@@ -533,9 +627,40 @@ CLI 现在区分恢复响应不确定与已知失败，并返回只读的
 同一份隔离的 2,107 笔 File 历史每组运行三个全新进程，冷读中位数从 35.6 降至
 25.9 秒，约减少 27%；完整 head、revision、cursor 一致。两组连续采样未清空
 OS 缓存，未控制其他进程负载，不代表 p95、provider 对比或完整恢复时间。
-完整文件重写与剩余 revision 哈希成本仍归原有恢复任务；这不闭合 D2／默认项
-或旧 writer 退役验收。
+单独的冷读改进不能验收完整恢复，也不闭合 D2／默认项或旧 writer 退役。
 #4224 的 soak 已启动；其最终证据和对当前候选的适用性仍待核对。
+
+完整 File 恢复路径现在每新增最多 16 笔已验证逻辑事务，再原子发布更新后的
+完整 envelope。一个目标 identity/CAS 与原 writer lock 保护一页；下一页之前
+仍逐笔核验 journal 和原回执。每笔原 transaction、完整状态、cursor、revision
+和 receipt 分别保留，普通提交和持久化格式不变。SQLite/PostgreSQL 沿用逐笔
+写入；reviewed 本地 provider 迁移及现有 Goal 存储编辑器复用该路径。rename
+前后中断及丢响应反例验证原前缀恢复，不猜测重试；删除回执的突变被真实 CLI
+恢复 oracle 拒绝。
+
+同一份隔离 3,516 笔归档，在 macOS arm64／Node 24.21.0 上每组两个无 profile
+的全新进程，逐笔 File 恢复为 732.4–733.5 秒，整页发布为 143.5–173.2 秒。
+独立比较完整历史、events、receipts 和 metadata。未清空 OS 缓存，早期样本与
+其他验证重叠；这只是有界恢复观察，不是 p95、受控资源增长证书或 D2／默认项
+验收。File 仍按页重写完整文件，更大历史与持续运行沿用原资格。300 秒 CLI
+预算、结果未知读回、独立采用 fence、旧 writer 退役及正式 D2 的失败／缺失证据
+全部保留。
+
+
+### Runtime 退役须排空已准入效果
+
+共享 TS Effect server 现独立于 TCP 连接统计已准入、尚未完成的请求 handler；空闲窗口在最后一个
+handler 及私有 response sink 完成后才开始。显式 shutdown 停止接受连接，等待已准入
+效果（含断连调用方），最后只删除自己的 locator。认证、请求预算、原 receipt 与调用方
+恢复不变，不增加 provider 或 Python 决策 owner。
+
+旧 close handler 可能在断连调用方写入仍等待真实 mutation lock 时退出。真实 server
+回归在空闲退役与显式 shutdown 下重现，用仍连接调用方作对照，同时验证并发 ping、
+认证拒绝、listener 关闭、持久写入读回和最终退役。替换 locator、重启及 File/SQLite
+archive crash/recovery 测试仍须保留。
+
+这只修复 R5/D2 recovery 的一个 S4/runtime-lifetime 依赖，不证明持续运行，不选择
+release 默认值，不增加冻结容量预算，也不授权删除 legacy writer。
 
 ### 委派完成阶段的原租约衔接
 

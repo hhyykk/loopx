@@ -1,7 +1,7 @@
 import type { GoalDraft } from "../../../../../loopx/control_plane/collaboration/goal_draft.js";
 export type LoopXModeSettings = { agent_id: string; token_budget: number };
 /** A host-granted workspace an ordinary conversation may be scoped to. */
-export type ChatProject = { project_ref: string; title: string; grant: "workspace_read" | "workspace_write" };
+export type ChatProject = { project_ref: string; title: string; grant: "workspace_read" | "workspace_write"; goal_workspace_ref?: string };
 
 export type ChatTodo = {
   todo_id: string | null;
@@ -88,6 +88,9 @@ export type CollaborationReadback = {
   agent_id: string;
   goal_id?: string;
   decision_reason?: string;
+  request_revision?: number;
+  control_route?: import("./request-control").RequestControlRoute;
+  request_control?: import("./request-control").RequestControlView | null;
   brief: {
     purpose: string;
     context: string;
@@ -98,7 +101,7 @@ export type CollaborationReadback = {
   };
   read_status: string;
   decision: string;
-  returns: { phase: string; status: string }[];
+  returns: { phase: string; status: string; request_revision?: number | null }[];
 };
 
 export type ChatRouteCandidate = {
@@ -106,7 +109,8 @@ export type ChatRouteCandidate = {
   available: boolean;
 };
 
-export function selectAvailableChatAgent<T extends ChatRouteCandidate>(
+/** Prefer an executable route; keep an unavailable candidate for diagnosis when none can run. */
+export function selectChatAgent<T extends ChatRouteCandidate>(
   options: T[],
   preferredAgentId: string | undefined,
   defaultAgentId: string,
@@ -115,15 +119,19 @@ export function selectAvailableChatAgent<T extends ChatRouteCandidate>(
     option.agentId === preferredAgentId && option.available
   ) ?? options.find((option) =>
     option.agentId === defaultAgentId && option.available
-  ) ?? options.find((option) => option.available);
+  ) ?? options.find((option) => option.available)
+    ?? options.find((option) => option.agentId === preferredAgentId)
+    ?? options.find((option) => option.agentId === defaultAgentId)
+    ?? options[0];
   if (!selected) {
-    throw new Error("Chat requires at least one available route");
+    throw new Error("Chat requires at least one route");
   }
   return selected;
 }
 
 export type TodoProposal = {
   kind: "todo";
+  goal_id?: string;
   text: string;
   priority: "P0" | "P1" | "P2";
   rationale: string;

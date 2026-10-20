@@ -107,6 +107,26 @@ def test_periodic_review_ignores_quiet_polls_but_counts_material_transitions() -
     assert periodic([material] + quiet + work)["triggers"][0]["kind"] == "periodic_review_due"
 
 
+def test_replan_noops_preserve_the_original_work_obligation_identity() -> None:
+    work = [run(n, turn=f"work-{n}") for n in range(20, 0, -1)]
+    original = obligation(work)
+    assert original is not None
+    for classification in ("replan_noop", "repair_noop"):
+        noops = [{**run(21, turn=f"review-{n}"), "classification": classification,
+                  "generated_at": f"2026-09-22T00:01:{n % 60:02d}Z",
+                  "health_check": f"Still considering the same question, wording {n}"}
+                 for n in range(200)]
+        assert obligation(noops) is None
+        assert obligation(noops + work[:-1]) is None
+        repeated = obligation(noops + work)
+        assert repeated is not None
+        assert repeated["obligation_id"] == original["obligation_id"]
+        assert repeated["triggers"] == original["triggers"]
+        typed_noops = [{**row, "progress_observation": observation()} for row in noops]
+        assert obligation(typed_noops) is None, "a control no-op cannot manufacture a progress-repeat duty"
+        assert obligation(typed_noops + work)["obligation_id"] == original["obligation_id"]
+
+
 def test_six_distinct_polls_retain_dead_monitor_contract() -> None:
     result = obligation([monitor(n, turn=f"poll-{n}") for n in range(6, 0, -1)])
     assert result is not None
@@ -183,6 +203,35 @@ def test_long_history_keeps_evidence_beyond_rpc_limit() -> None:
     assert trigger["kind"] == "typed_progress_repeat"
     assert trigger["run_count"] == 2
     assert trigger["oldest_counted_generated_at"] == rows[-1]["generated_at"]
+
+
+def test_streak_codec_carries_one_clock_for_all_monitor_facts(monkeypatch) -> None:
+    from datetime import datetime, timezone
+    from loopx.control_plane.work_items import replan_history_codec as codec
+
+    calls, clocks = [], []
+    observed = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+    def clock():
+        clocks.append(True)
+        return observed
+
+    def capture(method, params):
+        calls.append((method, params))
+        return {"schema_version": "replan_history_result_v0", "trigger": None}
+
+    monkeypatch.setattr(codec, "now_utc", clock)
+    monkeypatch.setattr(codec, "effect_runtime_result", capture)
+    items = [{"todo_id": f"todo_monitor_{i}", "claimed_by": AGENT,
+              "consecutive_no_change": "8", "expires_at": "2030-01-01T00:00:00Z"}
+             for i in range(8)]
+    codec.project_replan_history(operation="monitor_streak", agent_todos={"monitor_open_items": items})
+    assert clocks == [True]
+    assert len(calls) == 1 and calls[0][0] == "work_item.replan_history.project"
+    params = calls[0][1]
+    assert params["observed_at"] == observed.timestamp()
+    assert len(params["todos"]["monitors"]) == 8
+    assert all(row["expires_at"] == params["observed_at"] for row in params["todos"]["monitors"])
 
 
 def test_snapshot_transport_is_private_compact_and_always_removed(monkeypatch) -> None:

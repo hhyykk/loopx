@@ -1,9 +1,10 @@
+import {GoalOracleEvidence} from "./goal-oracle-evidence";
 import {GoalTeamLineage} from "./goal-team-lineage";
 import {GoalTeamEpisode} from "./goal-team-episode";
 import {GoalTeamComparison} from "./goal-team-comparison";
 import {TeamArtifactReport} from "./team-artifact-content";
 import {useEffect, useRef, useState} from "react";
-import {delegationStateLabel, readLoopXTeamWork, sendLoopXMessage, type DelegationReadback, type LoopXModeSnapshot} from "../../data/chat";
+import {delegationStateLabel, readLoopXTeamWork, revalidateLoopXTeamWork, sendLoopXMessage, type DelegationReadback, type LoopXModeSnapshot} from "../../data/chat";
 
 type FeedbackAttempt = {id: string; text: string; message: string};
 
@@ -45,11 +46,11 @@ export function GoalTeamEvidence({sessionId, operationId, zh, canMessage, ingres
     void read();
     return () => {generation.current++;};
   }, [sessionId, operationId]);
-  async function read() {
+  async function read(revalidate = false) {
     const current = ++generation.current;
     setResult(null); setObservedAt(""); setError(""); setBusy(true);
     try {
-      const value = await readLoopXTeamWork(sessionId, operationId);
+      const value = await (revalidate ? revalidateLoopXTeamWork(sessionId, operationId) : readLoopXTeamWork(sessionId, operationId));
       if (current === generation.current) {
         setResult(value); setObservedAt(new Date().toLocaleTimeString());
       }
@@ -105,24 +106,36 @@ export function GoalTeamEvidence({sessionId, operationId, zh, canMessage, ingres
     && checkedOutputs?.length && checkedOutputs.length === result?.artifacts?.length
     && new Set(checkedOutputs.map(row => row.ref)).size === checkedOutputs.length
     && checkedOutputs.every(row => result?.artifacts?.some(artifact => artifact.ref === row.ref && artifact.sha256 === row.sha256)));
+  function observe(value: DelegationReadback | null) {
+    setResult(value); setObservedAt(value ? new Date().toLocaleTimeString() : "");
+    setError(value ? "" : (zh ? "关联执行或版本已变化；请重新读取证据。" : "A linked execution or version changed; recheck the evidence."));
+  }
   return <section className="goal-team-evidence" aria-label={zh ? "执行证据" : "Execution evidence"} aria-busy={busy}>
     <div className="goal-team-work-actions"><h3>{zh ? "执行证据" : "Execution evidence"}</h3>
-      <button type="button" disabled={busy} onClick={() => void read()}>{zh ? "重新读取证据" : "Recheck evidence"}</button></div>
-    {busy ? <p role="status">{zh ? "正在核验绑定、验收与文件…" : "Checking bindings, acceptance and files…"}</p> : null}
+      <button type="button" disabled={busy} onClick={() => void read()}>{zh ? "重新检查交付" : "Check delivery again"}</button></div>
+    {busy ? <p role="status">{zh ? "正在运行已配置的检查并核对产物版本…" : "Running configured checks and observing artifact versions…"}</p> : null}
     {error ? <p role="alert">{zh ? "无法核验，已清除上次证据。" : "Cannot verify; previous evidence cleared."} {error}</p> : null}
     {result ? <>
       <p role="status"><strong>{result.agent_id} · {delegationStateLabel(result, zh)}</strong>{" · "}{observedAt}</p>
-      <p>{zh ? "按需读取的当前观察，不是持续在线状态；验收不代表协调员已采用。" : "An on-demand observation, not continuous liveness; acceptance does not establish coordinator adoption."}</p>
-      <GoalTeamEpisode sessionId={sessionId} result={result} zh={zh} onInspect={onInspect} onObservation={value => {
-        setResult(value); setObservedAt(value ? new Date().toLocaleTimeString() : "");
-        setError(value ? "" : (zh ? "关联执行或版本已变化；请重新读取证据。" : "A linked execution or version changed; recheck the evidence."));
-      }}/>
+      <p>{zh ? "本次观察会运行已配置的检查，不代表持续在线；验收不代表协调员已采用。" : "This observation runs the configured checks, not continuous liveness; acceptance does not establish coordinator adoption."}</p>
+      <GoalTeamEpisode sessionId={sessionId} result={result} zh={zh} onInspect={onInspect} onObservation={observe}/>
       <GoalTeamComparison sessionId={sessionId} result={result} zh={zh}/>
       {hasCorrectionPath ? <details className="goal-team-lineage-detail"><summary>{zh ? "版本与采用关系详情" : "Version and adoption details"}</summary>
-        <GoalTeamLineage result={result} zh={zh} onInspect={onInspect}/></details>
-        : <GoalTeamLineage result={result} zh={zh} onInspect={onInspect}/>}
+        <GoalTeamLineage result={result} zh={zh} onInspect={onInspect} sessionId={sessionId} onObservation={observe}/></details>
+        : <GoalTeamLineage result={result} zh={zh} onInspect={onInspect} sessionId={sessionId} onObservation={observe}/>}
       {result.error ? <p role="alert">{result.error}</p> : null}
-      {result.status === "accepted" && !result.error && !result.recovery_required ? <details>
+      {result.status === "rejected" && result.recovery_required && !result.task_failure ? <section aria-label={zh ? "原执行需要对账" : "Original execution reconciliation"}>
+        <p>{zh ? "原执行已有持久化恢复依据，返回状态尚未同步。可沿原执行完成对账。" : "The original execution has durable recovery evidence; reconcile its pending return state."}</p>
+        <button type="button" disabled={busy} onClick={() => void read(true)}>{zh ? "恢复原执行" : "Recover original execution"}</button>
+      </section> : null}
+      {result.task_failure ? <section aria-label={zh ? "原任务验收失败" : "Original task validation failure"}>
+        <p><strong>{result.task_failure.recovery_kind === "replan_required" ? (zh ? "需要重新规划" : "Replan required") : (zh ? "需要修复原任务" : "Repair the original task")}</strong></p>
+        <p>{result.task_failure.summary}</p>
+        <p>{zh ? "先修复任务产物或验收环境，再复核原执行。此操作复用原 Host 结果；检查通过后继续原结算，可能写回状态并扣除原任务额度。它不自动修复代码。" : "Repair the artifact or validation environment, then recheck the original Host result. Passing checks continue pending settlement, including state writeback and the original quota charge. This does not edit code."}</p>
+        <button type="button" disabled={busy} onClick={() => void read(true)}>{zh ? "复核原任务" : "Revalidate original task"}</button>
+        <details><summary>{zh ? "原执行标识" : "Original execution identity"}</summary><code>{result.task_failure.turn_key}</code></details>
+      </section> : null}
+      {result.status === "accepted" && result.current_use?.state !== "unavailable" && !result.error && !result.recovery_required ? <details>
         <summary>{zh ? "本次验收依据" : "Current validation basis"}</summary>
         {result.validation ? <>
           <p>{result.validation.source === "goal_acceptance" ? (zh ? "Goal 验收规则" : "Goal acceptance rules")
@@ -136,10 +149,11 @@ export function GoalTeamEvidence({sessionId, operationId, zh, canMessage, ingres
             <p>{zh ? "检查前后保持一致的产物版本" : "Output versions unchanged across these checks"}</p>
             {checkedOutputs!.map(row => <p key={row.ref}>{row.ref}{" · "}<code>{row.sha256}</code></p>)}
           </> : <p>{zh ? "未提供与当前产物匹配的检查时间及版本记录。" : "Check time and version records matching this report are unavailable."}</p>}
+          {result.validation.oracle_checks?.map(check => <GoalOracleEvidence key={check.criterion_id} evidence={check} zh={zh}/>)}
           <code>{result.validation.basis_sha256}</code>
         </> : <p>{zh ? "此运行时未提供验收依据标识。" : "This runtime did not provide the validation basis identity."}</p>}
       </details> : null}
-      {result.status === "accepted" && !result.error && !result.recovery_required && result.artifacts?.length ? result.artifacts.map(artifact => <div key={`${artifact.ref}:${artifact.sha256}`}>
+      {result.status === "accepted" && result.current_use?.state !== "unavailable" && !result.error && !result.recovery_required && result.artifacts?.length ? result.artifacts.map(artifact => <div key={`${artifact.ref}:${artifact.sha256}`}>
         <TeamArtifactReport artifact={artifact} zh={zh}/>
         <details><summary>{zh ? "版本与来源标识" : "Version and source identifiers"}</summary>
           <code>{operationId}</code><code>{result.request_id}</code><code>{result.todo_id}</code>
