@@ -7,7 +7,12 @@ from typing import Any
 
 import pytest
 
+from loopx.control_plane.testing.doubao_model_behavior_actor import (
+    DOUBAO_2_1_PRO_MODEL,
+    DoubaoActorTransportError,
+)
 from loopx.control_plane.testing.model_tool_behavior import (
+    DoubaoExecToolClient,
     QUOTA_FIRST_TOOL_INSTRUCTION,
     scripted_exec_tool_response as _tool_response,
 )
@@ -21,6 +26,61 @@ from loopx.control_plane.testing.selected_todo_tool_behavior import (
     _execute_selected_read,
     bounded_workspace_read_plan,
 )
+
+
+def test_serial_host_rejects_a_batch_before_any_command_is_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, Any]] = []
+
+    def transport(**kwargs: Any) -> Mapping[str, Any]:
+        requests.append(json.loads(kwargs["body"]))
+        response = _tool_response("first", "printf first")
+        second = _tool_response("second", "printf second")
+        response["choices"][0]["message"]["tool_calls"].extend(
+            second["choices"][0]["message"]["tool_calls"]
+        )
+        return response
+
+    def unexpected_classification(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("a rejected batch must not reach the shell host")
+
+    monkeypatch.setattr(
+        "loopx.control_plane.testing.selected_todo_tool_behavior._classify_tool_command",
+        unexpected_classification,
+    )
+    with pytest.raises(DoubaoActorTransportError) as error:
+        DoubaoSelectedTodoToolBehaviorActor(
+            api_key="test-only-placeholder", transport=transport,
+        ).qualify(
+            qualification_id="serial-tool-host-rejects-batch",
+            fixture_root=tmp_path / "actor",
+        )
+    assert error.value.error_code == "provider_invalid_tool_call"
+    assert len(requests) == 1
+    assert requests[0]["tools"][0]["function"]["parameters"]["required"] == ["cmd"]
+    assert "at most one tool call" in requests[0]["tools"][0]["function"]["description"]
+
+
+def test_specialized_tool_preserves_the_shared_host_and_argument_contract() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def transport(**kwargs: Any) -> Mapping[str, Any]:
+        requests.append(json.loads(kwargs["body"]))
+        return _tool_response("selected", "printf selected")
+
+    client = DoubaoExecToolClient(
+        api_key="test-only-placeholder", model=DOUBAO_2_1_PRO_MODEL,
+        timeout_seconds=1, transport=transport,
+    )
+    step = client.next_step([], tool_description="Inspect the current Goal vision.")
+    tool = requests[0]["tools"][0]["function"]
+    assert tool["name"] == "exec_command"
+    assert tool["parameters"]["additionalProperties"] is False
+    assert "at most one tool call" in tool["description"]
+    assert "Inspect the current Goal vision." in tool["description"]
+    assert step.tool_call is not None
+    assert step.tool_call.command == "printf selected"
 
 
 def test_real_tool_loop_executes_action_selected_by_real_quota(

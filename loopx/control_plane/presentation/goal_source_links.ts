@@ -1,0 +1,33 @@
+/** Local organization of existing source Goals, never execution registration. */
+import type {JsonObject} from "../effect_program.ts";
+import {BARE_SHA256_PATTERN} from "../content_digest.ts";
+import {requireJsonObject, requireNonEmptyString} from "../runtime_decode.ts";
+
+export function projectGoalSourceLinks(input: JsonObject): JsonObject {
+  if (!Array.isArray(input.local_goal_ids) || !Array.isArray(input.links) || input.links.length > 32) {
+    throw new Error("Use a bounded Goal source catalog");
+  }
+  const localIds = new Set(input.local_goal_ids.map(id => requireNonEmptyString(id, "local Goal")));
+  const seen = new Set<string>();
+  const goals = input.links.flatMap(value => {
+    const link = requireJsonObject(value, "source link");
+    const goalId = requireNonEmptyString(link.goal_id, "source Goal");
+    const parent = requireNonEmptyString(link.parent_goal_id, "parent Goal");
+    const namespace = requireNonEmptyString(link.namespace, "source namespace");
+    const label = requireNonEmptyString(link.label, "source label");
+    if (!BARE_SHA256_PATTERN.test(namespace)) {
+      throw new Error("Invalid source identity");
+    }
+    // Parent lifecycle is owned elsewhere. A retained reference must not
+    // make unrelated local/source Goals unreadable after its parent leaves.
+    if (!localIds.has(parent) || localIds.has(goalId)) return [];
+    if (seen.has(goalId)) {
+      throw new Error("Source Goals need an existing local parent and an unambiguous original identity");
+    }
+    seen.add(goalId);
+    return [{id: goalId, parent_goal_id: parent, display_name: label,
+      registry_member: true, activation_state: "active",
+      source_access: {namespace, label, read_only: true}}];
+  });
+  return {goals};
+}

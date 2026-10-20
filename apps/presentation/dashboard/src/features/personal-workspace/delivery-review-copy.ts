@@ -13,7 +13,7 @@ export const goalAcceptanceContractCopy = {
     operation: "Verification reference", verificationScope: "Verification scope", allCriteria: "All contract criteria", passed: "Passed", failed: "Failed", exitCode: "Exit code",
     oracleChecker: "Owner-pinned checker", oracleSourceDigest: "Source digest", oracleCheckedAt: "Checked at", oracleInputVersions: "Input versions", oracleOutputVersions: "Output versions",
     oracleState: {current: "Current versions checked", recorded: "Recorded; current versions not checked", stale: "Source or versions changed; check again", failed: "Checks failed; repair the delivery before checking again", unverified: "Not checked", unavailable: "Evidence unavailable"},
-    help: "Setup and readback", guide: "Check setup guide (v0)", guidance: "The Agent can prepare a plan for review without running it. Existing technical contracts can also be imported here or managed through CLI configure/verify/disable. Saving does not run commands. Disabling retains historical evidence.",
+    help: "Setup and readback", guide: "Check setup guide (v0)", guidance: "The Agent can prepare a plan for review without running it. Existing technical contracts can also be imported here or managed through CLI configure/verify/clear-checks. Saving does not run commands. Removing check configuration retains history and default outcome review.",
   },
   "zh-CN": {
     title: "交付检查", boundary: "产物检查不等于独立复核、实际采用或 Goal 完成。",
@@ -27,7 +27,7 @@ export const goalAcceptanceContractCopy = {
     operation: "验证引用", verificationScope: "验证范围", allCriteria: "全部合同条件", passed: "通过", failed: "失败", exitCode: "退出码",
     oracleChecker: "负责人指定的版本固定检查器", oracleSourceDigest: "来源摘要", oracleCheckedAt: "检查时间", oracleInputVersions: "输入版本", oracleOutputVersions: "输出版本",
     oracleState: {current: "当前版本已核对", recorded: "历史结果，当前版本未核对", stale: "来源或版本已变化，请重新检查", failed: "检查失败；修复交付物后可再次检查", unverified: "尚未检查", unavailable: "证据不可用"},
-    help: "配置与读回", guide: "检查配置指南（v0）", guidance: "Agent 可先准备方案供你核对，准备不会运行检查。已有技术合同也可在这里导入，或通过 CLI configure/verify/disable 管理。保存不执行命令，停用保留历史依据。",
+    help: "配置与读回", guide: "检查配置指南（v0）", guidance: "Agent 可先准备方案供你核对，准备不会运行检查。已有技术合同也可在这里导入，或通过 CLI configure/verify/clear-checks 管理。保存不执行命令，移除检查配置后仍保留历史依据与默认成果核对。",
   },
 };
 export type GoalAcceptanceContractCopy = typeof goalAcceptanceContractCopy.en;

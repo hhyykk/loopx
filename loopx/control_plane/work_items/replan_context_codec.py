@@ -1,6 +1,8 @@
 """Scoped source codec for the TypeScript-owned replan evidence view."""
 from __future__ import annotations
 
+from ..goals.acceptance_readback import configured_checks
+
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 import hashlib
@@ -145,7 +147,7 @@ def goal_context_facts(status: Mapping[str, Any] | None, goal_id: str, acceptanc
                 metadata, _ = split_state_frontmatter(state)
                 objective = active_state_section_text(state, "Objective") or metadata.get("objective")
                 facts["active_state_objective"] = goal_text(objective)
-    if acceptance and acceptance.get("enabled") is True:
+    if acceptance and configured_checks(acceptance) is not None:
         # This is the acceptance owner's public projection, including its scope.
         # It must never be mistaken for the whole Goal's original objective.
         facts["acceptance_contract"] = {key: acceptance[key] for key in (

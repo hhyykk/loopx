@@ -409,6 +409,63 @@ three affected JSON surfaces; dense-to-dense changes retain ordinary limits.
 
 ### Native fixture qualification
 
+The current outcome rollout also affects the complete thin body and emitted
+JSON, measured independently. On the same public CLI fixture at main
+`4f6e20a13`, normalized body characters are 3,306 before / 3,829 after; the
+supported 320-character scope is 3,595 / 4,118. The thin body ceiling becomes
+4,200 instead of the original outcome proposal's insufficient 3,700. Final
+emitted JSON measures 4,172 normally and 4,461 with that scope; its ceiling
+becomes 4,500, leaving 39 characters at the latter boundary. Standard Markdown
+is 6,076 characters / 65 lines under the unchanged 6,200 / 72 limits. The body
+retains 82 characters of scoped headroom. Full scope and all authority,
+continuation, outcome and settlement instructions remain intact.
+
+The 96-row real base/head matrix initially fails 12 heartbeat rows: +523
+characters for brief/compact/full and +524 for thin because the overflow flag
+changed. With the thin body repaired, its prose growth is also +523. The
+existing differential observer records the full frozen pre-outcome rule and
+all added outcome clauses, granting at most 544 characters/bytes on those four
+heartbeat carriers only for their observed first transition. Partial or missing
+clauses, already-upgraded bases, other surfaces and excess growth still fail;
+line/shape/semantic-key and absolute limits remain independent.
+
+成果默认闭环还影响 thin 完整正文和实际 JSON，两层分别测量。同一公开 CLI fixture
+在 main `4f6e20a13` 上，归一化正文新增前后为 3,306／3,829 字符，受支持的
+320 字符 scope 为 3,595／4,118。thin 正文上限从成果原提案不足的 3,700 调至
+4,200；最终实际 JSON 普通为 4,172、带该 scope 为 4,461，上限调至 4,500，
+后者余量 39 字符。普通 Markdown 为 6,076 字符／65 行，沿用 6,200／72 上限；
+scope 正文余量为 82。范围、权限、续行、成果和结算指令全部保留。
+
+96 行真实 base/head 矩阵最初在 12 行 heartbeat 输出失败：brief／compact／full
+增加 523 字符，thin 因超限标志变化增加 524；正文修复后 thin 的指令增长同样为
+523。既有差分观察器记录完整冻结旧规则及全部新增条款，只在四类 heartbeat 输出
+首次观察到这项迁移时允许最多 544 字符／字节。缺失或部分条款、已升级基线、其他
+表面和超额增长仍失败；行数、结构、语义键和绝对上限分别保持约束。
+
+The persistent outcome guidance adds 523 characters to the complete heartbeat
+rule without deleting earlier instructions. On the unchanged real brief fixture
+with a 128-character root, main `4f6e20a13` emits 10,260 JSON / 8,559 Markdown
+characters; the outcome candidate emits 10,783 / 9,082. Both fail the former
+10,500 / 9,000 output ceilings. The initial outcome qualification used brief
+characterization ceilings of 11,100 / 9,600, retaining 317 / 518 characters of
+headroom and the existing 58 / 115 line limits. These clauses preserve cumulative
+requirements, evidence
+review and the distinction between supporting outcomes and root completion.
+They serve different decisions from existing continuation/settlement guidance;
+full executable paths and requirements remain intact. Other output modes,
+machine envelopes, execution quota and permission are separate contracts.
+Retain the historical overflows; this is measured presentation growth, not an
+efficiency claim or an expansion of model/execution allowance.
+
+持久成果指导给完整 heartbeat 规则增加 523 字符，旧条款全部保留。同一 128 字符
+根路径的真实 brief fixture，在 main `4f6e20a13` 为 JSON 10,260／Markdown
+8,559 字符，成果候选为 10,783／9,082，均超过旧 10,500／9,000 输出上限。
+最初的成果资格检查只把 brief 展示上限调至 11,100／9,600，保留 317／518 字符余量
+及原 58／115 行上限。新增条款指导保留累积要求、有据自查和区分支撑成果与根目标完成，与已有
+续行／结算指导分别服务不同决定；完整命令路径和要求不删减。其他模式、机器
+envelope、执行配额和权限另有合同。保留原始超限，不宣称效率提升或模型／执行
+额度扩张。
+
 The probe and its historical base share the current physical fixture-root owner:
 POSIX retains `/tmp/loopx-cli-budget-…`; Windows uses an owned directory in its
 native temporary root, without requiring a drive-root `tmp` directory. Implicit
@@ -440,12 +497,41 @@ roots with 7, 13 and 19 separators emit 10,482, 10,602 and 10,722 JSON character
 Markdown remains 8,579 characters / 94 lines. Replacing only each owned root
 produces identical complete JSON payloads and Markdown; the extra escaping
 cost preserves the same executable routes. Hosted main and candidate both
-fail the previous 10,500 ceiling at 10,522 characters. The brief JSON ceiling
-is now 10,800; Markdown's 9,000 ceiling, line limits, body budgets and other
-modes remain unchanged. This qualifies the measured layouts, not arbitrary
+fail the previous 10,500 ceiling at 10,522 characters. That path-only
+qualification raised the brief JSON ceiling to 10,800 and kept Markdown's
+9,000 ceiling. The combined characterization ceilings are 11,400 / 9,600,
+applying the outcome qualification's 600-character allowance to those native
+path ceilings. This retains the already measured 523-character content delta
+and the native escaping allowance; it is budget composition, not a new native
+Windows measurement. Line limits, body budgets and other modes retain their
+separate contracts. The native measurements qualify those layouts, not arbitrary
 path topology. The depth regression enforces raw output sizes; root replacement
 is used only for semantic comparison. If the native namespace cannot fit the
 depth-12 workload, that comparison reports a skip without shortening its root.
+
+Windows 原生路径资格检查把 brief JSON 上限调至 10,800，Markdown 仍为 9,000。
+组合后分别叠加成果指导已资格化的 600 字符余量，展示上限为 11,400／9,600，
+同时保留已测 523 字符内容增量和路径转义余量。这是两项预算的组合，不能作为
+新的 Windows 原生实测；原始路径测量、行数和语义检查仍保留其各自边界。
+
+The frozen 128-character Windows-spelling fixture was also compared on main
+`b5a1a816a` and the rebased outcome candidate without changing its routes.
+The body grows from 5,556 to 6,079 characters and Markdown from 8,579 to 9,102:
+the only body change is the complete 523-character outcome paragraph. JSON
+grows from 10,522 to 11,010, including the existing 35-character saving from
+omitting absent brief metadata. It fits the already qualified 11,400 / 9,600
+ceilings; no new allowance or shortened instruction is introduced. The earlier
+test still pinned the pre-outcome hashes and old ceilings and failed on that
+transition. Its hashes now pin the complete reviewed output. This portable
+synthetic fixture does not replace native Windows qualification.
+
+同一个冻结的 128 字符 Windows 拼写 fixture，在 main `b5a1a816a` 与 rebase 后的
+成果候选上保持全部路由不变。正文从 5,556 增至 6,079，Markdown 从 8,579 增至
+9,102，正文唯一变化是完整的 523 字符成果指导。JSON 从 10,522 增至 11,010，
+其中包括既有 brief 省略空元数据所节约的 35 字符。沿用已资格化的
+11,400／9,600 上限，不新增余量或删短指令。旧测试仍固定在成果指导之前的
+hash 与旧上限，因而失败；现将 hash 绑定到完整审阅输出。该跨平台 synthetic
+fixture 不能代替原生 Windows 资格检查。
 
 Windows qualification can use the existing explicit canary time budget:
 

@@ -1,17 +1,18 @@
-import {useEffect, useState} from "react";
+import {useEffect, useRef, useState} from "react";
 import {connectPrivateConversation, disconnectPrivateConversation, fetchPrivateConversations,
-  changePrivateAgentTarget, changeOwnerNotifications, fetchChatProjects, fetchChatCapabilities, fetchLarkApps, fetchLarkGroupChats, type PrivateConversation,
+  changePrivateAgentTarget, changeOwnerNotifications, fetchChatProjects, fetchChatCapabilities, fetchLarkGroupChats, type PrivateConversation,
+  discoverBoundChatSession, type BoundConversationTarget,
   type ChatProject, type LarkApp, type PrivateConversationStopRecovery} from "../../data/chat";
 import {useWorkspaceI18n} from "./i18n";
 import "./private-conversation.css";
 
-export function PrivateConversationPanel() {
+export function PrivateConversationPanel({apps, onOpenOriginal}: {apps: LarkApp[]; onOpenOriginal?: (target: BoundConversationTarget) => void}) {
   const {locale} = useWorkspaceI18n();
   const zh = locale === "zh-CN";
-  const [apps, setApps] = useState<LarkApp[]>([]);
   const [projects, setProjects] = useState<ChatProject[]>([]);
   const [executors, setExecutors] = useState<string[]>([]);
   const [rows, setRows] = useState<PrivateConversation[]>([]);
+  const [connectionsLoading, setConnectionsLoading] = useState(true);
   const [recoveries, setRecoveries] = useState<PrivateConversationStopRecovery[]>([]);
   const [revision, setRevision] = useState(0);
   const [app, setApp] = useState("");
@@ -27,6 +28,20 @@ export function PrivateConversationPanel() {
   const [projectGrant, setProjectGrant] = useState<"workspace_read" | "workspace_write">("workspace_write");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
+  const openController = useRef<AbortController | null>(null);
+  useEffect(() => () => openController.current?.abort(), []);
+  async function openOriginal(bindingId: string) {
+    setOpening(bindingId); setError("");
+    const controller = new AbortController();
+    openController.current?.abort(); openController.current = controller;
+    try {
+      const session = await discoverBoundChatSession(bindingId, AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]));
+      if (controller.signal.aborted) return;
+      onOpenOriginal?.({ bindingId, sessionId: session.session_id });
+    } catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { if (!controller.signal.aborted) setOpening(null); }
+  }
 
   async function refresh() {
     const state = await fetchPrivateConversations();
@@ -34,20 +49,26 @@ export function PrivateConversationPanel() {
   }
   useEffect(() => {
     let active = true;
-    Promise.all([fetchLarkApps(), fetchChatProjects(), fetchChatCapabilities(), fetchPrivateConversations()])
-      .then(([apps, projects, capabilities, state]) => {
-        if (!active) return;
-        setApps(apps.filter(app => app.ready && app.app_ref !== "default"));
-        setProjects(projects.projects);
-        const choices = (capabilities.adapters ?? []).filter(row => row.available).map(row => row.agent_id);
-        setExecutors(choices); setExecutor(choices.includes("codex") ? "codex" : choices[0] ?? "");
-        if (projects.projects.length === 1) setProject(projects.projects[0].project_ref);
-        setRows(state.connections); setRecoveries(state.stop_recoveries); setRevision(state.revision);
-      }).catch(error => {if (active) setError(String(error));});
-    const timer = setInterval(() => {fetchPrivateConversations().then(state => {
-      if (active) {setRows(state.connections); setRecoveries(state.stop_recoveries); setRevision(state.revision);}
-    }).catch(() => {});}, 5000);
-    return () => {active = false; clearInterval(timer);};
+    const failed = (error: unknown) => {if (active) setError(String(error));};
+    // Existing conversations do not wait for credential/configuration catalogs.
+    void fetchChatProjects().then(projects => {if (active) {
+      setProjects(projects.projects);
+      if (projects.projects.length === 1) setProject(projects.projects[0].project_ref);
+    }}).catch(failed);
+    void fetchChatCapabilities().then(capabilities => {if (active) {
+      const choices = (capabilities.adapters ?? []).filter(row => row.available).map(row => row.agent_id);
+      setExecutors(choices); setExecutor(choices.includes("codex") ? "codex" : choices[0] ?? "");
+    }}).catch(failed);
+    let timer: ReturnType<typeof setTimeout>;
+    async function readConnections() {
+      try {
+        const state = await fetchPrivateConversations(AbortSignal.timeout(5000));
+        if (active) {setRows(state.connections); setRecoveries(state.stop_recoveries); setRevision(state.revision);}
+      } catch (error) {failed(error);}
+      finally {if (active) {setConnectionsLoading(false); timer = setTimeout(() => void readConnections(), 5000);}}
+    }
+    void readConnections();
+    return () => {active = false; clearTimeout(timer);};
   }, []);
 
   useEffect(() => {
@@ -97,6 +118,9 @@ export function PrivateConversationPanel() {
     <p>{zh ? "每个 App 单独核验本人。项目助手默认支持工作区读写，按项目规则与 skills 执行编辑；可选只读。普通聊天不创建隐藏 Goal。本人管家默认读取本机已注册的 Goal 与 Agent；没有注册工作时显示空态。旧连接保留原范围，需明确升级授权。交办不提升执行或发布权限。" : "Verify the owner independently for each App. Project Chat defaults to workspace writes under project rules and skills; read-only remains available without hidden Goals. A personal steward defaults to the registered local Goals and Agents, including an honest empty state. Existing connections retain their scope until explicitly upgraded. Handoff does not elevate execution or publishing permissions."}</p>
     {rows.map(row => <article key={row.binding_id}>
       <strong>{row.app_ref} · {row.context_available ? row.project_title : (zh ? "工作区不可用" : "Workspace unavailable")}</strong>
+      {onOpenOriginal && row.audience === "owner" ? <button type="button" disabled={!row.context_available || opening !== null}
+        onClick={() => void openOriginal(row.binding_id)}>{opening === row.binding_id
+          ? (zh ? "正在打开…" : "Opening…") : (zh ? "继续原会话" : "Continue original conversation")}</button> : null}
       <p>{row.context_kind === "steward" ? (row.goal_scope === "all_registered"
         ? (zh ? `LoopX 管家 · 全部已注册工作 · ${row.goal_count} 个 Goal` : `LoopX steward · All registered work · ${row.goal_count} Goals`)
         : (zh ? `LoopX 管家 · 已选范围 · ${row.goal_count} 个 Goal` : `LoopX steward · Selected scope · ${row.goal_count} Goals`)) : (row.grant === "workspace_write" ? (zh ? "普通项目助手 · 已授权工作区读写" : "Project assistant · Workspace writes authorized") : (zh ? "普通项目助手 · 只读对话" : "Project assistant · Read-only Chat"))}</p>
@@ -140,7 +164,9 @@ export function PrivateConversationPanel() {
       <p role="alert">{zh ? `授权已撤销；${row.pending_count} 项执行尚未确认停止。重试只停止此旧授权的工作，不恢复授权，也不影响新连接。` : `Access is revoked; ${row.pending_count} executions have not confirmed stop. Retry stops only this previous grant's work, without restoring access or affecting the new connection.`}</p>
       <button disabled={busy} onClick={() => void act(() => disconnectPrivateConversation(row.binding_id, revision))} type="button">{zh ? "重试停止旧授权任务" : "Retry stop for previous grant"}</button>
     </article>)}
-    {rows.length === 0 ? <p>{zh ? "尚未连接助手。" : "No assistant connected."}</p> : null}
+    {rows.length === 0 ? <p>{connectionsLoading ? (zh ? "正在读取已有连接…" : "Reading existing connections…")
+      : error ? (zh ? "连接读取暂不可用，请刷新重试。" : "Connections unavailable. Refresh to retry.")
+      : (zh ? "尚未连接助手。" : "No assistant connected.")}</p> : null}
     <label>App<select aria-label={zh ? "助手 App" : "Assistant App"} value={app} disabled={busy} onChange={event => selectApp(event.target.value)}>
       <option value="">{zh ? "选择已验证 App" : "Select a verified App"}</option>
       {apps.map(app => <option key={app.app_ref} value={app.app_ref}>{app.label} · {app.app_ref}</option>)}
@@ -177,7 +203,7 @@ export function PrivateConversationPanel() {
       <option value="workspace_write" disabled={projects.find(item => item.project_ref === project)?.grant === "workspace_read"}>{zh ? "工作区读写（默认）" : "Workspace writes (default)"}</option>
     </select></label> : null}
     {role === "project" && effectiveProjectGrant === "workspace_write" ? <p role="status">{zh ? "此 App 可按你的指令编辑选定工作区；不提高已直连 Agent 的原宿主权限。更改权限会建立新绑定和新会话，旧会话不会自动提升权限，已有 Agent 直连需重新授权。" : "This App may edit the selected workspace on your instruction; attached Agents retain their original host permissions. Changing access creates a new binding and Session. Existing Chat does not gain access and Agent targets require new authorization."}</p> : null}
-    <div className="personal-detail-actions"><button disabled={busy || !app || !project || !executor || (audience === "group" && (loadingGroups || groupIds.length === 0 || groupIds.length > 16))} onClick={() => void act(() => connectPrivateConversation(app, project, executor, role, role === "project" ? effectiveProjectGrant : "workspace_read", audience === "group" ? groupIds : undefined))} type="button">
+    <div className="personal-detail-actions"><button disabled={busy || !apps.some(item => item.app_ref === app && item.ready) || !project || !executor || (audience === "group" && (loadingGroups || groupIds.length === 0 || groupIds.length > 16))} onClick={() => void act(() => connectPrivateConversation(app, project, executor, role, role === "project" ? effectiveProjectGrant : "workspace_read", audience === "group" ? groupIds : undefined))} type="button">
       {busy ? (zh ? "正在核验" : "Verifying") : (audience === "group" ? (zh ? "连接指定群话题" : "Connect selected group topics") : (zh ? "连接本人私聊" : "Connect owner private Chat"))}</button>
       <button disabled={busy} onClick={() => void act(refresh)} type="button">{zh ? "刷新状态" : "Refresh status"}</button></div>
     <p>{zh ? "发送文字、图片或图文消息开始；后续消息进入原会话队列。/status 查看工作区、角色与持久排队状态，/help 查看用法与解绑入口，/stop 停止当前聊天执行，/new 开启新会话。文件、音视频、附在控制命令或已选择 Agent 上的图片会明确提示暂不支持。" : "Send text, images or image/text posts to begin; follow-ups queue in the same Session. /status shows the workspace, role and durable queue, /help explains commands and where to unbind, /stop stops the current Chat Turn, /new starts a new conversation. Files, audio/video, and images sent with control commands or to a selected attached Agent receive an explicit unsupported response."}</p>

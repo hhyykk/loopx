@@ -68,6 +68,69 @@ def test_existing_symlink_is_not_followed(tmp_path):
 
 
 @pytest.mark.parametrize('provider', ['file', 'sqlite'])
+def test_real_cli_boundary_clauses_reach_shared_host_without_loss(tmp_path, monkeypatch, provider):
+    from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+    from loopx.control_plane.turn_driver.host_candidate import extract_turn_authority, render_prompt
+    from tests.control_plane.canonical_authority_fixture import (
+        initialize_canonical_authority, isolate_sqlite_runtime,
+    )
+    from tests.control_plane.test_quota_settlement_cli import _spend_run_count
+
+    isolate_sqlite_runtime(tmp_path, monkeypatch)
+    project, runtime, registry = _write_fixture(tmp_path)
+    state = _configure_read_only_todo(project)
+    scopes = [f'public/surface/{i}/**' for i in range(19)] + [
+        'public/' + 'nested/' * 30 + 'two  spaces/**', 'tests/**',
+    ]
+    guards = [f'Preserve evidence {i}' for i in range(9)] + [
+        'Keep the complete original evidence.\n' * 12 + 'Stop before publishing private material.',
+    ]
+    configured = json.loads(registry.read_text())
+    goal = configured['goals'][0]
+    goal['coordination'].update(write_scope=scopes, requires_parent_approval=['publish', 'production-action'])
+    goal['guards'] = guards
+    registry.write_text(json.dumps(configured))
+    code, listed = _run_cli(registry, runtime, 'todo', 'list', '--goal-id', GOAL_ID)
+    assert code == 0, listed
+    projection = build_todo_runtime_shadow_projection(
+        goal_id=GOAL_ID, handoff_mode='soft_claim', todos=listed['todos'],
+    )
+    initialize_canonical_authority(runtime, GOAL_ID, projection, state_path=state, provider=provider)
+    args = ['quota', 'should-run', '--goal-id', GOAL_ID, '--agent-id', AGENT_ID,
+            '--todo-id', TODO_ID, '--turn-instance-id', TURN_ID, '--codex-app',
+            '--available-capability', 'shell', '--available-capability', 'filesystem_read']
+    capture = tmp_path / 'boundary-decision'
+    code, envelope = _run_cli(registry, runtime, *args, '--turn-envelope', '--decision-output-dir', str(capture))
+    assert code == 0, envelope
+    saved = capture / 'decision.json'
+    original_bytes = saved.read_bytes()
+    full = json.loads(original_bytes)
+    assert full['goal_boundary']['write_scope'] == scopes
+    assert full['goal_boundary']['guards'] == guards
+    for field in ('write_scope', 'guards', 'requires_parent_approval'):
+        assert envelope['boundary'][field] == full['goal_boundary'][field], field
+    authority = extract_turn_authority({'turn_envelope': envelope})
+    assert authority['write_scope'] == scopes
+    assert authority['boundary']['guards'] == guards
+    assert authority['boundary']['requires_parent_approval'] == ['publish', 'production-action']
+    assert 'write_scope' not in authority['boundary']  # Existing aliases carry these facts once.
+    prompt = render_prompt(authority)
+    transported, _ = json.JSONDecoder().raw_decode(prompt.split('Turn authority JSON:\n', 1)[1])
+    assert transported == authority
+    altered = json.loads(json.dumps(envelope))
+    altered['boundary']['guards'][-1] = 'Continue without the final restriction.'
+    with pytest.raises(ValueError, match='action signature'):
+        extract_turn_authority({'turn_envelope': altered})
+    before = _heartbeat_receipt_count(runtime, TURN_ID)
+    code, replay = _run_cli(registry, runtime, *args)
+    assert code == 0, replay
+    assert _heartbeat_receipt_count(runtime, TURN_ID) == before
+    assert _spend_run_count(runtime) == 0
+    assert saved.read_bytes() == original_bytes
+    assert envelope['action']['delivery_allowed'] == full['interaction_contract']['agent_channel']['delivery_allowed']
+
+
+@pytest.mark.parametrize('provider', ['file', 'sqlite'])
 def test_real_guard_saved_before_envelope_and_read_without_reexecution(tmp_path, monkeypatch, provider):
     from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
     from tests.control_plane.canonical_authority_fixture import (

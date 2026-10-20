@@ -14,6 +14,7 @@ import {evaluateTodoSuccession, validateTodoSuccession, SUCCESSION_FACT_COLUMNS,
 import {projectTodoSummary, TODO_SUMMARY_PROJECTION_COLUMNS} from "./summary_projection.ts";
 import {projectTodoHandoffContext} from "./handoff_projection.ts";
 import {projectStandingDecisions} from "./standing_decision.ts";
+import {configuredGoalChecks} from "../goals/acceptance_contract.ts";
 import codec from "./read_legacy_codec.json" with {type: "json"};
 
 export const TODO_READ_REQUEST = "todo_read_request_v0";
@@ -203,12 +204,13 @@ export async function projectCanonicalTodoFields(input: JsonObject): Promise<Jso
   const all = input.presentation_ready === true ? original : canonicalTodoReadItems(original);
   const archived = new Set(all.filter(row => row.archive_state === "archive").map(row => row.todo_id));
   const acceptance = object(input.goal_acceptance_contract), guards = object(input.goal_acceptance_work_guards);
+  const checksConfigured = configuredGoalChecks(acceptance) !== null;
   const fields: JsonObject = {}, evaluations: JsonObject = {};
   for (const role of ["user", "agent"]) {
     const section = role === "agent" ? "Agent Todo" : "User Todo / Owner Review Reading Queue";
     const items = all.filter(row => (row.role === "user" ? "user" : "agent") === role && (input.retained === true || !archived.has(row.todo_id)))
       .map(row => structureCanonicalTodo({...row,
-        ...(input.retained !== true && acceptance.enabled === true && guards[text(row.todo_id)] ? {goal_acceptance_guard: guards[text(row.todo_id)]} : {})}, role, section,
+        ...(input.retained !== true && checksConfigured && guards[text(row.todo_id)] ? {goal_acceptance_guard: guards[text(row.todo_id)]} : {})}, role, section,
         input.retained === true ? null : 500, input.retained !== true));
     const lineage = Array.isArray(input.lineage) ? input.lineage.map(value => requireJsonObject(value, "Todo lineage")) : all;
     const grouped = await projectTodoReadGroup({...input, items, lineage, evaluated: false, role, source_section: section,
@@ -217,7 +219,7 @@ export async function projectCanonicalTodoFields(input: JsonObject): Promise<Jso
     if (grouped.rejection) return grouped;
     const summary = requireJsonObject(grouped.summary, "canonical Todo summary");
     if (role === "agent" && input.retained !== true) {
-      if (acceptance.enabled === true) summary.goal_acceptance_contract = acceptance;
+      if (checksConfigured || Object.keys(object(acceptance.outcome_requirements)).length) summary.goal_acceptance_contract = acceptance;
       const done = all.filter(row => archived.has(row.todo_id) && row.done === true && taskClass(row) === "advancement_task").length;
       if (done) {summary.archived_advancement_done_count = done; summary.advancement_done_count = Number(summary.advancement_done_count || 0) + done;}
     }
@@ -249,6 +251,9 @@ export async function selectTodoReadFields(input: JsonObject): Promise<JsonObjec
         selection: {role, status: input.status ?? null, todo_id: input.todo_id ?? null, agent_id: input.agent_id ?? null}});
       if (projected.rejection) return projected;
       if ((projected.items as unknown[]).length) summary = requireJsonObject(projected.summary, "selected Todo summary");
+    }
+    if (raw.goal_acceptance_contract && typeof raw.goal_acceptance_contract === "object") {
+      summary.goal_acceptance_contract = raw.goal_acceptance_contract;
     }
     if (input.limit != null) summary = compactTodoReadSummary(summary, role, Number(input.limit));
     summaries[key] = summary;

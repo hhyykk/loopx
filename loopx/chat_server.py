@@ -101,6 +101,7 @@ from .extensions.runtime import (
 from .chat_completed_todos import CompletedTodoPages, CompletedTodoRequestMixin
 from .presentation.explore_results_api import ExploreResultsRequestMixin
 from .presentation.research_analysis_api import RESEARCH_ANALYSIS_PATH, ResearchAnalysisRequestMixin
+from .presentation.goal_source_routing import GOAL_SOURCE_LINKS_PATH, GoalSourceRequestMixin
 from .chat_todo_detail import TodoDetailRequestMixin
 from .kiro_cli_goal_mode import KIRO_CLI_BIN
 from .paths import resolve_runtime_root
@@ -494,6 +495,7 @@ class ChatHTTPServer(ThreadingHTTPServer):
 
 
 class ChatRequestHandler(
+    GoalSourceRequestMixin,
     GoalAcceptanceRequestMixin,
     ZCodeGoalRequestMixin,
     PrivateConversationRequestMixin,
@@ -1599,6 +1601,7 @@ class ChatRequestHandler(
                 }
             )
         get_dispatch: dict[str, Callable[[], None]] = {
+            GOAL_SOURCE_LINKS_PATH: self._goal_source_links,
             "/api/chat/todo/detail": self._todo_detail,
             "/api/chat/completed-todos": self._completed_todos,
             "/api/chat/goal-results": self._goal_results,
@@ -1652,6 +1655,7 @@ class ChatRequestHandler(
         if self._dispatch_zcode_goal(path, apply=True):
             return
         post_dispatch: dict[str, Callable[[], None]] = {
+            GOAL_SOURCE_LINKS_PATH: self._goal_source_links,
             RESEARCH_ANALYSIS_PATH: self._research_analysis_write,
             RESEARCH_ANALYSIS_PATH + "/cancel": self._research_analysis_write,
             CHAT_SESSIONS_PATH: self._create_session,
@@ -1813,7 +1817,8 @@ def serve_chat(
         return authorized_manager_goal_ids(
             build_lark_goal_topic_runtime_snapshot(
                 registry_path=server.registry_path, runtime_root_override=server.runtime_root_override,
-            ), session, runtime_root=runtime_root, registry_path=resolved_registry_path,
+            ), session, runtime_root=server.runtime_controller.coordination_runtime_root,
+            registry_path=resolved_registry_path, executor_runtime_root=runtime_root,
         )
 
     server.runtime_controller = ChatRuntimeController(

@@ -238,22 +238,20 @@ def turn_start_hook(
     def produce():
         nonlocal snapshot
         try:
-            from ...control_plane.collaboration.turn_context_observation import read_delegation_turn_context
+            from ...control_plane.collaboration.inbox import read_inbox_transaction
+            from ...control_plane.collaboration.inbox import _pending_result
 
-            snapshot = read_delegation_turn_context(runtime_root, registry_path, goal_id, agent_id,
-                read_command=command)
-            agenda = snapshot["unfinished_delegations"]
             with collaboration_goal_scope(
-                registry_path,
-                goal_id=goal_id,
-                agents=(agent_id,),
+                registry_path, goal_id=goal_id, agents=(agent_id,),
             ) as goal_scope:
-                inbox = pending(
-                    runtime_root,
-                    goal_id,
-                    agent_id,
-                    scope=goal_scope,
-                )
+                observed = read_inbox_transaction(runtime_root, {
+                    "operation": "turn_start", "goal_id": goal_id, "agent_id": agent_id,
+                    "read_command": command,
+                }, scope=goal_scope)
+                observed.update(goal_id=goal_id, agent_id=agent_id)
+                inbox = _pending_result(runtime_root, observed, goal_scope, None)
+            snapshot = observed["context"]
+            agenda = snapshot["unfinished_delegations"]
             count = (
                 max(len(inbox["items"]), agenda["incoming_count"])
                 + max(len(inbox.get("peer_returns", {}).get("items", [])), agenda["outgoing_count"])

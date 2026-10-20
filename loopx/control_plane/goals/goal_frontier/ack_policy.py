@@ -185,6 +185,7 @@ def replan_successor_transition_ack(
         "schema_version": "autonomous_replan_ack_v0",
         "recorded": True,
         "source": "todo_replan_successor_transition",
+        "agent_id": safe_agent_id,
         "generated_at": successor.get("updated_at"),
         "semantic_delta": semantic_delta,
     }

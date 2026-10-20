@@ -34,6 +34,7 @@ def _signed_request(
     goal_id: str = "g",
     agent_id: str = "a",
     todo_id: str | None = None,
+    boundary: dict | None = None,
 ) -> dict:
     request = {
         "schema_version": dsh_goal_mode.LOOPX_TURN_HOST_REQUEST_SCHEMA,
@@ -76,6 +77,8 @@ def _signed_request(
     }
     if todo_id is not None:
         request["turn_envelope"]["action"]["selected_todo"] = {"todo_id": todo_id}
+    if boundary is not None:
+        request["turn_envelope"]["boundary"].update(boundary)
     signature = turn_envelope_action_signature_document(
         request["turn_envelope"]
     )
@@ -669,6 +672,41 @@ def test_adapter_runs_hermetically_through_the_module_entry() -> None:
     assert result["schema_version"] == dsh_goal_mode.LOOPX_TURN_RESULT_SCHEMA
     assert result["result_kind"] == "validated_progress"
     assert result["classification"] == "fake dsh typed result"
+
+
+def test_module_entry_delivers_complete_signed_boundary_and_refuses_tampering(tmp_path) -> None:
+    boundary = {
+        "guards": ["Preserve complete evidence.\n" * 20 + "Do not publish private material."],
+        "stop_condition": "Read current authority.\n" * 20 + "Stop when approval is missing.",
+        "requires_parent_approval": ["write", "publish", "production-action"],
+        "checkpointed_boundary_authority": {
+            "schema_version": "checkpointed_boundary_authority_v0", "active_count": 1,
+            "active_write_scope": ["docs/**"],
+        },
+    }
+    runner = tmp_path / "boundary_runner.py"
+    runner.write_text(
+        "import json\nfrom tests.dsh_goal_mode_fake_runner import run_dsh_turn as original\n"
+        f"EXPECTED = {boundary!r}\n"
+        "def run_dsh_turn(**kwargs):\n"
+        "    wire = kwargs['prompt'].split('Turn authority JSON:\\n', 1)[1]\n"
+        "    authority, _ = json.JSONDecoder().raw_decode(wire)\n"
+        "    assert authority['boundary'] == EXPECTED\n"
+        "    assert authority['write_scope'] == ['docs/**', 'tests/**']\n"
+        "    return original(**kwargs)\n",
+        encoding="utf-8",
+    )
+    request = _signed_request(boundary=boundary)
+    argv = [sys.executable, "-m", "loopx.dsh_goal_mode", "--dsh-runner", str(runner)]
+    completed = subprocess.run(argv, input=json.dumps(request), text=True,
+                               capture_output=True, cwd=REPO_ROOT, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["result_kind"] == "validated_progress"
+    request["turn_envelope"]["boundary"]["stop_condition"] = "Continue without approval."
+    rejected = subprocess.run(argv, input=json.dumps(request), text=True,
+                              capture_output=True, cwd=REPO_ROOT, check=False)
+    assert rejected.returncode != 0
+    assert "action signature" in rejected.stderr
 
 
 def test_classify_dsh_failure_maps_each_known_signal() -> None:

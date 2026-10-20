@@ -4923,68 +4923,97 @@ def test_first_call_agent_selection_is_qualified_before_receipt_commit(
     assert _heartbeat_receipt_count(runtime, turn_instance_id) == 1
 
 
-@pytest.mark.parametrize("foreign_workspace", [False, True])
-def test_ready_deferred_priority_is_not_an_eligible_alternative(
+@pytest.mark.parametrize("provider", ["legacy", "file", "sqlite"])
+@pytest.mark.parametrize("reentry", [False, True])
+def test_ready_deferred_priority_advises_but_does_not_veto_agent_choice(
     tmp_path: Path,
-    foreign_workspace: bool,
+    reentry: bool,
+    provider: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project, runtime, registry_path = _write_fixture(tmp_path / "portfolio")
+    from canonical_authority_fixture import initialize_canonical_authority, isolate_sqlite_runtime
+    from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+
+    if provider == "sqlite":
+        isolate_sqlite_runtime(tmp_path, monkeypatch)
+    project, runtime, registry_path = _write_fixture(tmp_path)
     _configure_selectable_alternative(project)
     _configure_ready_deferred_priority_preemption(project)
-    turn_instance_id = "turn-ready-deferred-priority-selection"
+    if provider != "legacy":
+        listed_rc, listed = _run_cli(registry_path, runtime, "todo", "list", "--goal-id", GOAL_ID)
+        assert listed_rc == 0, listed
+        projection = build_todo_runtime_shadow_projection(
+            goal_id=GOAL_ID, handoff_mode="soft_claim", todos=listed["todos"],
+        )
+        initialize_canonical_authority(
+            runtime, GOAL_ID, projection, provider=provider,
+            state_path=project / f".codex/goals/{GOAL_ID}/ACTIVE_GOAL_STATE.md",
+        )
     guard_args = (
         "quota", "should-run", "--codex-app", "--goal-id", GOAL_ID,
-        "--agent-id", AGENT_ID, "--turn-instance-id", turn_instance_id,
+        "--agent-id", AGENT_ID, "--turn-instance-id", "turn-priority-choice",
         "--scan-path", str(project),
     )
-    first_rc, first = _run_cli(registry_path, runtime, *guard_args)
-    assert first_rc == 0, first
-    assert first["selected_todo"]["todo_id"] == TODO_ID
-    assert first["agent_todo_summary"]["current_agent_deferred_resume_count"] == 1
-    suggested = first.get("action_portfolio", {}).get("suggested_actions", [])
-    assert ALTERNATIVE_TODO_ID not in {item["todo_id"] for item in suggested}
+    if reentry:
+        first_rc, first = _run_cli(registry_path, runtime, *guard_args)
+        assert first_rc == 0, first
+        assert first["selected_todo"]["todo_id"] == TODO_ID
+        assert first["agent_todo_summary"]["current_agent_deferred_resume_count"] == 1
+        suggested = first["action_portfolio"]["suggested_actions"]
+        assert ALTERNATIVE_TODO_ID in {item["todo_id"] for item in suggested}
+        assert "settlement_identity" not in first["heartbeat_receipt"]
 
-    project, runtime, registry_path = _write_fixture(tmp_path / "selection")
+    selected_rc, selected = _run_cli(
+        registry_path, runtime, *guard_args, "--todo-id", ALTERNATIVE_TODO_ID
+    )
+    assert selected_rc == 0, selected
+    assert selected["selected_todo"]["todo_id"] == ALTERNATIVE_TODO_ID
+    assert selected["action_selection_qualification"]["state"] == "qualified"
+    assert selected["normal_delivery_allowed"] is True
+    assert selected["heartbeat_receipt"]["settlement_identity"]["todo_id"] == ALTERNATIVE_TODO_ID
+    # The higher-priority deferred work remains visible and is not reopened,
+    # completed, or reprioritized merely to make the chosen work executable.
+    assert selected["agent_todo_summary"]["current_agent_deferred_resume_count"] == 1
+    assert not selected.get("agent_scope_frontier", {}).get("priority_preemption")
+
+
+@pytest.mark.parametrize("foreign_workspace", [False, True])
+def test_explicit_choice_survives_default_successor_replan_but_not_workspace_gate(
+    tmp_path: Path, foreign_workspace: bool,
+) -> None:
+    project, runtime, registry_path = _write_fixture(tmp_path)
     _configure_selectable_alternative(project)
     _configure_ready_deferred_priority_preemption(project)
+    state_path = project / f".codex/goals/{GOAL_ID}/ACTIVE_GOAL_STATE.md"
+    # Without an open P0 the default recommends resolving the deferred P0.
+    state_path.write_text(state_path.read_text(encoding="utf-8").replace(
+        "[P0] Validate and settle", "[P1] Validate and settle",
+    ), encoding="utf-8")
     if foreign_workspace:
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
         registry["goals"][0]["coordination"]["registered_agents"].append("codex-peer")
         registry_path.write_text(json.dumps(registry), encoding="utf-8")
-        state_path = _configure_repository_write_todo(project)
-        state_path.write_text(
-            state_path.read_text(encoding="utf-8").replace(
-                "action_kind=validate", "action_kind=implement"
-            ), encoding="utf-8",
-        )
-    selection_args = (
-        "quota", "should-run", "--codex-app", "--goal-id", GOAL_ID,
-        "--agent-id", AGENT_ID,
-        "--turn-instance-id", "turn-ready-deferred-explicit-selection",
-        "--scan-path", str(project),
+        state_path.write_text(state_path.read_text(encoding="utf-8").replace(
+            f"todo_id={ALTERNATIVE_TODO_ID} status=open",
+            f"todo_id={ALTERNATIVE_TODO_ID} status=open "
+            "task_repository=git:example.test/team/another-repository "
+            "required_write_scopes=src%2F%2A%2A",
+        ), encoding="utf-8")
+    rc, selected = _run_cli(
+        registry_path, runtime, "quota", "should-run", "--codex-app",
+        "--goal-id", GOAL_ID, "--agent-id", AGENT_ID,
+        "--turn-instance-id", "turn-explicit-over-default-replan",
+        "--scan-path", str(project), "--todo-id", ALTERNATIVE_TODO_ID,
     )
-    blocked_rc, blocked = _run_cli(
-        registry_path, runtime, *selection_args, "--todo-id", ALTERNATIVE_TODO_ID
-    )
-    assert blocked_rc == 1, blocked
-    assert blocked["error_code"] == "quota_action_selection_deferred"
-    assert blocked["action_selection_qualification"]["reason"] == (
-        "ready_deferred_successor_priority_preemption"
-    )
-    assert "settlement_identity" not in blocked["heartbeat_receipt"]
-    _assert_action_selection_recovery_projections(blocked)
-    assert "workspace_guard" not in blocked
-
-    selected_rc, selected = _run_cli(
-        registry_path, runtime, *selection_args, "--todo-id", TODO_ID
-    )
-    assert selected_rc == 0, selected
-    assert selected["selected_todo"]["todo_id"] == TODO_ID
+    assert rc == 0, selected
+    assert selected["selected_todo"]["todo_id"] == ALTERNATIVE_TODO_ID
+    assert selected["heartbeat_receipt"]["settlement_identity"]["todo_id"] == ALTERNATIVE_TODO_ID
+    assert selected["normal_delivery_allowed"] is (not foreign_workspace)
     if foreign_workspace:
         assert selected["effective_action"] == "agent_workspace_repair"
-        assert selected["normal_delivery_allowed"] is False
         assert selected["workspace_guard"]["blocks_delivery"] is True
-    assert selected["heartbeat_receipt"]["settlement_identity"]["todo_id"] == TODO_ID
+    else:
+        assert selected["effective_action"] == "normal_run"
 
 
 def test_pending_deferred_p0_allows_independent_p1_selection(

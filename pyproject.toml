@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopx"
-version = "2.0.0a1"
+version = "2.0.0"
 description = "A Loop Engineering control plane for long-running agent goals (requires Node.js 22.22.3+)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,13 @@ public-source-reader = [
 ]
 deepseek-harness = [
   "deepseek-harness-sdk==0.1.5rc1",
+]
+# Selected unit tests only; integration, lint and full-suite validation use test.
+test-core = [
+  "distlib>=0.3.9,<1; sys_platform == 'win32'",
+  "jsonschema>=4.23,<5",
+  "pyyaml>=6,<7",
+  "pytest>=9.0.3,<10",
 ]
 test = [
   "distlib>=0.3.9,<1; sys_platform == 'win32'",
@@ -72,7 +79,7 @@ include = ["loopx*"]
 "loopx.semantics" = ["*.json"]
 "loopx.control_plane.agents" = ["*.ts"]
 "loopx.control_plane.capabilities" = ["*.ts"]
-"loopx.control_plane.collaboration" = ["*.ts"]
+"loopx.control_plane.collaboration" = ["*.ts", "*.json"]
 "loopx.control_plane.coordination" = ["*.ts", "*.json"]
 "loopx.control_plane.goals" = ["*.ts"]
 "loopx.control_plane.goals.goal_frontier" = ["*.ts"]
@@ -126,6 +133,7 @@ include = ["loopx*"]
   "skills/loopx-project/references/start-and-connect.md",
   "skills/loopx-project/references/installation-and-diagnosis.md",
   "skills/loopx-project/references/autonomous-execution.md",
+  "skills/loopx-project/references/outcome-refinement.md",
   "skills/loopx-project/references/heartbeat-hosts.md",
   "skills/loopx-project/references/handoff-and-feedback.md",
   "skills/loopx-project/references/materials-explore-quality.md",

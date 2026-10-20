@@ -127,7 +127,9 @@ def active_state_todo_fields(
     if runtime_root is not None and goal_id:
         events = TodoResumeRolloutEvents(events, runtime_root=runtime_root, goal_id=goal_id)
     if canonical is not None:
-        fields = canonical["_todo_fields"]
+        from .goal_todo_projection import observe_todo_acceptance
+        fields = observe_todo_acceptance(canonical["_todo_fields"], canonical,
+            registry_path=source_registry, goal_id=goal_id)
         # Canonical observation/successor transactions now support current
         # lease proof. Scheduling exposes due work; mutation admission still
         # validates the caller's proof and never falls back to the old writer.

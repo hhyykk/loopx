@@ -171,7 +171,7 @@ def test_old_evidence_survives_display_limit_and_core_goal_uses_registered_state
     context = project_replan_context(goal_id="evidence-goal", agent_id="agent-a", runs=(),
         source_status={"registry": str(registry), "runtime_root": str(runtime), "run_history": {
             "goals": [{"id": "evidence-goal", "latest_runs": newer[-3:]}]}},
-        goal_acceptance_contract={"enabled": True, "scope": {"kind": "selected_work", "todo_ids": ["new-work"]},
+        goal_acceptance_contract={"criteria": [], "scope": {"kind": "selected_work", "todo_ids": ["new-work"]},
                                   "objective": "Validate only the new route"})
     assert context["from_full_index"] is True
     assert context["evidence_count"] == 181

@@ -313,7 +313,9 @@ assert.doesNotMatch(page, /personal-worker-strip/, "Manager home omits the redun
 assert.doesNotMatch(header, /切换到野兽主题|切换到默认主题/, "Workspace header does not expose theme switching");
 assert.match(workspaceTheme, /workspaceThemeStorageKey = "loopx-pw-theme"/, "Theme preference persists across reloads");
 assert.doesNotMatch(dashboard, /isManagerProjectionQuestion/, "Ordinary manager questions do not silently bypass the selected model by matching phrases");
-assert.match(dashboard, /if \(\(selectedRoute\.agentId === "status-only" && targetContext\.kind !== "project"\)\s*\|\| \(targetContext\.kind === "goal" && !targetGoal\)\)/, "Projection answers require the explicit status-only route or a missing Goal fallback; a workspace conversation never answers from the Goal projection");
+// Context eligibility is exercised by the typed bound-conversation smoke;
+// this source assertion only protects the explicit caller-selected route.
+assert.match(dashboard, /selectedRoute\.agentId === "status-only" && conversationSupportsStatusProjection\(targetContext\)/, "Only the explicit status-only route can use an eligible context's projection");
 assert.match(attentionActions, /role="group" aria-label=\{t\("drawer\.decisionGroup"\)\}/, "Blocked items expose their decisions as one labelled group that previews before any write");
 assert.match(drawer, /const hasProjectedRunActivity = selection\.kind === "run"[\s\S]*selection\.item\.completedSteps > 0/, "Session empty-state copy distinguishes projected progress from a truly idle run");
 assert.match(drawer, /t\("drawer\.runRecordProjected"/, "A projected run does not claim that the Agent never started");
@@ -576,7 +578,8 @@ assert.match(larkSettings, /fetchLarkAppSetup/, "Registration polls the local se
 assert.match(larkSettings, /window\.open\(/, "Registration opens the provider flow from a user gesture");
 assert.match(larkSettings, /window\.open\(window\.location\.href,\s*"_blank"\)/, "Registration never leaves a blank waiting tab");
 assert.match(larkSettings, /setAppRef\(snapshot\.app_ref\)/, "Completed registration selects the new App");
-assert.match(larkSettings, /loading \? "…" : apps\.length/, "Lark App count does not flash a false zero while loading");
+// Loading/empty App counts are exercised against the rendered page in the
+// progressive-loading browser scenario, independently of local state names.
 assert.match(larkSettings, /openConnectionEditor\(connection\)/, "Every Lark connection settings button opens a scoped editor");
 assert.match(larkSettings, /focusGoalConnection[\s\S]*openConnectionEditor\(connection\)[\s\S]*openConnect\(goals\.find/, "Goal-level Lark entry opens the scoped connection editor or create flow");
 

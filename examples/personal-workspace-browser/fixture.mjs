@@ -1470,14 +1470,23 @@ export async function installApi(page, { fixturePort = port, goalSubagentConfigu
       }, status: 200 });
       return;
     }
+    if (url.pathname === "/api/chat/projects" && request.method() === "GET") {
+      await route.fulfill({json: {ok: true, projects: []}});
+      return;
+    }
+    if (url.pathname === "/api/chat/lark/private-conversations" && request.method() === "GET") {
+      await route.fulfill({json: {ok: true, revision: 0, connections: [], stop_recoveries: []}});
+      return;
+    }
     if (url.pathname === "/api/chat/lark/apps") {
+      const apps = [
+        { active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true, reply_ready: true },
+        { active: true, app_ref: "mew-research", brand: "feishu", label: "LoopX Research", ready: true, reply_ready: true },
+      ].filter(app => !url.searchParams.has("app_ref") || app.app_ref === url.searchParams.get("app_ref"));
       await route.fulfill({ contentType: "application/json", json: {
-        ok: true,
-        schema_version: "loopx_lark_apps_v0",
-        apps: [
-          { active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true, reply_ready: true },
-          { active: true, app_ref: "mew-research", brand: "feishu", label: "LoopX Research", ready: true, reply_ready: true },
-        ],
+        ok: true, schema_version: "loopx_lark_apps_v0",
+        apps: apps.map(app => url.searchParams.get("verify") === "false"
+          ? {...app, ready: false, reply_ready: false, health_error_code: "lark_app_unverified"} : app),
       }, status: 200 });
       return;
     }

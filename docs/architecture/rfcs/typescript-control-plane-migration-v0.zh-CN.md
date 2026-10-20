@@ -17,6 +17,21 @@
 
 ### 产品对话与通用异步 inbox
 
+**接收方 Inbox 读取事务（2026-10-19）。**
+`loopx/control_plane/collaboration/inbox_read.ts` 现在通过既有 typed owner 组合本地源扫描、分页、
+Goal-instance 准入、接收方及 peer-return 读取回执和未完成委派上下文。
+Turn-start 观察使用只读请求。没有待处理 Host provider 的接收读取，在同一个请求中
+提交本地读取回执。实际 Core Todo、工作区输入和操作票据 provider 仍是显式 Python IO；
+finalize 重新取得 Goal lifetime guard，并在共享 request fence 内重读 entry。
+读取仍不授予 adoption、consumption 或执行权限。
+旧 Python 扫描与组合循环及五个细粒度 RPC 注册已删除。
+旧 Inbox 读取 import 和 tracking/presentation 回执视图保留薄 native facade；
+这些层在剩余 Python 消费者迁移后退出。既有 return 展示文件 IO 保留 Python adapter，
+复用同一份持久化 delivery 词汇。大页面复用共享私有 snapshot 传输。
+正常 runtime IPC、已安装 HTTP 调用者一致性、
+完整默认 SQLite CLI 性能仍是独立资格门。本次源码切换不证明 R1–R3 或完整异步协作
+生命周期已通过验收。
+
 R1–R3 的 TS 消费者包括 App 产品路径，不只 CLI 结算。
 [App/inbox 融合设计](app-conversation-and-async-inbox-v0.md#ts-and-generic-async-inbox-migrate-with-the-user-path)
 按调用者修复、行为刻画、完整异步生命周期切换、真实 adapter 恢复与旧代码删除推进。
@@ -55,7 +70,14 @@ Python 保留 registry、文档／材料 IO、独立的 Vision-wait 消费者及
 CLI 查询结果携带查询范围内的 `projection_envelope`。读取不授予执行、验收、
 租约或修改权限。共享 wire 与私有快照预算不变。超大 Python 事实使用私有临时
 源，不增加持久化存储；完整结果通过摘要绑定的片段传输。仍保留的历史／源适配
-明确记录实际 IO 与跨运行时调用。源码／受控 IPC 证据不代表正常安装的 CLI／Host
+明确记录实际 IO 与跨运行时调用。
+Python 源 codec 与传输现在共用既有 `todos/goal_todo_projection.py` 模块，
+删除独立的 Python `read_projection.py`，独立维护的 py/ts 配对预算仍为 43。
+当前宿主 oracle 观测仍归既有 acceptance owner。
+同一 18 行 Todo 输出矩阵为来源新鲜度和遗漏工作覆盖增加 783–854 个 JSON 字符，
+Markdown 不变。仅三个已测 Todo 查询视图的首次信封 schema 迁移获得 896 字符
+余量；既有绝对上限与后续增长限制继续生效。这些是受控传输下的输出测量。
+源码／受控 IPC 证据不代表正常安装的 CLI／Host
 使用、完整命令性能、R3 采用或 D2／D3／默认交付资格。
 
 

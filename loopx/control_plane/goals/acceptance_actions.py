@@ -50,7 +50,8 @@ def _saved_check(store: ChatActionStore, parameters: dict[str, Any],
             continue
         if (proposal["action_kind"] != "goal.acceptance.check"
                 or proposal["context"] != {"kind": "goal", "goal_id": parameters["goal_id"]}
-                or proposal["normalized_parameters"] != parameters):
+                or {key: value for key, value in proposal["normalized_parameters"].items()
+                    if key != "resolved_document"} != parameters):
             raise ActionConflictError("The operation belongs to another check request")
         return proposal
     return None

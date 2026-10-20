@@ -4,6 +4,7 @@ import { conversationReturnSessions, conversationPendingReturnSessions, reconcil
 import { readConversationReturns, readTaskSessions } from "../data/conversation-return-observation";
 import { currentChannelSession, useConversationHistory } from "../data/use-conversation-history";
 import { useChatProjects } from "../data/use-chat-projects";
+import { useBoundConversation } from "../data/use-bound-conversation";
 import { goalSubtree } from "../features/personal-workspace/goal-hierarchy";
 import {compactWorkspaceText as compactShareText, workspaceAgentTodoFromItem} from "../features/personal-workspace/personal-workspace-model";
 import type { GoalAcceptanceObservation } from "../data/goal-acceptance-observation";
@@ -49,8 +50,10 @@ import {
   conversationChannelId,
   conversationContextKey,
   conversationContextOfKey,
+  conversationSupportsStatusProjection,
   createChatSession,
   type ConversationContext,
+  type BoundConversationTarget,
   updateLoopXMode,
   type LoopXModeSettings,
   fetchChatCapabilities,
@@ -1095,8 +1098,12 @@ function buildPersonalHomeModel(
         })),
       } : undefined,
       acceptanceObservation: goal.acceptance_observation,
+      workerObservations: !goal.host_worker_observations ? null
+        : goal.host_worker_observations.goal_id === goal.id ? goal.host_worker_observations
+        : {read_status: "unreadable", rows: []},
       goalId: goal.id,
       parentGoalId: goal.parent_goal_id,
+      sourceAccess: goal.source_access ? {...goal.source_access, readOnly: true} : undefined,
       latestActivity: row.latestRun?.generated_at ?? "",
       needsYou,
       needsYouActionKind: needsYouTodo?.actionKind ?? null,
@@ -1124,7 +1131,7 @@ function buildPersonalHomeModel(
           modelConfig: goal.spawn_policy?.model_config,
         },
       } : {}),
-      title: personalGoalTitle(goal.id, goal.display_name),
+      title: personalGoalTitle(goal.id, goal.source_access?.label ?? goal.display_name),
       usage: (() => {
         const goalUsage = usageById.get(goal.id);
         return goalUsage ? {
@@ -1230,6 +1237,7 @@ function PersonalGoalHome({
   onGoalDeleted,
   onSelectGoal,
   onSelectWorkspace,
+  onOpenOriginalConversation,
   onReconcileStatus,
   onRefresh,
   onBackgroundRefresh,
@@ -1239,6 +1247,7 @@ function PersonalGoalHome({
   rows,
   selectedGoalId: requestedGoalId,
   selectedWorkspaceRef: requestedWorkspaceRef,
+  boundConversation,
   rootGoalId,
   onChangeGoalRoot,
   statusSourceControl,
@@ -1257,6 +1266,8 @@ function PersonalGoalHome({
   onGoalDeleted: (goalId: string) => void;
   onSelectGoal: (goalId: string, view?: WorkspaceGoalTab) => void;
   onSelectWorkspace: (projectRef: string | null) => void;
+  onOpenOriginalConversation: (target: BoundConversationTarget) => void;
+  boundConversation: BoundConversationTarget | null;
   selectedWorkspaceRef: string | null;
   rootGoalId?: string;
   onChangeGoalRoot: (goalId: string | null) => void;
@@ -1272,6 +1283,7 @@ function PersonalGoalHome({
   theme: "light" | "dark";
 }) {
   const readOnly = statusSourceControl.activeSource.readOnly
+    || rows.find(row => row.goal.id === requestedGoalId)?.goal.source_access?.read_only === true
     || Boolean(rootGoalId && !rows.some(row => row.goal.id === rootGoalId));
   const remoteGoalLifecycleHost = statusSourceControl.activeSource.kind === "ssh_tunnel"
     ? statusSourceControl.activeSource.hostAlias
@@ -1361,11 +1373,16 @@ function PersonalGoalHome({
   }, [sourceError, scopedModel, t]);
   const selectedGoalId = rootGoalId && !model.goals.some(goal => goal.goalId === requestedGoalId)
     ? rootGoalId : requestedGoalId;
-  const selectedWorkspaceRef = rootGoalId ? null : requestedWorkspaceRef;
+  const selectedWorkspaceRef = rootGoalId || boundConversation ? null : requestedWorkspaceRef;
   // A workspace conversation has no Goal, so no Goal projection may apply to it.
-  const selectedGoal = selectedWorkspaceRef ? null : model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
+  const selectedGoal = selectedWorkspaceRef || boundConversation ? null : model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
   const workspaceProjects = useChatProjects(readOnly);
-  const conversationContext: ConversationContext = selectedWorkspaceRef
+  const originalReadback = useBoundConversation(boundConversation, !readOnly && !rootGoalId);
+  const originalConversation = rootGoalId && boundConversation
+    ? { session: undefined, source: undefined, error: "Original conversation is outside this Goal navigation scope.", retry: originalReadback.retry }
+    : originalReadback;
+  const conversationContext: ConversationContext = boundConversation
+    ? { kind: "bound", ...boundConversation } : selectedWorkspaceRef
     ? { kind: "project", projectRef: selectedWorkspaceRef }
     : selectedGoal ? { kind: "goal", goalId: selectedGoal.goalId } : { kind: "manager" };
   const selectedPayload = progress?.snapshots[selectedGoalId] ?? payload;
@@ -1408,7 +1425,7 @@ function PersonalGoalHome({
   // The status projection answers about Goals; a workspace conversation needs an executor.
   const agentOptions = [
     ...discoveredAgents,
-    ...(conversationContext.kind === "project" ? [] : [{
+    ...(!conversationSupportsStatusProjection(conversationContext) ? [] : [{
       agentId: "status-only",
       available: true,
       capability: t("header.statusOnlyDescription"),
@@ -1444,8 +1461,14 @@ function PersonalGoalHome({
   // Runtime readback drives the label; only an owner pick drives a new binding.
   const requestedAgentModels = useRef<Record<string, string>>({});
   const requestedAgentEfforts = useRef<Record<string, string>>({});
-  const selectedAgentId = selectedAgents[contextId] ?? agentDefaultForContext(contextId);
-  const selectedAgent = selectChatAgent(agentOptions, selectedAgentId, defaultAgentId);
+  const selectedAgentId = boundConversation ? originalConversation.session?.agent_id ?? "original-conversation" : selectedAgents[contextId] ?? agentDefaultForContext(contextId);
+  const selectedAgent: PersonalAgentOption = boundConversation
+    ? discoveredAgents.find(agent => agent.agentId === selectedAgentId) ?? {
+      agentId: selectedAgentId, available: false, label: selectedAgentId === "original-conversation"
+        ? (locale === "zh-CN" ? "原会话" : "Original conversation") : selectedAgentId,
+      capability: "", source: "unavailable", statusLabel: t("agent.statusNeedsSetup"),
+    }
+    : selectChatAgent(agentOptions, selectedAgentId, defaultAgentId);
   const [messagesByContext, setMessagesByContext] = useState<Record<string, PersonalManagerMessage[]>>({});
   const [runtimeBindings, setRuntimeBindings] = useState<Record<string, PersonalRuntimeBinding>>({});
   // Bound Sessions whose mode queues a message sent while a Turn runs, read
@@ -1483,7 +1506,8 @@ function PersonalGoalHome({
     currentAgentId: selectedAgent.agentId,
     channelId: conversationChannelId(conversationContext),
     goalId: selectedGoal?.goalId,
-    enabled: !readOnly && selectedAgent.available,
+    bound: boundConversation ?? undefined,
+    enabled: !readOnly && (boundConversation ? Boolean(originalConversation.session) : selectedAgent.available),
   });
 
   // Who is speaking in the transcript. The manager channel answers as the LoopX
@@ -1538,7 +1562,7 @@ function PersonalGoalHome({
   // navigation. A single index read detects changes; snapshots refresh only
   // their original context and never take ownership of the current stream.
   const conversationReturnSessionKey = JSON.stringify(Object.fromEntries(
-    [...new Set([...Object.keys(runtimeBindings), ...Object.keys(messagesByContext)])].sort().map<[string, string[]]>((id) => [
+    [...new Set([...Object.keys(runtimeBindings), ...Object.keys(messagesByContext)])].filter(id => conversationContextOfKey(id).kind !== "bound").sort().map<[string, string[]]>((id) => [
       id, conversationReturnSessions(runtimeBindings[id]?.sessionId, messagesByContext[id] ?? []),
     ]).filter(([, ids]) => ids.length > 0),
   ));
@@ -1753,7 +1777,7 @@ function PersonalGoalHome({
         const activeSnapshot = history.snapshots.find(
           (snapshot) => snapshot.session.session_id === created.session_id,
         );
-        const activeTurnId = activeSnapshot?.session.active_turn_id ?? "";
+        const activeTurnId = (targetContext.kind === "bound" ? created.session.active_turn_id : activeSnapshot?.session.active_turn_id) ?? "";
         recordRuntimeBinding(targetContextId, {
           agentId: created.agent_id || selectedAgent.agentId,
           resumable: true,
@@ -1763,6 +1787,10 @@ function PersonalGoalHome({
         });
         newSessionRequired.current.delete(sessionKey);
         if (!activeTurnId) return;
+        // A source index can observe the Turn this very composer is already
+        // streaming. Keep its observer instead of creating a second reply.
+        if (targetContext.kind === "bound" && activeTurnIds.current.get(targetContextId) === activeTurnId
+          && streamControllers.current.has(targetContextId)) return;
         const recoveryKey = `${created.session_id}:${activeTurnId}`;
         if (recoveringTurnKeys.current.has(recoveryKey)) return;
         const observer = new AbortController();
@@ -2247,7 +2275,7 @@ function PersonalGoalHome({
       ],
     }));
 
-    if ((selectedRoute.agentId === "status-only" && targetContext.kind !== "project")
+    if ((selectedRoute.agentId === "status-only" && conversationSupportsStatusProjection(targetContext))
       || (targetContext.kind === "goal" && !targetGoal)) {
       const answer = personalManagerSnapshot(targetQuestionModel);
       const usesStatusOnlyRoute = selectedRoute.agentId === "status-only";
@@ -2669,6 +2697,7 @@ function PersonalGoalHome({
   }
 
   function chooseAgent(agentId: string) {
+    if (boundConversation) return;
     if (!agentOptions.some((agent) => agent.agentId === agentId && agent.available)) {
       return;
     }
@@ -2681,6 +2710,7 @@ function PersonalGoalHome({
   }
 
   function chooseAgentModel(agentId: string, modelId: string) {
+    if (boundConversation) return;
     const selectionKey = agentModelSelectionKey(contextId, agentId);
     if (selectedAgentModels[selectionKey] === modelId) return;
     requestedAgentModels.current[selectionKey] = modelId;
@@ -2694,6 +2724,7 @@ function PersonalGoalHome({
   }
 
   function chooseAgentReasoningEffort(agentId: string, effort: string) {
+    if (boundConversation) return;
     const key = agentModelSelectionKey(contextId, agentId);
     if (selectedAgentEfforts[key] === effort) return;
     if (effort) requestedAgentEfforts.current[key] = effort;
@@ -2886,8 +2917,9 @@ function PersonalGoalHome({
     <div className={theme === "dark" ? "dark" : ""} data-testid="personal-goal-home">
       <PersonalWorkspacePage
         typedActionsRevision={typedActionsRevision}
-        workspaceConversations={{ ...workspaceProjects, selectedRef: selectedWorkspaceRef, onSelect: onSelectWorkspace }}
-        agents={agentOptions.map((agent) => ({
+        workspaceConversations={{ ...workspaceProjects, selectedRef: selectedWorkspaceRef, onSelect: onSelectWorkspace,
+          onOpenOriginal: onOpenOriginalConversation, bound: boundConversation ? { target: boundConversation, ...originalConversation } : undefined }}
+        agents={(boundConversation ? [selectedAgent] : agentOptions).map((agent) => ({
           adapterKind: agent.adapterKind,
           agentId: agent.agentId,
           available: agent.available,
@@ -3159,7 +3191,7 @@ function PersonalGoalHome({
         readOnly={readOnly}
         selectedAgentId={selectedAgent.agentId}
         selectedAgentModelId={selectedAgentModels[agentModelSelectionKey(contextId, selectedAgent.agentId)]}
-        selectedAgentModelReadback={agentModelReadbacks[agentModelSelectionKey(contextId, selectedAgent.agentId)]}
+        selectedAgentModelReadback={agentModelReadbacks[agentModelSelectionKey(contextId, selectedAgent.agentId)] ?? originalConversation.session}
         selectedAgentReasoningEffort={selectedAgentEfforts[agentModelSelectionKey(contextId, selectedAgent.agentId)]}
         selectedGoalId={selectedGoal?.goalId ?? null}
         serviceNotice={rootGoalId && !model.goals.some(goal => goal.goalId === rootGoalId)
@@ -3627,7 +3659,9 @@ export function DashboardPage() {
   }, [exampleModeRequested, requestedStatusUrl, search.statusUrl, search.rootGoalId, source.kind, source.label]);
 
   useEffect(() => {
-    if (isLoading && search.rootGoalId) return;
+    // A source transition can still expose the previous source's Goal rows.
+    // Reconcile only its committed URL, including during browser Back/Forward.
+    if (isLoading || (source.kind === "url" && search.statusUrl && search.statusUrl !== source.label)) return;
     if (search.statusUrl && source.kind === "example") {
       return;
     }
@@ -3635,6 +3669,7 @@ export function DashboardPage() {
     if (goalRows.length === 0) {
       if (search.goalId) {
         void navigate({
+          replace: true,
           search: (current) => ({
             ...current,
             goalId: "",
@@ -3646,13 +3681,14 @@ export function DashboardPage() {
     if (search.goalId && !goalIds.has(search.goalId)
       && goalArchiveLoadState.phase !== "loading") {
       void navigate({
+        replace: true,
         search: (current) => ({
           ...current,
           goalId: "",
         }),
       });
     }
-  }, [goalArchiveLoadState.phase, goalRows, isLoading, navigate, search.goalId, search.rootGoalId, search.statusUrl, source.kind]);
+  }, [goalArchiveLoadState.phase, goalRows, isLoading, navigate, search.goalId, search.rootGoalId, search.statusUrl, source.kind, source.label]);
 
   useEffect(() => {
     if (!progress || isLoading || !search.goalId || source.kind !== "url") return;
@@ -3668,6 +3704,8 @@ export function DashboardPage() {
         ...current,
         goalId,
         workspace: undefined,
+        conversationBinding: undefined,
+        conversationSession: undefined,
         workAgent: undefined,
         todo: undefined,
         view: view === "chat" ? "conversation" : view,
@@ -3676,7 +3714,8 @@ export function DashboardPage() {
   }
 
   function selectWorkspace(projectRef: string | null) {
-    void navigate({ search: (current) => ({ ...current, goalId: "", todo: undefined, workAgent: undefined, workspace: projectRef ?? undefined, view: "conversation" }) });
+    void navigate({ search: (current) => ({ ...current, goalId: "", todo: undefined, workAgent: undefined, workspace: projectRef ?? undefined,
+      conversationBinding: undefined, conversationSession: undefined, view: "conversation" }) });
   }
 
   if (statusRequestActive) {
@@ -3694,6 +3733,10 @@ export function DashboardPage() {
 
   return (
     <PersonalGoalHome
+      boundConversation={search.conversationBinding !== undefined || search.conversationSession !== undefined
+        ? { bindingId: search.conversationBinding ?? "", sessionId: search.conversationSession ?? "" } : null}
+      onOpenOriginalConversation={target => void navigate({search: current => ({...current, goalId: "", workspace: undefined,
+        workAgent: undefined, todo: undefined, conversationBinding: target.bindingId, conversationSession: target.sessionId, view: "conversation"})})}
       rootGoalId={search.rootGoalId}
       onChangeGoalRoot={rootGoalId => void navigate({search: current => ({...current,
         rootGoalId: rootGoalId ?? undefined, goalId: rootGoalId ?? ("goalId" in current ? current.goalId : ""), workspace: undefined})})}

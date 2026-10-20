@@ -12,6 +12,16 @@ export const goalHierarchyScenario = {
     const root = await mkdtemp(join(tmpdir(), "loopx-goal-tree-"));
     let owner, ownerB, context, denied = false;
     const statusReads = [];
+    const subtreeGoalIds = ["calibration", "graph", "portfolio", "research"];
+    let inFlightStatusReads = 0;
+    const waitForStatusReads = async (expected, description) => {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        if (inFlightStatusReads === 0 && expected.every(id => statusReads.includes(id))) return;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      throw new Error(`timed out waiting for ${description}; reads=${JSON.stringify(statusReads)}; in_flight=${inFlightStatusReads}`);
+    };
     const captures = [
       ["research", "Research · synthetic"],
       ["portfolio", "Portfolio", "research"],
@@ -63,13 +73,18 @@ export const goalHierarchyScenario = {
           status: 200,
         }));
         await page.route(target => target.pathname === "/status.json", async route => {
-          const selected = new URL(route.request().url()).searchParams.get("goal_id");
-          if (selected) statusReads.push(selected);
-          if (denied && new URL(route.request().url()).searchParams.get("goal_id") === "graph") {
-            return route.fulfill({status: 403, json: {ok: false, error_code: "workspace_status_access_denied"}});
+          inFlightStatusReads += 1;
+          try {
+            const selected = new URL(route.request().url()).searchParams.get("goal_id");
+            if (selected) statusReads.push(selected);
+            if (denied && new URL(route.request().url()).searchParams.get("goal_id") === "graph") {
+              return route.fulfill({status: 403, json: {ok: false, error_code: "workspace_status_access_denied"}});
+            }
+            const response = await fetchWorkspaceBackend(route, owner.base);
+            await route.fulfill({response});
+          } finally {
+            inFlightStatusReads -= 1;
           }
-          const response = await fetchWorkspaceBackend(route, owner.base);
-          await route.fulfill({response});
         });
         await page.route(`${ownerB.base}/status.json*`, async route => {
           const response = await fetch(route.request().url());
@@ -98,6 +113,7 @@ export const goalHierarchyScenario = {
       assert.equal(await row("portfolio").count(), 0, "Children start folded on the ordinary workspace");
       for (const id of ["daily", "orphan", "cycle-a", "cycle-b"]) await row(id).waitFor();
       await page.screenshot({path: resolve(outputDir, "goal-hierarchy-overview.png"), animations: "disabled"});
+      await waitForStatusReads(captures.map(([id]) => id), "initial workspace reads");
       await page.waitForLoadState("networkidle");
       statusReads.length = 0;
       await row("research").locator(".personal-goal-link").click();
@@ -105,6 +121,7 @@ export const goalHierarchyScenario = {
       await page.waitForURL(target => target.searchParams.get("rootGoalId") === "research");
       assertResearchFocus();
       await row("portfolio").waitFor();
+      await waitForStatusReads(subtreeGoalIds, "scoped subtree reads");
       await page.waitForLoadState("networkidle");
       assert(statusReads.every(id => ["calibration", "graph", "portfolio", "research"].includes(id)),
         "reusing loaded subtree snapshots must not open unrelated Goal state");
@@ -113,8 +130,10 @@ export const goalHierarchyScenario = {
       await row("portfolio").getByRole("button", {name: "展开子 Goal：Portfolio", exact: true}).focus();
       await page.keyboard.press("Enter");
       await row("calibration").locator(".personal-goal-link").click();
+      await waitForStatusReads([], "status reads before reload");
       statusReads.length = 0;
       await page.reload({waitUntil: "networkidle"});
+      await waitForStatusReads(subtreeGoalIds, "reloaded subtree reads");
       await row("calibration").locator('[aria-current="page"]').waitFor();
       assert.deepEqual([...new Set(statusReads)].sort(), ["calibration", "graph", "portfolio", "research"],
         "opening a scoped workspace reads its recursive subtree without opening unrelated Goal state");

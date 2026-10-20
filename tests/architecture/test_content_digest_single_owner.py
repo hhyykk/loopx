@@ -185,7 +185,6 @@ CONSUMER_MODULES = (
     "loopx.control_plane.collaboration.peers",
     "loopx.control_plane.collaboration.request_control_source",
     "loopx.control_plane.collaboration.result_files",
-    "loopx.control_plane.collaboration.turn_context_observation",
     "loopx.control_plane.coordination.local_authority_shadow_history",
     "loopx.control_plane.coordination.shadow_management",
     "loopx.control_plane.digest_envelope",
@@ -1599,14 +1598,34 @@ def test_inbox_linked_references_keep_their_two_shapes(tmp_path: Path) -> None:
 
 
 def test_turn_agenda_addresses_keep_the_bare_digest_contract(tmp_path: Path) -> None:
-    from loopx.control_plane.collaboration.turn_context_observation import _paths
+    from loopx.control_plane.collaboration.inbox import ENTRY_SCHEMA, _hash, read_inbox_transaction
 
+    target = {"goal_id": "digest-fixture", "agent_id": "worker"}
+    folder = tmp_path / ".local" / "manager-context" / "entries" / _hash(target)
+    folder.mkdir(parents=True)
     rejected = (HEX64.upper(), HEX64[:-1], HEX64 + "0", "g" * 64,
                 "sha256-" + HEX64, HEX64 + ".stop")
-    for stem in (*BARE_ACCEPTS, *rejected):
-        (tmp_path / f"{stem}.json").write_text("{}", encoding="utf-8")
-    (tmp_path / f"{HEX64}.txt").write_text("{}", encoding="utf-8")
-    assert {path.stem for path in _paths(tmp_path)} == set(BARE_ACCEPTS)
+    # Keep each spelling separate on case-insensitive filesystems: an uppercase
+    # negative must not overwrite a valid lowercase request's record bytes.
+    for stem, accepted in [*((item, True) for item in BARE_ACCEPTS),
+                           *((item, False) for item in rejected)]:
+        for path in folder.iterdir():
+            path.unlink()
+        (folder / f"{stem}.json").write_text(json.dumps({
+            "schema_version": ENTRY_SCHEMA, **target, "request_id": stem,
+            "source_id": "synthetic-source", "message": "Inspect the fixture.",
+        }), encoding="utf-8")
+        (folder / f"{HEX64}.txt").write_text("{}", encoding="utf-8")
+        before = {path.name: path.read_bytes() for path in folder.iterdir()}
+        result = read_inbox_transaction(tmp_path, {
+            "operation": "turn_context", **target,
+            "read_command": "loopx manager-inbox read",
+        })["unfinished_delegations"]
+        assert {item["request_id"] for item in result["items"]} == ({stem} if accepted else set())
+        assert result["incoming_count"] == int(accepted)
+        assert result["scan_complete"] is True
+        assert result["unavailable_count"] == 0
+        assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
 
 
 def test_outcome_projection_fingerprint_requires_the_envelope() -> None:

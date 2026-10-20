@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { goalAcceptanceDisplayStatus, goalAcceptanceObservationSchema, projectGoalAcceptanceCriteria, type GoalAcceptanceContract } from "./goal-acceptance-observation.js";
+import { hasConfiguredGoalChecks, type GoalAcceptanceChecks, goalAcceptanceDisplayStatus, goalAcceptanceObservationSchema, projectGoalAcceptanceCriteria, type GoalAcceptanceContract } from "./goal-acceptance-observation.js";
 
 // Consumer validation only; freshness and coverage remain kernel decisions.
 const projectionEnvelopeSchema = z.object({
@@ -137,14 +137,14 @@ export function reviewNodeColumn(node: ReviewNode) {
   return ["gate", "gate_summary", "lease"].includes(node.kind) ? 0 : node.kind === "deliverable" ? 1 : 2;
 }
 
-type EnabledContract = Extract<GoalAcceptanceContract, { enabled: true }>;
+type ConfiguredContract = GoalAcceptanceChecks;
 type ContractExportLabels = Record<"title" | "boundary" | "scope" | "selectedWork" | "allWork" | "source" | "revision" | "digest" | "objective" | "criteria"
   | "nonGoals" | "tasks" | "verification" | "unknown" | "noTasks" | "noCriteria" | "notApplicable"
   | "heldTasks" | "receipt" | "receiptNote" | "operation" | "verificationScope" | "allCriteria" | "passed" | "failed" | "exitCode"
   | "oracleChecker" | "oracleSourceDigest" | "oracleCheckedAt" | "oracleInputVersions" | "oracleOutputVersions", string> & {
-  taskState: Record<EnabledContract["tasks"][number]["state"], string>;
-  verificationState: Record<EnabledContract["status"], string>;
-  oracleState: Record<NonNullable<EnabledContract["criteria"][number]["oracle"]>["state"], string>;
+  taskState: Record<ConfiguredContract["tasks"][number]["state"], string>;
+  verificationState: Record<ConfiguredContract["status"], string>;
+  oracleState: Record<NonNullable<ConfiguredContract["criteria"][number]["oracle"]>["state"], string>;
 };
 export type ReviewExportLabels = {
   contract: ContractExportLabels;
@@ -223,7 +223,17 @@ export function deliveryReviewMarkdown(snapshot: DeliveryReviewSnapshot, labels:
       `${labels.next}: ${line(acceptance.next_action)} (${line(acceptance.next_action_source)})`);
   }
   const contract = acceptance?.goal_acceptance_contract;
-  if (contract?.enabled === true) {
+  for (const outcome of contract?.outcome_requirements?.outcomes ?? []) {
+    rows.push("", `### ${line(outcome.objective)}`);
+    for (const requirement of outcome.requirements) {
+      const review = requirement.agent_review;
+      rows.push(`- ${line(requirement.description)} · checks: ${requirement.status}`);
+      if (review) rows.push(`  Agent review: ${review.conclusion}; basis_current=${review.basis_current}; not independent verification`,
+        `  ${line(review.note)}`, ...review.evidence_refs.map(ref => `  evidence: ${line(ref)}`));
+    }
+    rows.push(...outcome.work.map(work => `- ${line(work.todo_id)}: ${line(work.status)}`));
+  }
+  if (hasConfiguredGoalChecks(contract)) {
     const copy = labels.contract;
     rows.push("", `## ${copy.title}`, "", copy.boundary,
       `${copy.scope}: ${contract.scope?.kind === "selected_work" ? copy.selectedWork : copy.allWork}`,

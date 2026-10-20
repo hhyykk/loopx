@@ -94,10 +94,81 @@ def acceptance_goal(tmp_path, monkeypatch, request):
     return project, document_path, cli, run
 
 
+def test_outcome_refinement_retains_legacy_active_goal_admission(acceptance_goal):
+    project, _, cli, _ = acceptance_goal
+    registry_path = project.parent / "registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["goals"][0].pop("status", None)
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    document = project / "outcome.json"
+    document.write_text(json.dumps({"outcome_id": "export", "owner_agent_id": "agent-a",
+        "objective": "Produce the export", "requirements": [{"id": "content", "description": "Retain the content"}],
+        "source": {"ref": "message:initial", "summary": "The owner requested an export"}}), encoding="utf-8")
+    revision = cli("inspect")[1]["provider_revision"]
+    args = ("refine", "--agent-id", "agent-a", "--document", str(document),
+        "--expected-provider-revision", revision, "--operation-id", "legacy-outcome", "--execute")
+    code, result = cli(*args)
+    assert code == 0 and result["status"] == "applied", result
+    before = cli("inspect")[1]
+    for status in ("paused", "achieved", "abandoned"):
+        registry["goals"][0]["status"] = status
+        registry_path.write_text(json.dumps(registry), encoding="utf-8")
+        code, denied = cli(*args)
+        assert code == 1 and "active Goal" in denied["error"], denied
+        assert cli("inspect")[1] == before, "an inactive Goal cannot mutate or bypass admission through replay"
+
+    # Stop is a separate typed owner decision, including in legacy registries.
+    registry["goals"][0]["activation"] = {
+        "schema_version": "loopx_goal_activation_v1", "state": "stopped",
+    }
+    for status in ("active", None):
+        if status is None:
+            registry["goals"][0].pop("status", None)
+        else:
+            registry["goals"][0]["status"] = status
+        registry_path.write_text(json.dumps(registry), encoding="utf-8")
+        code, denied = cli(*args)
+        assert code == 1 and "active Goal" in denied["error"], denied
+        update = project / "stopped-outcome.json"
+        update.write_text(json.dumps({"outcome_id": "export",
+            "requirements": [{"id": "ordering", "description": "Retain the ordering"}],
+            "source": {"ref": "message:later", "summary": "The owner added an ordering requirement"}}), encoding="utf-8")
+        code, denied = cli("refine", "--agent-id", "agent-a", "--document", str(update),
+            "--expected-provider-revision", before["provider_revision"],
+            "--operation-id", "stopped-outcome", "--execute")
+        assert code == 1 and "active Goal" in denied["error"], denied
+        assert cli("inspect")[1] == before, "Stop rejects both saved operation replay and new refinements"
+
+
+def test_outcome_requirement_identity_survives_configure_verify_and_readback(acceptance_goal):
+    project, checks_file, cli, _ = acceptance_goal
+    requirement_id = "export:content@v1"
+    document = project / "outcome.json"
+    document.write_text(json.dumps({"outcome_id": "export", "owner_agent_id": "agent-a",
+        "objective": "Produce the export", "todo_ids": ["todo_export"],
+        "requirements": [{"id": requirement_id, "description": "Retain the content"}],
+        "source": {"ref": "message:initial", "summary": "The owner requested an export"}}), encoding="utf-8")
+    code, result = cli("refine", "--agent-id", "agent-a", "--document", str(document),
+        "--expected-provider-revision", cli("inspect")[1]["provider_revision"],
+        "--operation-id", "opaque-requirement", "--execute")
+    assert code == 0, result
+    checks_file.write_text(json.dumps({"outcome_id": "export", "criteria": [
+        {"id": requirement_id, "validation_argv": [sys.executable, "-c", "pass"]}]}), encoding="utf-8")
+    code, result = cli("configure", "--document", str(checks_file), "--operation-id", "opaque-check",
+        "--expected-provider-revision", cli("inspect")[1]["provider_revision"], "--execute")
+    assert code == 0, result
+    code, verified = cli("verify", "--agent-id", "agent-a", "--execute")
+    assert code == 0 and verified["checks_passed"], verified
+    current = cli("inspect")[1]["goal_acceptance_contract"]
+    assert current["verification"]["results"][0]["criterion_id"] == requirement_id
+    requirement = current["outcome_requirements"]["outcomes"][0]["requirements"][0]
+    assert requirement["id"] == requirement_id and requirement["status"] == "accepted"
+
+
 def test_owner_configure_validation_failure_success_and_disable(acceptance_goal):
     project, document, cli, _ = acceptance_goal
     code, before = cli("inspect")
-    assert code == 0 and before["goal_acceptance_contract"] == {"enabled": False}
+    assert code == 0 and before["goal_acceptance_contract"] == {}
     revision = before["provider_revision"]
     code, preview = cli(
         "configure",
@@ -120,7 +191,7 @@ def test_owner_configure_validation_failure_success_and_disable(acceptance_goal)
     )
     assert code == 0, configured
     contract = configured["goal_acceptance_contract"]
-    assert contract["enabled"] and contract["tasks"][0]["state"] == "ready"
+    assert "enabled" not in contract and contract["tasks"][0]["state"] == "ready"
     assert "validation_argv" not in json.dumps(configured)
     code, failed = cli("verify", "--agent-id", "agent-a", "--execute")
     assert code == 1 and failed["checks_passed"] is False
@@ -139,7 +210,7 @@ def test_owner_configure_validation_failure_success_and_disable(acceptance_goal)
         observed["provider_revision"],
         "--execute",
     )
-    assert code == 0 and disabled["goal_acceptance_contract"] == {"enabled": False}
+    assert code == 0 and disabled["goal_acceptance_contract"] == {}
 
 
 def test_agents_cannot_rewrite_acceptance_and_stale_owner_write_rejects(

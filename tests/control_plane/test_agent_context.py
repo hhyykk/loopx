@@ -1,4 +1,5 @@
 from copy import deepcopy
+from hashlib import sha256
 import json
 import subprocess
 import sys
@@ -108,25 +109,66 @@ def test_signed_envelope_preserves_context_and_detects_changed_guidance():
     assert turn_envelope_action_signature_document(tampered) != signature
 
 
-def test_large_envelope_keeps_signed_context_reference_and_read_instruction():
+def test_large_envelope_retains_bounded_context_without_a_full_decision_read():
     decision = _full_decision()
     decision["goal_boundary"] = {"execution_profile": {"padding": "x" * 2500}}
     assert build_turn_envelope(decision)["compaction"]["within_budget"] is True
-    decision["interaction_contract"]["agent_context"] = context()
+    expected = context()
+    decision["interaction_contract"]["agent_context"] = expected
     envelope = build_turn_envelope(decision)
-    reference = envelope["agent_context"]
-    assert reference["detail_ref"] == "full_decision.interaction_contract.agent_context"
-    assert reference["scope"] == SCOPE
-    assert "read capability context before planning" in reference["instruction"]
-    assert envelope["compaction"]["within_budget"] is True
+    assert envelope["agent_context"] == expected
+    assert "detail_ref" not in envelope["agent_context"]
+    assert envelope["compaction"]["budget_bytes"] == 8192
     assert envelope["action_signature"]["matches"] is True
+    original_signature = turn_envelope_action_signature_document(envelope)
     decision["interaction_contract"]["agent_context"]["contributions"][0][
         "guidance"
     ] = ["Changed"]
-    assert (
-        build_turn_envelope(decision)["agent_context"]["content_hash"]
-        != reference["content_hash"]
-    )
+    assert turn_envelope_action_signature_document(
+        build_turn_envelope(decision)
+    ) != original_signature
+
+
+@pytest.mark.parametrize("legacy_reference", [False, True])
+@pytest.mark.parametrize("provider_failure", [False, True])
+def test_shared_host_delivers_signed_context_and_original_legacy_detail(legacy_reference, provider_failure):
+    from loopx.control_plane.turn_driver.host_candidate import extract_turn_authority, render_prompt
+
+    decision = _full_decision()
+    full_context = context()
+    if provider_failure:
+        full_context["failures"] = [{"hook_id": "fixture.unavailable", "code": "context_provider_failed"}]
+    decision["interaction_contract"]["agent_context"] = full_context
+    envelope = build_turn_envelope(decision, captured_decision_path="private capture/decision.json")
+    if legacy_reference:
+        # A supported historical carrier: delivery=projected also occurs on
+        # complete context; only detail_ref denotes an omitted contribution.
+        envelope["agent_context"] = {
+            **{k: full_context[k] for k in ("schema_version", "phase", "scope", "target", "authority", "delivery")},
+            "content_hash": "sha256:" + sha256(json.dumps(full_context, ensure_ascii=False,
+                sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "detail_ref": "full_decision.interaction_contract.agent_context",
+            "instruction": "Read original capability context before planning.",
+        }
+        signature = turn_envelope_action_signature_document(envelope)
+        digest = "sha256:" + sha256(json.dumps(signature, ensure_ascii=False,
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        envelope["action_signature"].update(source_hash=digest, envelope_hash=digest)
+    authority = extract_turn_authority({"turn_envelope": envelope})
+    assert authority["agent_context"] == envelope["agent_context"]
+    prompt = render_prompt(authority)
+    assert json.dumps(envelope["agent_context"], ensure_ascii=False,
+                      sort_keys=True, separators=(",", ":")) in prompt
+    if legacy_reference:
+        assert authority["detail_ref"] == envelope["detail_ref"]
+        assert authority["action_signature"] == envelope["action_signature"]
+    else:
+        assert "detail_ref" not in authority
+        assert "action_signature" not in authority
+    invalid = deepcopy(envelope)
+    invalid["agent_context"]["scope"]["agent_id"] = "different-agent"
+    with pytest.raises(ValueError, match="action signature"):
+        extract_turn_authority({"turn_envelope": invalid})
 
 
 def test_managed_request_and_return_carry_parent_context_without_fabricating_completion():

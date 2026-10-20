@@ -26,6 +26,7 @@ from loopx.control_plane.heartbeat.host import (
     uses_native_goal_host_loop,
 )
 from loopx.control_plane.heartbeat.rules import SCOPE_BOUNDED_WORK_RULE
+from loopx.control_plane.heartbeat.task_body import render_heartbeat_generator_inputs_markdown
 from loopx.control_plane.heartbeat.visible_goal import (
     build_visible_goal_initial_runtime_capability_projection,
     validate_visible_goal_policy_rule,
@@ -68,7 +69,7 @@ def test_interface_budget_uses_visible_goal_mode() -> None:
     assert budget["within_budget"] is True
 
 
-@pytest.mark.parametrize("mode,limit", [("thin", 3600), ("visible_goal", 4000)])
+@pytest.mark.parametrize("mode,limit", [("thin", 4200), ("visible_goal", 4000)])
 def test_prompt_body_limit_remains_independent_of_json_envelope(mode: str, limit: int) -> None:
     for size in (limit, limit + 1):
         budget = build_interface_budget(
@@ -242,6 +243,48 @@ def test_thin_markdown_diagnostics_only_show_the_selected_prompt_command() -> No
     assert "- brief_prompt_command:" not in rendered
 
 
+@pytest.mark.parametrize("resolved", ["same", "different", None])
+def test_markdown_diagnostics_keep_complete_distinct_or_shared_state_routes(resolved) -> None:
+    # Native path spelling is data here; this exercises the renderer on every OS.
+    active = r"C:\LoopX Fixture\project\.codex\goals\route-fixture\ACTIVE_GOAL_STATE.md"
+    resolved_path = active if resolved == "same" else (
+        r"C:\LoopX Fixture\other\.codex\goals\route-fixture\ACTIVE_GOAL_STATE.md"
+        if resolved == "different" else None
+    )
+    rendered = render_heartbeat_generator_inputs_markdown({
+        "active_state": active,
+        "active_state_source": "explicit",
+        "resolved_active_state": resolved_path,
+    })
+    assert f"`{active}`" in rendered
+    assert "- active_state_source: `explicit`" in rendered
+    if resolved == "same":
+        assert rendered.count(active) == 1
+        assert "active_state = resolved_active_state" in rendered
+    else:
+        assert "active_state = resolved_active_state" not in rendered
+        assert f"- active_state: `{active}`" in rendered
+        assert f"- resolved_active_state: `{resolved_path}`" in rendered
+
+
+@pytest.mark.parametrize("review_enabled", [False, True])
+def test_markdown_diagnostics_keep_available_prequota_commands(review_enabled) -> None:
+    payload = build_heartbeat_prompt(
+        goal_id="prompt-command-fixture", agent_id="agent-a", thin=True,
+        available_capabilities=["external_evidence_poll"] if review_enabled else [],
+    )
+    rendered = render_heartbeat_prompt_markdown(payload)
+    assert payload["task_body"] in rendered
+    for key in ("thin_prompt_command", "quota_guard_command", "quota_spend_command"):
+        assert f"- {key}: `{payload[key]}`" in rendered
+    if review_enabled:
+        assert "heartbeat-prequota" in payload["pr_review_pre_quota_command"]
+        assert f"- pr_review_pre_quota_command: `{payload['pr_review_pre_quota_command']}`" in rendered
+    else:
+        assert payload["pr_review_pre_quota_command"] is None
+        assert "- pr_review_pre_quota_command:" not in rendered
+
+
 def test_brief_diagnostics_keep_only_the_selected_prompt_command() -> None:
     payload = build_heartbeat_prompt(goal_id="loopx-meta", brief=True)
     rendered = render_heartbeat_prompt_markdown(payload)
@@ -259,7 +302,7 @@ def test_brief_diagnostics_keep_only_the_selected_prompt_command() -> None:
 
 @pytest.mark.parametrize(
     ("mode", "base_budget"),
-    [("full", 12000), ("compact", 6700), ("brief", 4800), ("thin", 3600)],
+    [("full", 12000), ("compact", 7200), ("brief", 4800), ("thin", 4200)],
 )
 def test_reward_memory_prompt_headroom_is_fixed_and_feature_scoped(
     mode: str, base_budget: int

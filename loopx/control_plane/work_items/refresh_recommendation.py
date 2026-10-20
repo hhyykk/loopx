@@ -41,6 +41,7 @@ def load_refresh_planning_source(
     state_path: Path,
     *,
     require_display: bool,
+    registry_path: Path | None = None,
 ) -> RefreshPlanningSource:
     """Read one shared planning snapshot without repairing its display.
 
@@ -50,7 +51,18 @@ def load_refresh_planning_source(
     events = load_rollout_events(rollout_event_log_path(runtime_root, goal_id))
     canonical = read_canonical_todos_if_promoted(runtime_root=runtime_root, goal_id=goal_id,
         include_summary=True, rollout_events=events)
-    fields = canonical["_todo_fields"] if canonical is not None else None
+    if canonical is not None:
+        from ..todos.goal_todo_projection import observe_todo_acceptance
+        oracle_registry = registry_path
+        if canonical.get("goal_acceptance_oracle_observation_basis") is not None and oracle_registry is not None:
+            from .recommendation_source_io import load_recommendation_source_goal
+            # A shared roster's checkout is display data, including on refresh
+            # paths without --next-action. Observe the current source workspace.
+            oracle_registry, _ = load_recommendation_source_goal(oracle_registry, goal_id)
+        fields = observe_todo_acceptance(canonical["_todo_fields"], canonical,
+            registry_path=oracle_registry, goal_id=goal_id)
+    else:
+        fields = None
     try:
         text = state_path.read_text(encoding="utf-8")
     except FileNotFoundError:

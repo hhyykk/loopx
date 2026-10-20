@@ -471,6 +471,28 @@ shape merely because of its size. Optional memory participation now has one
 compact, signed envelope projection; the Codex CLI adapter preserves default-off
 isolation. This does not qualify installed heartbeat/App adoption or model value.
 
+Bounded planning context now remains inline instead of forcing a full-decision
+read under envelope budget pressure. Its existing owner retains the 3 KiB bound;
+the shared DSH/cloud adapter transports the signed contribution and, for saved
+historical references, the original capture route and hash. The thin renderer
+requires capability detail only for an actual `agent_context.detail_ref`, since
+`delivery=projected` also describes complete context. Source and actual Host-input
+oracles cover enabled/off, historical references and signature refusal through
+File/SQLite CLI and a protocol-only DSH subprocess. Keep the 8 KiB warning and
+count packet plus necessary detail/source IO before choosing a default. Live
+model behavior, installed adoption and the three acceptances below remain open.
+
+A bound native replan exposed a further shared Host adapter omission: it kept
+the generic action but dropped the signed replan packet and its evidence route.
+The DSH/cloud adapter now forwards both, retaining the existing full Goal read
+and same-capture replan context. File/SQLite selection-to-replan qualification
+checks actual DSH provider input with a protocol-only runner, signed mutation
+refusal and unchanged source/state; it does not invoke a model. The outer Turn
+executor retains writeback/quota/scheduler ownership. Ordinary requests retain
+their previous input. This qualifies that transport boundary only; installed
+adoption, subsequent model decisions, complete costs and the three acceptances
+below remain open.
+
 Current source-path audit for the first convergence slice:
 
 | Execution fact | Existing owner / projection | Remaining boundary |
@@ -482,6 +504,16 @@ Current source-path audit for the first convergence slice:
 | Replan / Goal closure | Replan action packet and the existing TS capsule preserve full audit steps/guidance, current closure assessment (judge) and evidence/non-proof conditions | Same captured File/SQLite decisions qualify clause retention and signature mutation; full evidence stays on authorized detail paths. Host/model adoption remains open; Todo completion is not Goal completion |
 | Settlement / scheduler | Intact typed settlement plan and explicit host-owned scheduler projection; omitted scheduler argv references resolve the same captured full decision | Unbound detail commands are retired in this projection. Actual host readback, stale mutation refusal and exactly-once recovery still need host adoption qualification |
 | Optional memory | Verified boundary participation plus fresh host binding | Off/recall/ingest/stale/provider-failure isolation remains mandatory; transport parity is not model value |
+
+The boundary projection now retains complete scope, approval, guard and stop
+clauses instead of applying display limits. The shared DSH/cloud candidate
+adapter also transports the signed restrictions that it previously omitted,
+keeping scope/workspace compatibility fields once. Independent source oracles
+and real File/SQLite CLI plus a protocol-only Host subprocess expose the old
+loss and exercise retention, tamper refusal and no-debit replay. This repairs
+one existing caller family's boundary delivery; it adds no enforcement owner.
+Keep the 8 KiB warning, disclose the cost of restored clauses, and qualify live
+model behavior, installed adoption and total costs separately before rollout.
 
 The capability-fact correction is a read-model change in the established
 TypeScript owner. Real captured File/SQLite decisions cover refusal and admission

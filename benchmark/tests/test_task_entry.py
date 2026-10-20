@@ -70,8 +70,10 @@ def planning_env(tmp_path):
                     {
                         "id": "planning-goal",
                         "repo": str(project),
+                        "domain": "project",
                         "state_file": str(state),
                         "status": "active",
+                        "adapter": {"kind": "read_only_project_map_v0", "status": "connected-read-only"},
                         "coordination": {"registered_agents": ["planner"]},
                     }
                 ],

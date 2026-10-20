@@ -628,8 +628,9 @@ def render_thin_heartbeat_task_body(
 Use TurnEnvelope: `action.must_attempt` requires work; `user.notify` controls
 output only. ok=false -> recovery, no delivery. Language=user. Honor `boundary`, `execution_policy`, `contract_capsule`,
 `work_context`, remaining `required_reads`, `agent_context`, and `replan_action_packet` when present.
-Read `detail_ref.full_decision` for selection, replan, capability context or
-missing/truncated commands: same-invocation observation, not fresh admission.
+When present, read inline `agent_context` before planning. Read `detail_ref.full_decision` for
+selection, replan, missing/truncated commands or an `agent_context.detail_ref`:
+same-invocation observation, not fresh admission.
 Selection uses the saved `interaction_contract.cli_channel.selection_command`.
 Keep all supplied guard transport flags (--turn-envelope, --decision-output-root,
 and --decision-handoff-socket when present) on every fresh selection/repair/replan
@@ -681,13 +682,23 @@ P0 blocked: admitted P1/P2; no wait spend.
 {policy_tail}"""
 def render_heartbeat_generator_inputs_markdown(payload: dict[str, Any]) -> str:
     interface_budget = payload.get("interface_budget") if isinstance(payload.get("interface_budget"), dict) else {}
+    active_state = payload.get("active_state")
+    resolved_active_state = payload.get("resolved_active_state")
+    state_lines = [
+        f"- active_state: `{active_state}`",
+        f"- active_state_source: `{payload.get('active_state_source')}`",
+    ]
+    # Keep both route identities and the complete path without printing an
+    # identical long native path twice. Different or unresolved routes stay explicit.
+    if active_state is not None and active_state == resolved_active_state:
+        state_lines[0] = f"- active_state = resolved_active_state: `{active_state}`"
+    else:
+        state_lines.append(f"- resolved_active_state: `{resolved_active_state}`")
     lines = [
         "## Generator Inputs",
         "",
         f"- goal_id: `{payload.get('goal_id')}`",
-        f"- active_state: `{payload.get('active_state')}`",
-        f"- active_state_source: `{payload.get('active_state_source')}`",
-        f"- resolved_active_state: `{payload.get('resolved_active_state')}`",
+        *state_lines,
         f"- compact: `{payload.get('compact')}`",
         f"- brief: `{payload.get('brief')}`",
         f"- thin: `{payload.get('thin')}`",
@@ -714,10 +725,13 @@ def render_heartbeat_generator_inputs_markdown(payload: dict[str, Any]) -> str:
                 f"- thin_prompt_command: `{payload.get('thin_prompt_command')}`",
             ]
         )
+    if payload.get("pr_review_pre_quota_command") is not None:
+        lines.append(
+            "- pr_review_pre_quota_command: "
+            f"`{payload['pr_review_pre_quota_command']}`"
+        )
     lines.extend(
         [
-            "- pr_review_pre_quota_command: "
-            f"`{payload.get('pr_review_pre_quota_command')}`",
             f"- quota_guard_command: `{payload.get('quota_guard_command')}`",
             f"- quota_spend_command: `{payload.get('quota_spend_command')}`",
             f"- cli_preflight: `{payload.get('cli_preflight')}`",

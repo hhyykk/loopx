@@ -73,6 +73,7 @@ class BenchmarkCodex(CodexOffline):
         turn_envelope=False,
         native_goal_continue=False,
         task_objective=None,
+        research_loop=False,
         goal_id=_GOAL_ID,
         agent_id=_AGENT_ID,
         defer_codex_home=False,
@@ -112,6 +113,9 @@ class BenchmarkCodex(CodexOffline):
         self.replan_after_todos = int(3 if replan_after_todos is None else replan_after_todos)
         if not 1 <= self.replan_after_todos <= 5:
             raise ValueError("replan_after_todos must be between 1 and 5")
+        from .research_loop import research_stride_strategy
+
+        stride_strategy = research_stride_strategy(research_loop, stride_strategy)
         if stride_strategy is not None and not self.execution.uses_loopx:
             raise ValueError("stride_strategy requires a LoopX execution mode")
         self.stride_strategy = (normalize_stride_strategy(stride_strategy)
@@ -122,6 +126,9 @@ class BenchmarkCodex(CodexOffline):
             if not self.execution.uses_loopx:
                 raise ValueError("planning_horizon_goal requires a LoopX execution mode")
         self.planning_horizon_goal = planning_horizon_goal
+        if not isinstance(research_loop, bool) or (research_loop and self.execution.mode != "heartbeat"):
+            raise ValueError("research_loop requires heartbeat execution")
+        self.research_loop = research_loop
         self.checkpoint_request_path = None
         self._checkpoint_declaration = None
         if checkpoint_request is not None:
@@ -327,6 +334,12 @@ class BenchmarkCodex(CodexOffline):
                 raise RuntimeError("LoopX doctor returned invalid JSON") from exc
             if doctor_payload.get("ok") is not True:
                 raise RuntimeError(f"LoopX doctor failed: {doctor_payload}")
+            if self.research_loop:
+                wrapper = (f"#!/bin/sh\nexec env PYTHONPATH={shlex.quote(_SRC)} "
+                           f"{_PYTHON}/bin/python3 -m benchmark.runtime.research_probe \"$@\"\n")
+                await self.exec_as_agent(environment,
+                    command=f"printf %s {shlex.quote(wrapper)} > {_PROFILE}/bin/loopx-research-probe; "
+                            f"chmod 0755 {_PROFILE}/bin/loopx-research-probe", env=self._profile_env())
 
         receipt = {
             "loopx_commit": actual_commit,
@@ -335,6 +348,7 @@ class BenchmarkCodex(CodexOffline):
             "execution_mode": self.execution.mode,
             "iteration_context": self.execution.context,
             "task_entry": self.execution.task_entry,
+            **({"research_loop": True} if self.research_loop else {}),
             **self._turn_envelope_receipt(),
             **self._planning_receipt(),
             "home_scope": "trial",
@@ -494,8 +508,12 @@ class BenchmarkCodex(CodexOffline):
                 cwd=cwd,
             )
 
-        if self.execution.task_entry == "seeded-todo":
+        if self.execution.task_entry == "seeded-todo" or self.research_loop:
             await self._seed_phase(environment, cwd=cwd)
+        if self.research_loop:
+            from .research_loop import prepare_research_continuation
+
+            await prepare_research_continuation(self, environment, cwd=cwd)
 
         cadence = await self._loopx(
             environment, ["configure-goal", "--goal-id", self.goal_id], cwd=cwd,
@@ -521,6 +539,13 @@ class BenchmarkCodex(CodexOffline):
             "implement and validate against the task's full requirements and acceptance "
             "criteria. Keep unmet requirements explicit when judging task completion."
         )
+        if self.research_loop:
+            text = (
+                f"[P0] Build and evaluate the strongest feasible initial candidate for {self._task_document}. "
+                "Check the actual interface, correctness and resource use before the first submission. "
+                "Preserve the tested candidate and released feedback. Completing this candidate stage "
+                "does not complete the separate original research work."
+            )
         if self._seeded_todo_id:
             listed = await self._loopx(environment, [
                 "todo", "list", "--goal-id", self.goal_id, "--role", "agent",
@@ -582,6 +607,7 @@ class BenchmarkCodex(CodexOffline):
                 "LOOPX_SHARED_SKILLS": _SHARED_SKILLS,
                 "LOOPX_EXECUTION_MODE": self.execution.mode,
                 "LOOPX_TASK_ENTRY": self.execution.task_entry,
+                **({"LOOPX_RESEARCH_LOOP": "1"} if self.research_loop else {}),
                 **({"LOOPX_CHECKPOINT_REQUEST": self.checkpoint_request_path}
                    if self.checkpoint_request_path is not None else {}),
                 **({"LOOPX_TURN_ENVELOPE": "1"} if self.execution.turn_envelope else {}),

@@ -182,7 +182,7 @@ export function registerCanonicalSnapshotConformance(name: string, factory: Auth
         assert.equal(seen.has(id), false);
         seen.add(id);
       }
-      assert.equal(((page.metadata as JsonObject).goal_acceptance_contract as JsonObject).enabled, true);
+      assert.ok(Array.isArray(((page.metadata as JsonObject).goal_acceptance_contract as JsonObject).criteria));
     }
     assert.equal(seen.size, result.todos.length);
     const complete = await readCanonicalSnapshotFromStore(snapshotRequest(), store, CANONICAL_SNAPSHOT_LOCAL_BYTES);

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import os
 import queue
 import stat
+import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -70,6 +74,92 @@ class _FakeAppServerProcess:
 
     def kill(self) -> None:
         self.returncode = -1
+
+
+@pytest.mark.parametrize("phase", ["write", "flush"])
+def test_guarded_native_request_keeps_original_send_and_response_budget(tmp_path, phase):
+    process = _FakeAppServerProcess()
+    session = chat_agent.CodexChatAgentSession(
+        process=process, messages=queue.Queue(), thread_id="original-thread", work_dir=tmp_path,
+        response_timeout_sec=3, _launch_guard=contextlib.nullcontext,
+    )
+    release = threading.Event()
+
+    class SlowInput(io.StringIO):
+        def write(self, text):
+            if phase == "write":
+                assert release.wait(timeout=4)
+            return super().write(text)
+
+        def flush(self):
+            if phase == "flush":
+                assert release.wait(timeout=4)
+            packet = json.loads(self.getvalue())
+            session.messages.put({"id": packet["id"], "result": {"threadId": "original-thread"}})
+
+    process.stdin = SlowInput()
+    timer = threading.Timer(1.2, release.set)
+    timer.start()
+    try:
+        result = session._request("turn/start", {"threadId": "original-thread", "text": "完整☃"})
+        assert result == {"threadId": "original-thread"}
+        assert process.poll() is None
+        assert json.loads(process.stdin.getvalue())["params"]["text"] == "完整☃"
+        assert session._response_waiters == {}
+    finally:
+        release.set()
+        timer.join(timeout=2)
+
+
+def test_slow_native_reader_accepts_complete_unicode_with_original_deadline(tmp_path):
+    ready = tmp_path / "ready"
+    peer = (
+        "import json,sys,time\nfrom pathlib import Path\n"
+        f"Path({str(ready)!r}).touch()\n"
+        "time.sleep(1.2)\nrow=json.loads(sys.stdin.readline())\n"
+        "text=row['params']['text']\n"
+        "print(json.dumps({'id':row['id'],'result':{'threadId':row['params']['threadId'],"
+        "'complete':text == '完整☃' * (1024 * 1024)}}),flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", peer], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True, encoding="utf-8", start_new_session=os.name == "posix",
+        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0,
+    )
+    session = chat_agent.CodexChatAgentSession(
+        process=process, messages=queue.Queue(), thread_id="original-thread", work_dir=tmp_path,
+        response_timeout_sec=3, process_tree_owned=True, _launch_guard=contextlib.nullcontext,
+    )
+
+    def read_response():
+        line = process.stdout.readline()
+        session.messages.put(json.loads(line) if line else EOFError())
+
+    reader = threading.Thread(target=read_response, daemon=True)
+    reader.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert ready.exists()
+        result = session._request("turn/start", {
+            "threadId": "original-thread", "text": "完整☃" * (1024 * 1024),
+        })
+        assert result == {"threadId": "original-thread", "complete": True}
+        assert process.poll() is None and session._response_waiters == {}
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=2)
+        reader.join(timeout=2)
+        assert not reader.is_alive()
+        for writer in threading.enumerate():
+            if writer.name == "loopx-native-stdin-writer":
+                writer.join(timeout=2)
+                assert not writer.is_alive()
+        process.stdin.close()
+        process.stdout.close()
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -261,6 +351,87 @@ def test_transient_recovery_requires_complete_native_terminal_and_effect_readbac
     else:
         assert proof is None
     assert all(method in {"thread/turns/list", "thread/items/list"} for method, _ in calls)
+
+
+@pytest.mark.parametrize("fault", [None, "older", "tool", "answer", "foreign", "late-message", "policy"])
+def test_routing_timeout_recovery_requires_latest_user_only_stable_native_inventory(tmp_path, monkeypatch, fault):
+    session = chat_agent.CodexChatAgentSession(process=SimpleNamespace(poll=lambda: None),
+        messages=queue.Queue(), thread_id="routing-thread", work_dir=tmp_path)
+    reads = 0
+
+    def write(packet):
+        nonlocal reads
+        method, params = packet["method"], packet["params"]
+        assert params["threadId"] == "routing-thread"
+        if method == "thread/turns/list":
+            reads += 1
+            error = {"codexErrorInfo": "cyberPolicy" if fault == "policy" else "other",
+                "message": "changed private detail" if fault == "late-message" and reads > 1
+                           else "workspace routing discovery timed out"}
+            rows = [{"id": "failed", "status": "failed", "error": error}]
+            if fault == "older":
+                rows.insert(0, {"id": "newer-completed", "status": "completed"})
+            result = {"data": rows}
+        else:
+            assert method == "thread/items/list" and params["turnId"] == "failed"
+            rows = [{"turnId": "foreign" if fault == "foreign" else "failed",
+                "item": {"id": "request", "type": "userMessage"}}]
+            if params.get("cursor"):
+                rows = [{"turnId": "failed", "item": {"id": "later",
+                    "type": "commandExecution" if fault == "tool" else "agentMessage"}}]
+            result = {"data": rows, "nextCursor": "next" if fault in {"tool", "answer"}
+                      and not params.get("cursor") else None}
+        session.messages.put({"id": packet["id"], "result": result})
+
+    monkeypatch.setattr(session, "_write", write)
+    proof = session.transport_retry_readback("failed")
+    if fault is None:
+        assert proof == {"thread_id": "routing-thread", "turn_id": "failed", "item_count": 1,
+            "codex_error_info": "other", "pre_execution_routing_timeout": True}
+        assert reads == 2
+    else:
+        assert proof is None
+
+
+@pytest.mark.parametrize("fault", [None, "older", "host-other", "active", "tool", "answer", "correction",
+    "foreign", "unknown", "changed-error", "policy", "usage", "unauthorized", "http401"])
+def test_historical_context_recovery_reads_only_proven_pre_execution_failure(tmp_path, monkeypatch, fault):
+    session = chat_agent.CodexChatAgentSession(process=SimpleNamespace(poll=lambda: None),
+        messages=queue.Queue(), thread_id="original-thread", work_dir=tmp_path, response_timeout_sec=.2)
+    calls, reads = [], 0
+
+    def write(packet):
+        nonlocal reads
+        method, params = packet["method"], packet["params"]
+        calls.append(method)
+        assert params["threadId"] == "original-thread"
+        if method == "thread/turns/list":
+            reads += 1
+            info = {"host-other": "other", "policy": "cyberPolicy", "usage": "usageLimitExceeded",
+                "unauthorized": "unauthorized", "http401": {"responseStreamDisconnected": {"httpStatusCode": 401}}}.get(fault, "contextWindowExceeded")
+            if fault == "changed-error" and reads > 1:
+                info = "other"
+            rows = [{"id": "failed", "status": "failed", "error": {"codexErrorInfo": info}}]
+            if fault in {"older", "active"}:
+                rows.insert(0, {"id": "later", "status": "completed" if fault == "older" else "inProgress"})
+            result = {"data": rows}
+        else:
+            assert method == "thread/items/list" and params["turnId"] == "failed"
+            kind = {"tool": "commandExecution", "answer": "agentMessage", "unknown": "futureItem"}.get(fault, "userMessage")
+            rows = [{"turnId": "foreign" if fault == "foreign" else "failed", "item": {"id": "input", "type": kind}}]
+            if fault == "correction":
+                rows.append({"turnId": "failed", "item": {"id": "correction", "type": "userMessage"}})
+            result = {"data": rows}
+        session.messages.put({"id": packet["id"], "result": result})
+
+    monkeypatch.setattr(session, "_write", write)
+    proof = session.failed_request_readback("failed")
+    if fault in {None, "older", "host-other"}:
+        assert proof == {"thread_id": "original-thread", "turn_id": "failed",
+            "only_original_user_item": True, "codex_error_info": "other" if fault == "host-other" else "contextWindowExceeded"}
+    else:
+        assert proof is None
+    assert set(calls) <= {"thread/turns/list", "thread/items/list"}
 
 
 def test_stop_cancels_completed_and_late_command_items_but_preserves_older_terminal(tmp_path, monkeypatch):

@@ -109,6 +109,8 @@ def register_refresh_state_command(
         help="Append a read-only run from active goal state after state-only updates.",
     )
     add_subcommand_format(refresh_state_parser)
+    refresh_state_parser.add_argument("--goal-outcome-update-json", type=Path,
+        help="Optional changed outcome/Agent review envelope (operation_id, expected_provider_revision, refinement). Apply once before normal writeback; unchanged work needs no update. Independent checks remain separate.")
     refresh_state_parser.add_argument(
         "--goal-id",
         required=True,
@@ -471,7 +473,19 @@ def handle_refresh_state_command(
     progress_observation: dict[str, object] | None = None
     merge_agent_vision_patch = False
     goal_ref: dict[str, str] | None = None
+    outcome_update = None
+    outcome_update_result = None
     try:
+        outcome_path = getattr(args, "goal_outcome_update_json", None)
+        if outcome_path:
+            if not args.agent_id:
+                raise ValueError("--goal-outcome-update-json requires the bound --agent-id")
+            path = Path(outcome_path).expanduser()
+            if path.stat().st_size > 262144:
+                raise ValueError("outcome update exceeds 256 KiB")
+            outcome_update = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(outcome_update, dict) or set(outcome_update) != {"operation_id", "expected_provider_revision", "refinement"} or not isinstance(outcome_update["refinement"], dict):
+                raise ValueError("outcome update requires operation_id, expected_provider_revision and refinement")
         inline_vision_packet = inline_agent_vision_packet(args)
         if args.agent_vision_json and inline_vision_packet:
             raise ValueError(
@@ -545,6 +559,11 @@ def handle_refresh_state_command(
     try:
         if getattr(args, "resume_external_sinks", None) and not getattr(args, "turn_instance_id", None):
             raise ValueError("--resume-external-sinks requires the original --turn-instance-id")
+        if outcome_update is not None:
+            from ..control_plane.goals.acceptance import refine_goal_outcome, public_goal_acceptance
+            outcome_update_result = public_goal_acceptance(refine_goal_outcome(
+                registry_path=registry_path, runtime_root=args.runtime_root, goal_id=args.goal_id,
+                agent_id=args.agent_id, execute=not args.dry_run, **outcome_update))
         payload = refresh_state_run(
             external_delivery={"suppress": bool(args.suppress_external_sinks),
                                "resume_key": getattr(args, "resume_external_sinks", None)},
@@ -616,6 +635,10 @@ def handle_refresh_state_command(
             payload["error"] += " Required transition: " + "; ".join(
                 transition["next_cli_actions"]
             )
+    if outcome_update_result is not None:
+        # This native effect precedes the ordinary writeback. Retain its receipt
+        # even if later settlement fails; replay the identical operation once.
+        payload["goal_outcome_update"] = outcome_update_result
     projected_capabilities = runtime_capabilities_for_cli_projection(
         args.available_capabilities
     )

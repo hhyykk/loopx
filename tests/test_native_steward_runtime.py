@@ -60,7 +60,18 @@ def test_private_steward_uses_machine_grant_and_continues_without_widening_other
     ]
     prompts = [call["params"]["input"][0]["text"] for call in calls if call.get("method") == "turn/start"]
     assert "normal tools and skills" in prompts[-1]
-    assert "Remember the owner's initial request." in prompts[1]
+    injected = [call["params"]["items"] for call in calls
+                if call.get("method") == "thread/inject_items"]
+    assert [len(items) for items in injected] == [2, 4]
+    assert [item["role"] for item in injected[0]] == ["user", "assistant"]
+    assert injected[0][0]["content"] == [{
+        "type": "input_text", "text": "Remember the owner's initial request.",
+    }]
+    assert injected[1][:2] == injected[0]
+    assert injected[1][2]["content"] == [{
+        "type": "input_text", "text": "Respect the owner's explicit read-only choice.",
+    }]
+    assert all("Remember the owner's initial request." not in prompt for prompt in prompts[1:])
     assert "Do not inspect arbitrary repositories" not in prompts[-1]
     transport.reconcile()
     assert all(item[0] == "steward-app" for item in provider.writes)

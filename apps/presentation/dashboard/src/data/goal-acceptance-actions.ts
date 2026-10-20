@@ -36,6 +36,7 @@ export function preparedAcceptancePlan(proposals: TypedActionProposal[], goalId:
   if (proposal.permission_classification !== "local_command_execution"
       || !["preview_ready", "deferred"].includes(proposal.status) || proposal.gate || proposal.error
       || !proposal.available_transitions.includes("apply")) return null;
-  const parsed = preparedDocument.safeParse(proposal.normalized_parameters.document);
+  const input = proposal.normalized_parameters.document as Record<string, unknown> | undefined;
+  const parsed = preparedDocument.safeParse(input?.outcome_id === undefined ? input : proposal.normalized_parameters.resolved_document);
   return parsed.success ? {proposal, document: parsed.data} : null;
 }

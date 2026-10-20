@@ -1,4 +1,5 @@
 import {PrivateConversationPanel} from "./private-conversation-panel";
+import {useLarkApps} from "../../data/use-lark-apps";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
@@ -7,6 +8,7 @@ import {
   Loader2,
   MessageSquareText,
   Plus,
+  RefreshCw,
   Search,
   Settings2,
   Unlink,
@@ -19,11 +21,9 @@ import {
   connectLarkGoalTopic,
   disconnectLarkGoalTopic,
   fetchLarkAppSetup,
-  fetchLarkApps,
   fetchLarkConnections,
   fetchLarkGroupChats,
   startLarkAppSetup,
-  type LarkApp,
   type LarkAppSetup,
   type LarkCaptureScope,
   type LarkGoalConnection,
@@ -182,6 +182,7 @@ function larkErrorMessage(cause: unknown, fallback: string, t: WorkspaceTranslat
       lark_message_permissions_required: t("lark.error.messagePermissions"),
       lark_app_required: t("lark.error.appRequired"),
       invalid_lark_app: t("lark.error.invalidApp"),
+      lark_configuration_unavailable: t("lark.error.configuration"),
       lark_group_lookup_failed: t("lark.error.groupLookup"),
       provider_api_failed: t("lark.error.provider"),
     };
@@ -191,6 +192,7 @@ function larkErrorMessage(cause: unknown, fallback: string, t: WorkspaceTranslat
 }
 
 export function LarkSettingsPage({
+  onOpenOriginalConversation,
   embedded = false,
   focusGoalConnection = false,
   goals,
@@ -204,10 +206,12 @@ export function LarkSettingsPage({
   initialGoalId?: string | null;
   onChanged?: () => void;
   onClose: () => void;
+  onOpenOriginalConversation?: (target: import("../../data/chat").BoundConversationTarget) => void;
 }) {
   const { t } = useWorkspaceI18n();
   const [tab, setTab] = useState<Tab>("connections");
-  const [apps, setApps] = useState<LarkApp[]>([]);
+  const {apps, loading: appsLoading, error: appsError, refresh: refreshApps} = useLarkApps();
+  const appCount = appsLoading || appsError !== null ? "…" : apps.length;
   const [connections, setConnections] = useState<LarkGoalConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -245,30 +249,36 @@ export function LarkSettingsPage({
   const openedSetupUrl = useRef<string | null>(null);
   const desktopHost = Boolean((window as Window & { __TAURI__?: unknown }).__TAURI__);
   const focusedGoalOpened = useRef(false);
+  const connectionRead = useRef<AbortController | null>(null);
 
   async function refresh() {
+    connectionRead.current?.abort();
+    const controller = new AbortController();
+    connectionRead.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const [nextApps, nextConnections] = await Promise.all([
-        fetchLarkApps(),
-        fetchLarkConnections(),
-      ]);
-      setApps(nextApps);
+      const nextConnections = await fetchLarkConnections(AbortSignal.any([controller.signal, AbortSignal.timeout(7000)]));
+      if (controller.signal.aborted) return;
       setConnections(nextConnections);
       setCliUnavailable(false);
-      setAppRef((current) => current || nextApps.find((app) => app.reply_ready)?.app_ref || nextApps.find((app) => app.ready)?.app_ref || nextApps[0]?.app_ref || "");
     } catch (cause) {
+      if (controller.signal.aborted) return;
       setCliUnavailable(larkCliUnavailable(cause));
       setError(larkErrorMessage(cause, t("lark.error.configuration"), t));
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }
 
   useEffect(() => {
     void refresh();
+    return () => connectionRead.current?.abort();
   }, []);
+
+  useEffect(() => {
+    setAppRef(current => apps.some(app => app.app_ref === current) ? current : apps.find(app => app.ready)?.app_ref ?? apps[0]?.app_ref ?? "");
+  }, [apps]);
 
   useEffect(() => {
     if (!focusGoalConnection || loading || focusedGoalOpened.current || !initialGoalId) return;
@@ -332,6 +342,7 @@ export function LarkSettingsPage({
             }
           }
           if (snapshot.status === "ready") {
+            void refreshApps();
             await refresh();
             setAppRef(snapshot.app_ref);
             setAgentAppRefs({});
@@ -437,7 +448,7 @@ export function LarkSettingsPage({
   function openSetup() {
     // Every setup entry (toolbar, connection dialog) meets the same fact:
     // without lark-cli the setup can only fail until LoopX restarts.
-    if (cliUnavailable) return;
+    if (cliUnavailable || larkCliUnavailable(appsError)) return;
     setSetupSnapshot(null);
     setSetupError(null);
     openedSetupUrl.current = null;
@@ -543,27 +554,28 @@ export function LarkSettingsPage({
         </header>
       )}
 
-      <PrivateConversationPanel />
       <nav className="personal-lark-tabs" aria-label={t("lark.management")}>
-        <button aria-current={tab === "apps" ? "page" : undefined} onClick={() => setTab("apps")} type="button">{t("lark.apps")} <span>{loading ? "…" : apps.length}</span></button>
+        <button aria-current={tab === "apps" ? "page" : undefined} onClick={() => setTab("apps")} type="button">{t("lark.apps")} <span>{appCount}</span></button>
         <button aria-current={tab === "connections" ? "page" : undefined} onClick={() => setTab("connections")} type="button">{t("lark.connections")} <span>{loading ? "…" : connections.length}</span></button>
       </nav>
+      {tab === "connections" ? <PrivateConversationPanel apps={apps.filter(app => app.ready && app.app_ref !== "default")} onOpenOriginal={onOpenOriginalConversation} /> : null}
       {error ? <p className="personal-notification-error">{error}</p> : null}
+      {appsError ? <p className="personal-notification-error">{larkErrorMessage(appsError, t("lark.error.configuration"), t)}</p> : null}
       {loading ? <div className="personal-lark-loading"><Loader2 className="is-spinning" size={18} />{t("lark.loading")}</div> : null}
 
-      {!loading && tab === "apps" ? (
+      {tab === "apps" ? (
         <div className="personal-lark-apps">
-          <div className="personal-lark-app-toolbar"><span>{t("lark.reusableApps", { count: apps.length })}</span><button className="personal-primary-action" disabled={cliUnavailable} onClick={openSetup} type="button"><Plus size={16} />{t("lark.newApp")}</button></div>
+          <div className="personal-lark-app-toolbar"><span>{t("lark.reusableApps", { count: appCount })}</span><div className="personal-lark-app-actions"><button className="personal-icon-button" title={t("lark.retryVerification")} aria-label={t("lark.retryVerification")} disabled={appsLoading} onClick={() => void refreshApps()} type="button"><RefreshCw size={16} /></button><button className="personal-primary-action" disabled={cliUnavailable || larkCliUnavailable(appsError)} onClick={openSetup} type="button"><Plus size={16} />{t("lark.newApp")}</button></div></div>
           <div className="personal-lark-app-grid">
             {apps.map((app) => (
               <article className="personal-lark-app-card" key={app.app_ref}>
                 <span className="personal-lark-app-avatar"><Bot size={19} /></span>
                 <div><strong>{app.label}</strong><small>{app.brand} · lark-cli profile</small></div>
-                <em className={app.reply_ready ? "is-ready" : "is-off"}>{app.reply_ready ? t("lark.autoReplyReady") : app.ready ? t("lark.needsMessagePermissions") : t("lark.needsSetup")}</em>
+                <em className={app.reply_ready ? "is-ready" : "is-off"}>{app.health_error_code === "lark_app_unverified" ? t("lark.verificationPending") : app.health_error_code === "lark_app_verification_failed" ? t("lark.verificationFailed") : app.reply_ready ? t("lark.autoReplyReady") : app.ready ? t("lark.needsMessagePermissions") : t("lark.needsSetup")}</em>
                 <p>{t("lark.goalConnections", { count: connections.filter((connection) => connection.app_ref === app.app_ref).length })}{app.ready && !app.reply_ready ? ` · ${t("lark.autoReplyUnavailable")}` : ""}</p>
               </article>
             ))}
-            {apps.length === 0 ? <p className="personal-lark-empty">{t("lark.noProfiles")}</p> : null}
+            {appsLoading ? <p role="status">{t("lark.loading")}</p> : apps.length === 0 && !appsError ? <p className="personal-lark-empty">{t("lark.noProfiles")}</p> : null}
           </div>
         </div>
       ) : null}
@@ -619,7 +631,7 @@ export function LarkSettingsPage({
               <label><span>{t("lark.bindGoal")}</span><div>{editingConnection.goal_title}</div></label>
               <small>{t("lark.editPreservesIdentity")}</small>
             </> : <>
-            <label><span>{t("lark.appProfile")}</span><select aria-label={t("lark.appProfile")} disabled={loading} onChange={(event) => { if (event.target.value === "__register__") openSetup(); else { setAppRef(event.target.value); setAgentAppRefs({}); } }} value={appRef}>{loading ? <option value="">{t("lark.appLoading")}</option> : <>{apps.map((app) => <option disabled={!app.ready} key={app.app_ref} value={app.app_ref}>{app.label}{app.reply_ready ? "" : app.ready ? ` · ${t("lark.needsMessagePermissions")}` : ` · ${t("lark.needsSetup")}`}</option>)}<option disabled={cliUnavailable} value="__register__">{t("lark.registerAnother")}</option></>}</select><small>{t("lark.defaultAgentAppDescription")}</small></label>
+            <label><span>{t("lark.appProfile")}</span><select aria-label={t("lark.appProfile")} disabled={loading} onChange={(event) => { if (event.target.value === "__register__") openSetup(); else { setAppRef(event.target.value); setAgentAppRefs({}); } }} value={appRef}>{loading ? <option value="">{t("lark.appLoading")}</option> : <>{apps.map((app) => <option disabled={!app.ready} key={app.app_ref} value={app.app_ref}>{app.label}{app.reply_ready ? "" : app.ready ? ` · ${t("lark.needsMessagePermissions")}` : app.health_error_code === "lark_app_unverified" ? ` · ${t("lark.verificationPending")}` : app.health_error_code === "lark_app_verification_failed" ? ` · ${t("lark.verificationFailed")}` : ` · ${t("lark.needsSetup")}`}</option>)}<option disabled={cliUnavailable || larkCliUnavailable(appsError)} value="__register__">{t("lark.registerAnother")}</option></>}</select><small>{t("lark.defaultAgentAppDescription")}</small></label>
             {selectedApp?.ready && !selectedApp.reply_ready ? <div className="personal-lark-group-state is-error" role="alert">{t("lark.appPermissions")}</div> : null}
             <label>
               <span>{t("lark.groupChat")}</span>
@@ -656,7 +668,7 @@ export function LarkSettingsPage({
                         onChange={(event) => setAgentAppRefs((current) => ({ ...current, [agent.agentId]: event.target.value }))}
                         value={agentAppRefs[agent.agentId] ?? appRef}
                       >
-                        {apps.map((app) => <option disabled={!app.ready} key={app.app_ref} value={app.app_ref}>{app.label}{app.reply_ready ? "" : app.ready ? ` · ${t("lark.needsMessagePermissions")}` : ` · ${t("lark.needsSetup")}`}</option>)}
+                        {apps.map((app) => <option disabled={!app.ready} key={app.app_ref} value={app.app_ref}>{app.label}{app.reply_ready ? "" : app.ready ? ` · ${t("lark.needsMessagePermissions")}` : app.health_error_code === "lark_app_unverified" ? ` · ${t("lark.verificationPending")}` : app.health_error_code === "lark_app_verification_failed" ? ` · ${t("lark.verificationFailed")}` : ` · ${t("lark.needsSetup")}`}</option>)}
                       </select>
                     </label>
                   ))}

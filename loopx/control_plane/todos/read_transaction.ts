@@ -162,5 +162,9 @@ async function todoListPayload(input: JsonObject, original: JsonObject[], fields
     coverage: {scope: "goal_todo_query", expected_count: projection.uncapped_todo_count,
       included_count: todos.length, shown_count: todos.length, available_count: projection.uncapped_todo_count,
       omitted: Number(projection.uncapped_todo_count) > todos.length ? [{reason: "query_limit", count: Number(projection.uncapped_todo_count) - todos.length}] : []}});
-  return {schema_version: TODO_READ_RESULT, payload: result};
+  return {schema_version: TODO_READ_RESULT, payload: result,
+    ...(canonical?.goal_acceptance_oracle_observation_basis ? {canonical_acceptance: {
+      goal_acceptance_contract: canonical.goal_acceptance_contract,
+      goal_acceptance_oracle_observation_basis: canonical.goal_acceptance_oracle_observation_basis,
+    }} : {})};
 }

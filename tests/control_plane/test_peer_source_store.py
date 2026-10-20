@@ -176,6 +176,64 @@ def test_split_store_handoff_can_forward_source_context(tmp_path, monkeypatch, p
     assert not (root / "chat").exists(), "A context read must not create another Chat store"
 
 
+@pytest.mark.parametrize("provider", ["file", "sqlite", "source_session"])
+@pytest.mark.parametrize("reason,typed", [
+    ("original_route_unavailable", True),
+    ("return_authorization_unavailable", True),
+    ("initial_delivery_receipt_unavailable", True),
+    ("original_route_unavailable", False),
+])
+def test_prewrite_return_retains_typed_cause_and_recovers_original_result(
+    tmp_path, monkeypatch, provider, reason, typed,
+):
+    from datetime import datetime, timedelta, timezone
+    from loopx.capabilities.manager_context.roundtrip import ReturnResolutionBlocked, reply_status
+
+    root, registry, store, session, turn, receipt = source_request(tmp_path, monkeypatch, provider=provider)
+    rid = receipt["request_id"]
+    cli(root, registry, "agent-a", "acknowledge", "--request-id", rid,
+        "--decision", "adopt", "--reason", "Read the original source")
+    cli(root, registry, "agent-a", "report", "--request-id", rid,
+        "--reply-text", "Checked the original source and its result.")
+    failed_reads, writes = [], []
+    unavailable = True
+
+    def sender(*_):
+        if unavailable:
+            failed_reads.append(reason)
+            # Prose with the same spelling is still an untyped outage. Only
+            # the adapter's Core-classified reason may enter public readback.
+            if typed:
+                raise ReturnResolutionBlocked(reason, "Synthetic source is temporarily unavailable")
+            raise ValueError(reason)
+        writes.append("original audience")
+        return {"reply_verified": True, "idempotency_key": "synthetic-provider-receipt"}
+
+    now = datetime.now(timezone.utc)
+    expected = reason if typed else "original_route_or_return_delivery_unavailable"
+    for offset in (0, 10):
+        drain(root, registry, store, sender, now=now + timedelta(minutes=offset))
+        status = reply_status(root, receipt)[0]
+        assert status["status"] == "retry_pending" and status["error"] == expected
+        public = project_chat_session_snapshot(root, store, session["session_id"], registry=registry)
+        returned = [row for row in public["messages"] if row.get("origin") == "manager_followup"]
+        assert len(returned) == 1 and returned[0]["turn_id"] == turn["turn_id"]
+        assert returned[0]["return_delivery"]["error"] == expected
+    assert failed_reads == [reason, reason] and writes == []
+    # Source repair resumes the original retry clock and conclusion. Keeping
+    # its typed cause must not terminalize a pending initial provider receipt.
+    unavailable = False
+    recovered = ChatSessionStore(store.root.parent)
+    drain(root, registry, recovered, sender, now=now + timedelta(minutes=20))
+    drain(root, registry, recovered, sender, now=now + timedelta(minutes=30))
+    assert reply_status(root, receipt)[0]["status"] == "delivered"
+    assert writes == ["original audience"]
+    returned = [row for row in recovered.messages(session["session_id"])
+                if row.get("origin") == "manager_followup"]
+    assert len(returned) == 1 and returned[0]["turn_id"] == turn["turn_id"]
+    assert recovered.turn_for_client(session["session_id"], turn["client_turn_id"])["turn_id"] == turn["turn_id"]
+
+
 def route_path(root, receipt):
     return _root(root) / "roundtrips" / (receipt["request_id"] + ".json")
 

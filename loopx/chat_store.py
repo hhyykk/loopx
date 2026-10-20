@@ -16,7 +16,6 @@ from weakref import WeakValueDictionary
 
 from .chat import (
     require_matching_message_replay,
-    require_matching_replay,
     resolve_attached_completion_replay,
 )
 from .capabilities.steward_executor.allocation import (
@@ -26,7 +25,11 @@ from .capabilities.native_chat.model_settings import (
     MODEL_SELECTION_UNSET as _MODEL_SELECTION_UNSET, normalize_agent_model_id, normalize_session_model_settings,
 )
 from .chat_event_cache import ChatEventCache
-from .chat_ingress import ChatIngressStore
+from .chat_ingress import (
+    ChatIngressStore,
+    SESSION_QUEUE_MAX_PENDING as SESSION_QUEUE_MAX_PENDING,
+    SESSION_QUEUE_TTL_SECONDS as SESSION_QUEUE_TTL_SECONDS,
+)
 from .control_plane.chat_turn_acceptance import (
     CHAT_TURN_ACCEPTANCE_CAPSULE_SCHEMA,
     AcceptedManagedTurn,
@@ -47,8 +50,6 @@ RESUMABLE_SESSION_STATES = {"ready", "busy", "stale", "resuming"}
 TERMINAL_TURN_STATES = {"completed", "interrupted", "timed_out", "failed"}
 TERMINAL_EVENT_KINDS = {"turn.completed", "turn.failed", "turn.interrupted"}
 REPLAY_ONLY_EVENT_KINDS = {"answer.delta", "assistant.delta", "agent.phase", "turn.activity"}
-SESSION_QUEUE_MAX_PENDING = 20
-SESSION_QUEUE_TTL_SECONDS = 3600
 
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 
@@ -87,7 +88,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _read_jsonl(
-    path: Path, *, raise_on_error: bool = False,
+    path: Path, *, raise_on_error: bool = False, strict: bool = False,
 ) -> list[dict[str, Any]]:
     try:
         lines = path.read_bytes().split(b"\n")
@@ -99,12 +100,18 @@ def _read_jsonl(
         return []
     rows: list[dict[str, Any]] = []
     for line in lines:
+        if not line.strip():
+            continue
         try:
             item = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if strict:
+                raise ValueError("invalid Chat journal record") from exc
             continue
         if isinstance(item, dict):
             rows.append(item)
+        elif strict:
+            raise ValueError("invalid Chat journal record")
     return rows
 
 
@@ -376,6 +383,45 @@ class ChatSessionStore(ChatIngressStore):
         payload = _read_json(self._session_path(session_id))
         return payload if payload.get("schema_version") == CHAT_SESSION_SCHEMA_VERSION else None
 
+    def reserve_loopx_outcome_request(
+        self, session_id: str, *, turn_id: str, operation_id: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Pin one host envelope before dispatch, including across later Turns.
+
+        This is private transport provenance, not an acceptance receipt. The
+        caller must revalidate current admission and replay at the canonical
+        owner; a saved request cannot establish that the write committed.
+        """
+        if self.load_session(session_id) is None:
+            raise KeyError("chat session was not found")
+        request_digest = hashlib.sha256(json.dumps(
+            request, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+            allow_nan=False,
+        ).encode()).hexdigest()
+        operation_key = hashlib.sha256(operation_id.encode()).hexdigest()
+        path = self._session_dir(session_id) / "outcome-requests" / f"{operation_key}.json"
+        with exclusive_file_lock(path, agent_id="loopx-chat", operation="reserve_outcome_request"):
+            if path.exists():
+                existing = _read_json(path)
+                if (existing.get("session_id") != session_id
+                        or existing.get("operation_id") != operation_id
+                        or existing.get("request_sha256") != request_digest
+                        or not isinstance(existing.get("source_ref"), str)
+                        or not existing["source_ref"]):
+                    raise ValueError("outcome refinement operation identity conflict")
+                return existing
+            scope = hashlib.sha256(json.dumps([session_id, operation_id]).encode()).hexdigest()[:16]
+            payload = {
+                "session_id": session_id,
+                "operation_id": operation_id,
+                "request_sha256": request_digest,
+                "request": request,
+                "source_ref": f"turn:{_opaque_id(turn_id, field='turn_id')}:{scope}",
+            }
+            _atomic_write_json(path, payload)
+            return payload
+
     def update_session(self, session_id: str, **changes: Any) -> dict[str, Any]:
         path = self._session_path(session_id)
         with self._session_lock(session_id):
@@ -396,6 +442,7 @@ class ChatSessionStore(ChatIngressStore):
                     "upstream_mode",
                     "codex_home",
                     "manager_context_version",
+                    "upstream_context_history",
                     "coordination_context_version",
                     "external_conversation_binding_id",
                     "loopx_mode",
@@ -417,6 +464,17 @@ class ChatSessionStore(ChatIngressStore):
                 unknown = set(changes) - allowed
                 if unknown:
                     raise ValueError(f"unsupported chat session fields: {sorted(unknown)}")
+                if "upstream_context_history" in changes:
+                    history = changes["upstream_context_history"]
+                    previous = payload.get("upstream_context_history") or []
+                    if not isinstance(history, list) or history[:len(previous)] != previous:
+                        raise ValueError("native context provenance must preserve its prior prefix")
+                    for item in history:
+                        if (not isinstance(item, dict) or set(item) != {"thread_id", "manager_context_version"}
+                                or item["manager_context_version"] is not None and (
+                                    type(item["manager_context_version"]) is not int or item["manager_context_version"] < 0)):
+                            raise ValueError("invalid native context provenance")
+                        _opaque_id(item["thread_id"], field="upstream_thread_id")
                 if "external_conversation_binding_id" in changes:
                     identity = _opaque_id(changes["external_conversation_binding_id"], field="external_conversation_binding_id")
                     if payload.get("session_mode") != CHAT_SESSION_MODE_ATTACHED or payload.get("external_conversation_binding_id") not in {None, identity}:
@@ -1106,119 +1164,6 @@ class ChatSessionStore(ChatIngressStore):
                     dispatch_reason=plan.dispatch_reason,
                 )
 
-    def create_queued_turn(
-        self,
-        session_id: str,
-        *,
-        client_turn_id: str,
-        message: str,
-        attachments: list[dict[str, Any]] | None = None,
-        goal_instance_id: str | None = None,
-        ttl_seconds: int = SESSION_QUEUE_TTL_SECONDS,
-        origin: str = "external",
-        external_agent_target: dict[str, Any] | None = None,
-    ) -> tuple[dict[str, Any], bool]:
-        """Persist one bounded follow-up without replacing the active Turn."""
-
-        client_id = _opaque_id(client_turn_id, field="client_turn_id")
-        from .chat_attachments import normalize_chat_image_attachments, validate_chat_turn_envelope
-        normalized_attachments = normalize_chat_image_attachments(attachments) or None
-        if normalized_attachments:
-            validate_chat_turn_envelope({"message": message, "attachments": normalized_attachments})
-        session_path = self._session_path(session_id)
-        with self._session_lock(session_id):
-            with exclusive_file_lock(
-                session_path,
-                agent_id="loopx-chat",
-                operation="create_chat_queued_turn",
-            ):
-                existing = self.turn_for_client(session_id, client_id)
-                if existing is not None:
-                    require_matching_replay(
-                        existing,
-                        identity="client_turn_id",
-                        request={
-                            "message": str(message),
-                            "attachments": normalized_attachments,
-                            "origin": _opaque_id(origin, field="origin"),
-                            "external_agent_target": external_agent_target,
-                        },
-                    )
-                    return existing, False
-                session = self.load_session(session_id)
-                if session is None or session.get("status") == "closed":
-                    raise KeyError("chat session was not found")
-                now = datetime.now(timezone.utc)
-                queued = [
-                    turn
-                    for turn in self.queued_turns(session_id)
-                    if (_instant(turn.get("expires_at")) or now + timedelta(seconds=1)) > now
-                ]
-                if len(queued) >= SESSION_QUEUE_MAX_PENDING:
-                    raise RuntimeError("session_queue_full")
-                turn_id = uuid.uuid4().hex
-                now_text = now.isoformat().replace("+00:00", "Z")
-                payload = {
-                    "schema_version": CHAT_TURN_SCHEMA_VERSION,
-                    "turn_id": turn_id,
-                    "session_id": session_id,
-                    **(
-                        {
-                            "goal_instance_id": _opaque_id(
-                                goal_instance_id,
-                                field="goal_instance_id",
-                            )
-                        }
-                        if goal_instance_id is not None
-                        else {}
-                    ),
-                    "client_turn_id": client_id,
-                    "status": "queued",
-                    **({"external_agent_target": external_agent_target} if external_agent_target is not None else {}),
-                    "message": str(message),
-                    **({"attachments": normalized_attachments} if normalized_attachments else {}),
-                    "origin": _opaque_id(origin, field="origin"),
-                    "upstream_turn_id": None,
-                    "response": None,
-                    "error_code": None,
-                    "error": None,
-                    "created_at": now_text,
-                    "expires_at": (now + timedelta(seconds=max(1, ttl_seconds)))
-                    .isoformat()
-                    .replace("+00:00", "Z"),
-                    "started_at": None,
-                    "first_event_at": None,
-                    "completed_at": None,
-                    "last_activity_at": now_text,
-                    "delta_count": 0,
-                    "sse_reconnect_count": 0,
-                }
-                path = self._turn_path(session_id, turn_id)
-                _atomic_write_json(path, payload)
-                os.chmod(path, 0o600)
-                session.update(
-                    {
-                        "last_activity_at": now_text,
-                        "updated_at": utc_now(),
-                    }
-                )
-                _atomic_write_json(session_path, session, preserve_mode=True)
-            self.append_message(
-                session_id,
-                role="user",
-                text=message,
-                turn_id=turn_id,
-                origin=origin,
-                attachments=normalized_attachments,
-            )
-            self.append_event(
-                session_id,
-                turn_id,
-                kind="turn.queued",
-                payload={"delivery_mode": "session_queue"},
-            )
-            return payload, True
-
     def queued_turns(self, session_id: str) -> list[dict[str, Any]]:
         session = self.load_session(session_id)
         if session is None:
@@ -1346,6 +1291,7 @@ class ChatSessionStore(ChatIngressStore):
                         raise ValueError(
                             "queued Turn Goal instance does not match its Session"
                         )
+                    self._recover_queued_turn_input(session_id, turn)
                     if host_claim_id:
                         now_text = utc_now()
                         turn.update(

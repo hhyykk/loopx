@@ -78,14 +78,77 @@ are withheld on failure; retry targets the failed selection, not the last
 successful reader.
 Switching prepared readers clears source-local question and analysis selections;
 Back restores the previous reader's URL and its own selection.
-All mutation endpoints are denied. A read-only source does not imply an
+By default all mutation endpoints are denied. A read-only source does not imply an
 analysis pack, model execution, adoption or validated benefit; analysis remains
-unavailable until its existing owner binds the appropriate source pack.
+unavailable until its existing owner binds the appropriate source pack and the
+operator explicitly enables [local analysis](../reference/trajectory-assessment.md#existing-isolated-goal-sources).
+That separate local provider uses the original source Goal id and a
+source-namespace-isolated store; it creates no Goal mirror or source mutations.
 The adapter uses one local Python process with one HTTP listener/thread per
 prepared source. Cache misses invoke the source's native status CLI or bounded
 log read; no lower CPU, process or IO cost is implied. Local host/container
 readback and SSH command composition are separate validation boundaries; a
 composed command test does not prove a live remote host/container journey.
+
+### Native App source Goals
+
+A prepared reader or a separately served workspace is an access adapter. It
+does not complete a request to use the installed LoopX App. For that request,
+the App's normal Chat service must discover the original Goals through its
+persisted directory, keep them beneath the requested parent, and use the same
+origin for status, native Task/history reads and explicit analysis. A browser
+URL, local-storage source switch or empty local analysis Goal is not a substitute.
+Qualify the running installed App and service identities, parent-to-child
+navigation, original evidence, analysis readback, source failure and reopening.
+Keep backend, browser-renderer and native WebView evidence distinct.
+
+The registry's `goal_source_links` contains only owner-configured references:
+`parent_goal_id` plus the existing explicit source object above, scoped to one
+original Goal. It creates no execution Goal, state document, worker or copied
+registry entry. The TypeScript presentation owner validates the local parent
+and unambiguous original identity; the existing source reader performs IO.
+`POST /api/chat/goal-sources` admits that connection through the normal loopback
+owner boundary after verifying original membership; `GET` reads safe descriptors.
+The same POST removes a link when given `parent_goal_id`, `goal_id` and its
+current `source_namespace`; removal preserves the original Goal and local
+analysis artifacts and refuses a stale physical identity.
+An Agent prepares the connection within the owner's authority. Do not require
+the owner to discover runtime paths, write a manifest or copy a tunnel command.
+Links survive ordinary registry synchronization and App restart. Ambiguous Goal
+ids, unknown parents and source replacement are refused instead of borrowing
+another Goal's state. Native execution/configuration remains on the original
+runtime; the local App does not acquire those writes through a display link.
+
+Each linked Goal carries `source_access` in the workspace projection. Its
+original Goal id, tasks, explicit graph edges and native measurements remain
+intact; the local link owns only parent organization. Source identity pins
+history and analysis requests. First-layer reads invoke no model. Optional
+second-layer artifacts use the existing toolkit store beneath the local
+runtime's `goal-sources/<physical-namespace>` and remain bound to that original
+Goal. Every model start/retry revalidates original membership without the display
+cache. Source loss must stay local to the affected Goal and must not launch a
+model or strand the rest of the App. Native liveness, causal value and missing
+relations cannot be supplied by the local parent or an analysis result.
+
+Use the link's display label consistently after native status loads, while
+preserving the original Goal objective, id and Tasks. Two runs can have the
+same native title; loading their evidence must not erase their distinguishing
+labels. Read-only linked Goals offer no local stop, resume or delete control.
+An unavailable source has a source-specific error and an explicit retry,
+without repeating ordinary service-restart retries or affecting other Goals.
+
+When a disposable source has stopped, an owner-authorized retained runtime can
+remain the original historical source. Verify its original registry membership,
+canonical store identity and complete native history through the existing reader
+before replacing the lost connection. Read the retained registry/runtime in place;
+do not create or rename an execution Goal, restart a solver, or rewrite its state
+to make the display work. Label the link as historical, preserve the source bytes,
+and retain the old namespace's artifacts. Admit the replacement through the same
+source-link owner; its new physical namespace must invalidate old cursors and
+analysis selection. Re-register an existing evidence pack only after verifying
+its original run/window, hashes and literal excerpts. Neither recovery nor
+registration starts analysis or turns an old native measurement into a current
+or countable study result.
 
 ## Task-first delivery / 从用户任务开始
 

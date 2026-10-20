@@ -36,6 +36,8 @@ def test_capture_preserves_full_dispatcher_and_envelope_needs_explicit_opt_in(tm
     assert payload['interface_budget']['within_budget'], payload['interface_budget']
     assert '--turn-envelope --decision-output-root' in payload['quota_guard_command']
     assert 'writeback.settlement_plan.ordered_steps' in payload['task_body']
+    assert 'When present, read inline `agent_context` before planning.' in payload['task_body']
+    assert 'an `agent_context.detail_ref`' in payload['task_body']
     assert '--decision-output-root' in payload['thin_prompt_command']
     assert '--turn-envelope' in payload['thin_prompt_command']
     for overrides in (dict(turn_instance_id=None), dict(thin=False, full=True),

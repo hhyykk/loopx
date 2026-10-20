@@ -19,7 +19,8 @@ from loopx.control_plane.status.goal_source import GoalSource
 from loopx.capabilities.explore.result_log import build_explore_node_event, build_explore_edge_event
 class Source(GoalSource):
     def __init__(self, name):
-        super().__init__(name,name,'/registry','/runtime','/cli','/python','/bin','local','host','same-goal')
+        goal_id = 'other-goal' if name == 'Distinct' else 'same-goal'
+        super().__init__(name,name,'/registry','/runtime','/cli','/python','/bin','local','host',goal_id)
     def read_status(self, goal_id=None):
         self.check_access(goal_id)
         if pathlib.Path(sys.argv[1]).exists() and self.id == 'Fresh': raise OSError('unavailable fixture')
@@ -37,7 +38,7 @@ class Source(GoalSource):
         events += [build_explore_edge_event(goal_id=self.goal_id,from_node='route'+str(i),to_node='route'+str(i+1),edge_type='depends_on',recorded_at='2026-01-01T23:%02d:00Z'%(i*30)) for i in range(2)]
         return events
 assets=pathlib.Path(sys.argv[2])
-servers=[RuntimeWorkspaceServer(Source(n),assets) for n in ('Retained','Fresh')]
+servers=[RuntimeWorkspaceServer(Source(n),assets) for n in ('Retained','Fresh','Distinct')]
 catalog=[dict(id=s.source.id,label=s.source.label,status_url=s.status_url) for s in servers]
 for s in servers:
     s.catalog=catalog
@@ -91,6 +92,36 @@ try {
     await page.reload();
     await page.locator(".research-history-coverage").filter({hasText:"92 / 92"}).waitFor();
     await page.goBack();
+    await page.getByRole("heading",{name:"Retained research",exact:true}).waitFor();
+    // Different Goal ids exercise automatic selection cleanup as well as the
+    // source-local node fence above. Cleanup must not rewrite the old source's
+    // entry or add an extra entry that traps Back/Forward on the new source.
+    await page.getByLabel("选择控制面来源",{exact:true}).click();
+    await page.getByRole("option",{name:"Distinct",exact:true}).click();
+    await page.getByRole("button",{name:/Distinct research/}).first().waitFor();
+    await page.waitForFunction(()=>new URL(location.href).searchParams.get("goalId")==="");
+    await page.goBack();
+    await page.getByRole("heading",{name:"Retained research",exact:true}).waitFor({timeout:10000});
+    assert.equal(new URL(page.url()).searchParams.get("goalId"),"same-goal");
+    assert.equal(new URL(page.url()).searchParams.get("research_node"),"route0");
+    await page.screenshot({path:resolve(output,"source-return-desktop.png")});
+    await page.goForward();
+    await page.getByRole("button",{name:/Distinct research/}).first().waitFor();
+    await page.getByRole("button",{name:/Distinct research/}).first().click();
+    await page.getByRole("heading",{name:"Distinct research",exact:true}).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("goalId"),"other-goal");
+    await page.reload();
+    await page.getByRole("heading",{name:"Distinct research",exact:true}).waitFor();
+    await page.getByLabel("选择控制面来源",{exact:true}).click();
+    await page.getByRole("option",{name:"Retained",exact:true}).click();
+    await page.getByRole("button",{name:/Retained research/}).first().waitFor();
+    await page.waitForFunction(()=>new URL(location.href).searchParams.get("goalId")==="");
+    await page.goBack();
+    await page.getByRole("heading",{name:"Distinct research",exact:true}).waitFor({timeout:10000});
+    assert.equal(new URL(page.url()).searchParams.get("goalId"),"other-goal");
+    await page.goForward();
+    await page.getByRole("button",{name:/Retained research/}).first().waitFor();
+    await page.getByRole("button",{name:/Retained research/}).first().click();
     await page.getByRole("heading",{name:"Retained research",exact:true}).waitFor();
     await writeFile(failFile, "unavailable");
     for (let attempt=0;attempt<40;attempt++) {

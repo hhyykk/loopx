@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .acceptance_readback import configured_checks
+
 from ..todos.user_gate import open_user_gate_todo_items
 from ..todos.contract import normalize_todo_decision_scope
 from ..runtime.public_safety import public_safe_compact_text, validate_public_safe_value
@@ -208,7 +210,7 @@ def build_goal_acceptance_observation(
         item.get("goal_acceptance_contract"), asset.get("goal_acceptance_contract"),
         _dict(item.get("agent_todos")).get("goal_acceptance_contract"),
         _dict(asset.get("agent_todos")).get("goal_acceptance_contract"),
-    ) if isinstance(candidate, dict) and candidate.get("enabled") is True), None)
+    ) if isinstance(candidate, dict) and (configured_checks(candidate) is not None or candidate.get("outcome_requirements"))), None)
     return {
         "schema_version": GOAL_ACCEPTANCE_OBSERVATION_SCHEMA_VERSION,
         "goal_id": goal_id,

@@ -7,6 +7,8 @@ fails closed instead of consulting the legacy Markdown projection.
 
 from __future__ import annotations
 
+from ..goals.acceptance_readback import configured_checks
+
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
@@ -259,7 +261,7 @@ def read_canonical_todos_if_promoted(
 
     projected = None
     if include_summary:
-        from ..todos.read_projection import project_todo_read
+        from ..todos.goal_todo_projection import project_todo_read
         from ..runtime.time import now_utc
 
         now = now_utc()
@@ -333,7 +335,7 @@ def read_canonical_todos_if_promoted(
                 code="local_authority_projection_confirmation_invalid", payload=payload,
             )
     if projected is not None and "fields" in projected:
-        from ..todos.read_projection import restore_todo_field_evaluations
+        from ..todos.goal_todo_projection import restore_todo_field_evaluations
         payload["_todo_fields"] = restore_todo_field_evaluations(projected)
     return payload
 
@@ -402,7 +404,7 @@ def canonical_todo_summary_fields(
     goal_acceptance_contract: dict[str, Any] | None = None,
     goal_acceptance_work_guards: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from ..todos.read_projection import canonical_todo_fields
+    from ..todos.goal_todo_projection import canonical_todo_fields
 
     return canonical_todo_fields(todos, rollout_events=rollout_events,
         available_capabilities=available_capabilities,

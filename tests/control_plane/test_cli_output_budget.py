@@ -1745,6 +1745,32 @@ def _assert_mode_variant_budgets(root: Path, *, only: str | None = None) -> None
             )
 
 
+def test_thin_json_budget_retains_full_supported_scope(tmp_path: Path) -> None:
+    # Keep the original public CLI fixture and expand only its authored scope
+    # to the supported boundary. JSON/body budgets must fit complete guidance.
+    with _stable_budget_fixture_root(tmp_path) as root:
+        project, runtime, registry_path, state_file = _write_fixture(root, SCENARIOS[0])
+        command = _surface_commands(
+            project=project, runtime=runtime, registry_path=registry_path,
+            state_file=state_file, output_format="json",
+        )["heartbeat_prompt_thin"]
+        scope = "x" * 320
+        command[command.index("--agent-scope") + 1] = scope
+        exit_code, text = _invoke_cli(command)
+        assert exit_code == 0, text
+        measurement = measure_cli_output(text, output_format="json")
+        assert_cli_output_baseline(
+            CLI_OUTPUT_BUDGET_BY_ID["heartbeat_prompt_thin"], scenario="small",
+            output_format="json", text=text, measurement=measurement,
+        )
+        payload = measurement["payload"]
+        assert scope in payload["task_body"]
+        assert payload["interface_budget"]["max_chars"] == 4200
+        assert payload["interface_budget"]["within_budget"] is True
+        assert "refresh-state --goal-outcome-update-json" in payload["task_body"]
+        assert "Local outcomes never replace root continuation, budget or stop criteria." in payload["task_body"]
+
+
 def test_brief_budget_retains_full_commands_on_real_long_paths() -> None:
     # A reproducible 128-character absolute root; directory depth can still
     # change JSON escaping cost. Keep full routes and this workload;
@@ -1794,15 +1820,18 @@ def test_brief_long_path_budget_retains_semantics_across_parent_depths(
             normalized = json.loads(canonical.replace(
                 json.dumps(root, ensure_ascii=False)[1:-1], "<OWNED_ROOT>"
             ))
-            oversized = text + " " * max(0, 10_801 - len(text))
+            spec = CLI_OUTPUT_MODE_VARIANT_BY_ID["heartbeat_prompt_brief"]
+            oversized = text + " " * max(0, spec.max_chars["json"] + 1 - len(text))
             with pytest.raises(AssertionError, match="variant ceiling"):
                 assert_cli_output_mode_variant(
-                    CLI_OUTPUT_MODE_VARIANT_BY_ID["heartbeat_prompt_brief"],
+                    spec,
                     output_format="json", text=oversized,
                     measurement=measure_cli_output(oversized, output_format="json"),
                 )
         else:
-            assert len(text.splitlines()) == 94
+            # The frozen 94-line body/envelope loses only two diagnostic
+            # lines: one duplicate route and one absent pre-quota command.
+            assert len(text.splitlines()) == 92
             normalized = text.replace(root, "<OWNED_ROOT>")
         outputs.append({"format": output_format, "normalized": normalized})
         return exit_code, text

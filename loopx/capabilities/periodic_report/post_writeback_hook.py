@@ -198,7 +198,7 @@ def build_periodic_report_post_writeback_projection(
     if available_capabilities is None and isinstance(payload.get("turn"), Mapping):
         available_capabilities = payload["turn"].get("available_capabilities")
     if source_todos is None and "todo_source" in payload:
-        from ...control_plane.todos.read_projection import project_todo_read, restore_todo_field_evaluations
+        from ...control_plane.todos.goal_todo_projection import project_todo_read, restore_todo_field_evaluations
         from ...control_plane.runtime.time import now_utc
 
         now = now_utc()

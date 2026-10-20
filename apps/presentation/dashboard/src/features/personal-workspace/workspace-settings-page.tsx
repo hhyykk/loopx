@@ -56,6 +56,7 @@ export function WorkspaceSettingsPage({
   theme,
   attentionNotifications,
   onAttentionNotificationsChange,
+  onOpenOriginalConversation,
 }: {
   callbacks: PersonalWorkspaceCallbacks;
   focusGoalConnection?: boolean;
@@ -69,6 +70,7 @@ export function WorkspaceSettingsPage({
   theme: WorkspaceTheme;
   attentionNotifications?: { enabled: boolean; support: AttentionNotificationSupport };
   onAttentionNotificationsChange?: (enabled: boolean) => void | Promise<void>;
+  onOpenOriginalConversation?: (target: import("../../data/chat").BoundConversationTarget) => void;
 }) {
   const { locale, setLocale, t } = useWorkspaceI18n();
   // Preserve existing Goal-settings links while presenting one capability entry.
@@ -217,6 +219,7 @@ export function WorkspaceSettingsPage({
         </header>
         {tab === "lark" ? (
           <LarkSettingsPage
+            onOpenOriginalConversation={onOpenOriginalConversation}
             embedded
             focusGoalConnection={focusGoalConnection}
             goals={goals}

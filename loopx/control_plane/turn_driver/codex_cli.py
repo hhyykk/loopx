@@ -670,6 +670,10 @@ def run_codex_cli_host(
     if not resolved or not Path(resolved).exists():
         raise ValueError("Codex CLI executable is unavailable")
     lineage = _lineage(request)
+    launch_scope = FirstPartyHostGoalAdmission.launch_scope_for_plan(
+        admission=goal_admission, registry_path=registry_path,
+        goal_id=lineage["goal_id"], planned_goal_ref=request.get("goal_ref"),
+    )
     planned_session = _mapping(request.get("session"))
     planned_action = str(planned_session.get("action") or "")
     context_policy = _mapping(planned_session.get("context_policy"))
@@ -816,7 +820,8 @@ def run_codex_cli_host(
         diagnostics = HostOutputLines(observe_stderr)
         observed = run_host_process(command, project=project, input_text=_prompt(request),
             timeout_seconds=timeout_seconds, drain_timeout_seconds=OUTPUT_DRAIN_TIMEOUT_SECONDS,
-            on_stdout=events.feed, on_stderr=diagnostics.feed)
+            on_stdout=events.feed, on_stderr=diagnostics.feed,
+            launch_guard=lambda: launch_scope("codex_cli_host_launch"))
         events.finish()
         diagnostics.finish()
         returncode = observed["returncode"]

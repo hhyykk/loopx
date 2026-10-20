@@ -57,6 +57,7 @@ class GoalAcceptanceRequestMixin:
     def _goal_acceptance_update(self) -> None:
         from .acceptance import (
             configure_goal_acceptance,
+            refine_goal_outcome,
             public_goal_acceptance,
             verify_goal_acceptance,
         )
@@ -67,11 +68,14 @@ class GoalAcceptanceRequestMixin:
                 "goal_id",
                 "action",
                 "document",
+                "refinement",
                 "expected_provider_revision",
                 "operation_id",
             }:
                 raise ValueError("unknown acceptance request fields")
             goal_id, action = body.get("goal_id"), body.get("action")
+            if action == "disable":  # Retained client spelling; no feature switch.
+                action = "clear-checks"
             revision = body.get("expected_provider_revision")
             if (
                 not isinstance(goal_id, str)
@@ -86,22 +90,29 @@ class GoalAcceptanceRequestMixin:
                 "goal_id": goal_id,
                 "execute": True,
             }
-            if action == "verify":
+            if action == "refine":
+                if set(body) != {"goal_id", "action", "refinement", "expected_provider_revision", "operation_id"}:
+                    raise ValueError("refine requires an exact outcome request")
+                if not isinstance(body["refinement"], dict) or not isinstance(body["operation_id"], str) or not body["operation_id"]:
+                    raise ValueError("refine requires a document and stable operation id")
+                result = public_goal_acceptance(refine_goal_outcome(**common, refinement=body["refinement"],
+                    operation_id=body["operation_id"], expected_provider_revision=revision))
+            elif action == "verify":
                 if set(body) - {"goal_id", "action", "expected_provider_revision"}:
                     raise ValueError("check does not accept declarations or results")
                 result = verify_goal_acceptance(
                     **common, expected_provider_revision=revision
                 )
-            elif action in {"configure", "disable"}:
+            elif action in {"configure", "clear-checks"}:
                 document = body.get("document")
                 if (
                     action == "configure"
                     and not isinstance(document, dict)
-                    or action == "disable"
+                    or action == "clear-checks"
                     and document is not None
                 ):
                     raise ValueError(
-                        "configuration requires a document; disable requires no document"
+                        "configuration requires a document; clear-checks requires no document"
                     )
                 operation_id = body.get("operation_id")
                 if not isinstance(operation_id, str) or not operation_id:
@@ -112,7 +123,6 @@ class GoalAcceptanceRequestMixin:
                     configure_goal_acceptance(
                         **common,
                         document=document,
-                        disable=action == "disable",
                         expected_provider_revision=revision,
                         operation_id=operation_id,
                     )

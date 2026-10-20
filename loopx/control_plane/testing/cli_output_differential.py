@@ -685,6 +685,11 @@ _QUOTA_PROJECTION_ENVELOPE_V0_MIGRATION_ALLOWANCE = GrowthAllowance(
     json={"chars": 3_000, "utf8_bytes": 3_000, "lines": 110, "compact_payload_chars": 2_800},
     markdown={"chars": 192, "utf8_bytes": 224, "lines": 3, "compact_payload_chars": 0},
 )
+# The unchanged 18-row Todo matrix adds 783–854 JSON chars and no lines.
+# Source freshness and omitted-work coverage are useful; Markdown is unchanged.
+_TODO_PROJECTION_ENVELOPE_V0_MIGRATION_ALLOWANCE: dict[Metric, int] = {
+    "chars": 896, "utf8_bytes": 896, "lines": 0, "compact_payload_chars": 896,
+}
 
 
 def _projection_envelope_migration(
@@ -696,6 +701,13 @@ def _projection_envelope_migration(
     if before == after:
         return {}, [], []
     surface_id = str(base.get("surface_id") or "")
+    row_surface = str(base.get("row_id") or "").partition("/")[2].partition("/")[0]
+    if (surface_id == "todo_list" and row_surface in {
+            "todo_list", "todo_list_limited", "todo_list_thin"}
+            and output_format == "json" and before == ()
+            and after == ("loopx_projection_envelope_v0",)):
+        return _TODO_PROJECTION_ENVELOPE_V0_MIGRATION_ALLOWANCE, [], [
+            "Todo projection envelope schema migrated: none -> loopx_projection_envelope_v0"]
     if (surface_id in {"status", "quota_should_run"}
             and before == () and after == ("loopx_projection_envelope_v0",)):
         migration_allowance = (
@@ -790,7 +802,8 @@ def _continuation_instruction_migration(
     base: dict[str, Any], candidate: dict[str, Any],
 ) -> tuple[dict[Metric, int], list[str]]:
     """Qualify only reviewed instruction transitions on their actual carriers."""
-    surface = str(base["row_id"]).split("/")[1]
+    row_id = str(base["row_id"])
+    surface = row_id.split("/")[1]
     before = base.get("continuation_instructions") or {}
     after = candidate.get("continuation_instructions") or {}
 
@@ -822,12 +835,48 @@ def _continuation_instruction_migration(
             # text in brief; retain authority/recovery clauses. Once present,
             # ordinary growth limits resume; no new line or shape allowance.
             chars += 512
+    if row_id.startswith((
+        "surface/heartbeat_prompt_thin/",
+        "variant/heartbeat_prompt_brief/",
+        "variant/heartbeat_prompt_compact/",
+        "variant/heartbeat_prompt_full/",
+    )) and migrated("outcome_refinement"):
+        # The complete outcome paragraph adds 523 chars/bytes in all four
+        # matched heartbeat modes. Bound that one-time addition, including
+        # a boolean budget diagnostic's single-character variation; later
+        # growth, other surfaces, lines and shapes receive no new allowance.
+        chars += 544
     if not chars:
         return {}, []
     return {
         "chars": chars, "utf8_bytes": chars, "lines": 0,
         "compact_payload_chars": chars if base.get("format") == "json" else 0,
     }, ["reviewed continuation instructions migrated; bounded one-time growth"]
+
+
+def _inline_agent_context_migration(
+    base: dict[str, Any], candidate: dict[str, Any],
+) -> tuple[dict[str, int], list[str]]:
+    # The unchanged public multi-subagent fixture grows 1,147 JSON characters
+    # when its bounded contribution replaces a historical reference. Qualify
+    # only that transition (133 chars headroom), never later inline growth.
+    old_paths = set(base.get("json_shape_paths") or [])
+    new_paths = set(candidate.get("json_shape_paths") or [])
+    if (
+        base.get("row_id") == "variant/quota_should_run_turn_envelope_multi_subagent/small/json"
+        and candidate.get("row_id") == base["row_id"]
+        and base.get("format") == candidate.get("format") == "json"
+        and base.get("action_signature_coverages") == candidate.get("action_signature_coverages")
+        == [ACTION_SIGNATURE_COVERAGE_V4]
+        and {"$.agent_context.detail_ref", "$.agent_context.content_hash"} <= old_paths
+        and "$.agent_context.contributions[]" not in old_paths
+        and {"$.agent_context.contributions[]", "$.agent_context.failures"} <= new_paths
+        and "$.agent_context.detail_ref" not in new_paths
+    ):
+        return {metric: 1_280 for metric in ("chars", "utf8_bytes", "compact_payload_chars")}, [
+            "bounded planning context migrated from reference to inline; one-time growth"
+        ]
+    return {}, []
 
 
 def _compare_row_growth(
@@ -852,6 +901,8 @@ def _compare_row_growth(
     review_signals.extend(authoring_signals)
     continuation_allowance, continuation_signals = _continuation_instruction_migration(base, candidate)
     review_signals.extend(continuation_signals)
+    context_allowance, context_signals = _inline_agent_context_migration(base, candidate)
+    review_signals.extend(context_signals)
     deltas: dict[str, int | None] = {}
     allowances: dict[str, int | None] = {}
     for metric in ("chars", "utf8_bytes", "lines", "compact_payload_chars"):
@@ -894,6 +945,7 @@ def _compare_row_growth(
             fence_allowance.get(metric, 0),
             authoring_allowance.get(metric, 0),
             continuation_allowance.get(metric, 0),
+            context_allowance.get(metric, 0),
         )
         # Thin installed prompts contain bilingual lifecycle instructions. A
         # small character-level clarification can cost three bytes per CJK

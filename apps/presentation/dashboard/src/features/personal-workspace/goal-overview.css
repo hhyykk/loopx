@@ -137,3 +137,27 @@
   .goal-overview .is-overview .goal-overview-criteria li { grid-template-columns: 16px minmax(0, 1fr); }
   .goal-overview .is-overview .goal-overview-criteria small { grid-column: 2; }
 }
+
+.goal-outcomes { margin-top: 16px; }
+.goal-outcomes > p, .goal-outcome > small { color: var(--pw-muted); font-size: var(--text-caption); }
+.goal-outcome { padding: 12px 0; border-top: 1px solid var(--pw-line); }
+.goal-outcome h5 { font: inherit; font-weight: 600; margin: 0 0 4px; }
+.goal-outcome .goal-overview-criteria li { grid-template-columns: minmax(0, 1fr) auto; }
+.goal-outcome details { margin-top: 8px; }
+.goal-outcome form { display: grid; gap: 8px; margin-top: 8px; }
+.goal-outcome label { display: grid; gap: 6px; }
+.goal-outcome textarea { width: 100%; min-height: 72px; padding: 8px; resize: vertical; border: 1px solid var(--pw-line); border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+.goal-outcome code { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .goal-outcome .goal-overview-criteria li { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .goal-outcome .goal-overview-criteria small { grid-column: 1; }
+}
+/* Driver observations remain separate from the Goal's activation and acceptance. */
+.goal-overview-worker-state { display: grid; gap: 8px; padding-block: 16px; border-block: 1px solid var(--pw-line); }
+.goal-overview-worker-state h3 { color: var(--pw-muted); font-size: var(--text-caption); font-weight: 500; line-height: var(--leading-caption); }
+.goal-overview-worker-state p { margin-block: .5rem; overflow-wrap: anywhere; }
+.goal-overview-worker-state details { margin-block: .5rem; }
+.goal-overview-worker-state dl { color: var(--pw-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.goal-overview-worker-state dt { font-weight: 600; }
+.goal-overview-worker-state dd { margin: .2rem 0 .6rem; overflow-wrap: anywhere; }
+.goal-overview-worker-state > button { justify-self: start; }

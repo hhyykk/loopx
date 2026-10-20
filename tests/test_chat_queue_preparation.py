@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import runpy
+import subprocess
 import sys
 import threading
 import time
@@ -37,6 +38,252 @@ def session_runtime(tmp_path, *, channel="goal.public-research"):
     )
 
 
+@pytest.mark.parametrize("failure", ["before_message", "after_message", "before_event"])
+@pytest.mark.parametrize("display", ["Execution request", "Original visible request 原文"])
+def test_queue_replay_leaves_prepared_managed_input_with_its_owner(tmp_path, monkeypatch, failure, display):
+    """A queue-mode retry cannot replace the managed owner's display or identity."""
+    store, sid, _ = session_runtime(tmp_path)
+    with monkeypatch.context() as fault:
+        append_message = store.append_message
+
+        def interrupted_message(*args, **kwargs):
+            if failure == "before_message":
+                raise OSError("managed acceptance interrupted")
+            row = append_message(*args, **kwargs)
+            if failure == "after_message":
+                raise OSError("managed acceptance interrupted")
+            return row
+
+        fault.setattr(store, "append_message", interrupted_message)
+        if failure == "before_event":
+            fault.setattr(store, "append_event", lambda *_, **__: (_ for _ in ()).throw(OSError("managed acceptance interrupted")))
+        with pytest.raises(OSError, match="managed acceptance interrupted"):
+            store.create_turn(sid, client_turn_id="original", message="Execution request",
+                              display_message=display, origin="web")
+
+    prepared = store.turn_for_client(sid, "original")
+    assert prepared and "_acceptance" in prepared
+    # Reopen after the crash; the durable capsule belongs to managed acceptance.
+    restarted = ChatSessionStore(tmp_path)
+    before_messages = restarted.messages(sid)
+    before_events = restarted.events_after(sid, prepared["turn_id"], None)
+    replay, created = restarted.create_queued_turn(
+        sid, client_turn_id="original", message="Execution request", origin="web")
+    assert not created and replay == prepared
+    assert restarted.messages(sid) == before_messages
+    assert restarted.events_after(sid, prepared["turn_id"], None) == before_events
+    accepted = restarted.accept_managed_turn(sid, client_turn_id="original", message="Execution request",
+                                             display_message=display, origin="web")
+    assert accepted.turn["turn_id"] == prepared["turn_id"] and "_acceptance" not in accepted.turn
+    assert accepted.dispatch_required
+    inputs = restarted.messages(sid)
+    assert len(inputs) == 1 and inputs[0]["text"] == display
+    assert inputs[0]["message_id"] == prepared["_acceptance"]["message_id"]
+
+
+def test_queue_claim_cannot_dispatch_prepared_managed_acceptance(tmp_path, monkeypatch):
+    """A crash before activation still requires the original acceptance owner."""
+    import loopx.chat_store as chat_store
+
+    store, sid, _ = session_runtime(tmp_path)
+    write = chat_store._atomic_write_json
+
+    def interrupted(path, value, **kwargs):
+        if path == store._session_path(sid):
+            raise OSError("activation interrupted")
+        return write(path, value, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(chat_store, "_atomic_write_json", interrupted)
+        with pytest.raises(OSError, match="activation interrupted"):
+            store.create_turn(sid, client_turn_id="original", message="Execution request",
+                              display_message="Original visible request", origin="web")
+    prepared = store.turn_for_client(sid, "original")
+    restarted = ChatSessionStore(tmp_path)
+    assert restarted.load_session(sid)["active_turn_id"] is None
+    with pytest.raises(ValueError, match="managed.*acceptance"):
+        restarted.claim_next_queued_turn(sid, host_claim_id="queue-host")
+    assert restarted.turn_for_client(sid, "original") == prepared
+    assert restarted.messages(sid) == []
+    assert restarted.events_after(sid, prepared["turn_id"], None) == []
+    assert restarted.load_session(sid)["active_turn_id"] is None
+    accepted = restarted.accept_managed_turn(sid, client_turn_id="original", message="Execution request",
+                                             display_message="Original visible request", origin="web")
+    assert accepted.dispatch_required and accepted.turn["turn_id"] == prepared["turn_id"]
+    assert restarted.messages(sid)[0]["text"] == "Original visible request"
+
+
+@pytest.mark.parametrize("failure", ["before_message", "after_message", "before_event", "after_event"])
+@pytest.mark.parametrize("recovery", ["retry", "claim"])
+def test_queued_input_publication_recovers_after_restart(tmp_path, monkeypatch, failure, recovery):
+    """A durable queue entry must supply its original input exactly once."""
+    store, sid, _ = session_runtime(tmp_path)
+    message = "Keep the complete request: 原文\nsecond line"
+    attachments = [{"id": "fixture", "name": "pixel.png", "data_url":
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII="}]
+    append_message, append_event = store.append_message, store.append_event
+
+    def interrupted_message(*args, **kwargs):
+        if failure == "before_message":
+            raise OSError("input publication interrupted")
+        value = append_message(*args, **kwargs)
+        if failure == "after_message":
+            raise OSError("input publication interrupted")
+        return value
+
+    def interrupted_event(*args, **kwargs):
+        if failure == "before_event":
+            raise OSError("input publication interrupted")
+        value = append_event(*args, **kwargs)
+        if failure == "after_event":
+            raise OSError("input publication interrupted")
+        return value
+
+    monkeypatch.setattr(store, "append_message", interrupted_message)
+    monkeypatch.setattr(store, "append_event", interrupted_event)
+    with pytest.raises(OSError, match="input publication interrupted"):
+        store.create_queued_turn(sid, client_turn_id="original", message=message, origin="external", attachments=attachments)
+    original = store.turn_for_client(sid, "original")
+    assert original and original["status"] == "queued"
+
+    # Reopen the real store, discarding any process-local event buffer/locks.
+    restarted = ChatSessionStore(tmp_path)
+    if recovery == "retry":
+        for _ in range(2):
+            replay, created = restarted.create_queued_turn(
+                sid, client_turn_id="original", message=message, origin="external", attachments=attachments)
+            assert not created and replay == original
+        claimed = restarted.claim_next_queued_turn(sid, host_claim_id="original-host")
+    else:
+        claimed = restarted.claim_next_queued_turn(sid, host_claim_id="original-host")
+    assert claimed["turn_id"] == original["turn_id"]
+    assert restarted.load_session(sid)["upstream_thread_id"] == "public-thread"
+    assert [row["turn_id"] for row in restarted.queued_turns(sid)] == []
+    inputs = [row for row in restarted.messages(sid) if row["role"] == "user"]
+    assert len(inputs) == 1
+    assert (inputs[0]["turn_id"], inputs[0]["text"], inputs[0]["origin"]) == (
+        original["turn_id"], message, "external")
+    assert inputs[0]["attachments"] == original["attachments"]
+    events = restarted.events_after(sid, original["turn_id"], None)
+    assert sum(row["kind"] == "turn.queued" for row in events) == 1
+    assert restarted.claim_next_queued_turn(sid, host_claim_id="original-host") == claimed
+
+
+def test_queued_input_recovery_refuses_changed_retry_before_repair(tmp_path, monkeypatch):
+    store, sid, _ = session_runtime(tmp_path)
+    monkeypatch.setattr(store, "append_message", lambda *_, **__: (_ for _ in ()).throw(OSError("interrupted")))
+    with pytest.raises(OSError):
+        store.create_queued_turn(sid, client_turn_id="original", message="Original", origin="external")
+    restarted = ChatSessionStore(tmp_path)
+    original = restarted.turn_for_client(sid, "original")
+    for change in [{"message": "Changed"}, {"origin": "web"}]:
+        with pytest.raises(ValueError, match="different request"):
+            restarted.create_queued_turn(sid, **{"client_turn_id": "original", "message": "Original",
+                                                "origin": "external", **change})
+        assert restarted.messages(sid) == []
+        assert restarted.turn_for_client(sid, "original") == original
+        assert restarted.load_session(sid)["active_turn_id"] is None
+
+
+def test_queued_input_recovery_rejects_conflicting_transcript_before_claim(tmp_path, monkeypatch):
+    from loopx.chat import ChatMessagePayloadConflictError
+
+    store, sid, _ = session_runtime(tmp_path)
+    append = store.append_message
+    monkeypatch.setattr(store, "append_message", lambda *_, **__: (_ for _ in ()).throw(OSError("interrupted")))
+    with pytest.raises(OSError):
+        store.create_queued_turn(sid, client_turn_id="original", message="Original", origin="external")
+    original = store.turn_for_client(sid, "original")
+    append(sid, role="user", text="Conflicting input", turn_id=original["turn_id"], origin="external")
+    restarted = ChatSessionStore(tmp_path)
+    before = restarted.messages(sid)
+    with pytest.raises(ChatMessagePayloadConflictError):
+        restarted.claim_next_queued_turn(sid, host_claim_id="original-host")
+    assert restarted.messages(sid) == before
+    assert restarted.turn_for_client(sid, "original") == original
+    assert restarted.load_session(sid)["active_turn_id"] is None
+
+
+@pytest.mark.parametrize("lane", ["message", "event"])
+def test_queued_input_recovery_keeps_unreadable_publication_unresolved(tmp_path, monkeypatch, lane):
+    store, sid, _ = session_runtime(tmp_path)
+    monkeypatch.setattr(store, "append_message", lambda *_, **__: (_ for _ in ()).throw(OSError("interrupted")))
+    with pytest.raises(OSError):
+        store.create_queued_turn(sid, client_turn_id="original", message="Original", origin="external")
+    original = store.turn_for_client(sid, "original")
+    path = (store.root / "sessions" / sid / "messages.jsonl" if lane == "message"
+            else store._event_path(sid, original["turn_id"]))
+    path.write_text('{"incomplete":')
+    restarted = ChatSessionStore(tmp_path)
+    with pytest.raises(ValueError):
+        restarted.claim_next_queued_turn(sid, host_claim_id="original-host")
+    assert path.read_text() == '{"incomplete":'
+    assert restarted.turn_for_client(sid, "original") == original
+    assert restarted.load_session(sid)["active_turn_id"] is None
+
+
+def test_queued_input_replay_does_not_reinterpret_later_execution_events(tmp_path):
+    store, sid, _ = session_runtime(tmp_path)
+    original, _ = store.create_queued_turn(sid, client_turn_id="original", message="Original", origin="external")
+    inputs = store.messages(sid)
+    path = store._event_path(sid, original["turn_id"])
+    # Input publication completed before this unrelated interrupted output.
+    with path.open("ab") as stream:
+        stream.write(b'{"partial_execution_event":')
+    events = path.read_bytes()
+    replay, created = ChatSessionStore(tmp_path).create_queued_turn(
+        sid, client_turn_id="original", message="Original", origin="external")
+    assert not created and replay == original
+    assert store.messages(sid) == inputs and path.read_bytes() == events
+
+
+def test_queue_claim_cannot_overtake_input_publication(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import subprocess
+
+    store, sid, _ = session_runtime(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    append = store.append_message
+
+    def delayed(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(store, "append_message", delayed)
+    child = None
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        created = workers.submit(store.create_queued_turn, sid, client_turn_id="original", message="Original", origin="external")
+        try:
+            assert entered.wait(5)
+            # A second process has no shared Python locks or event cache.
+            script = '''import json,sys
+from pathlib import Path
+from loopx.chat_store import ChatSessionStore
+store=ChatSessionStore(Path(sys.argv[1])); sid=sys.argv[2]
+print("claiming",flush=True)
+turn=store.claim_next_queued_turn(sid,host_claim_id="original-host")
+inputs=[row for row in store.messages(sid) if row["turn_id"]==turn["turn_id"] and row["role"]=="user"]
+assert len(inputs)==1 and inputs[0]["text"]=="Original", inputs
+print(json.dumps({"turn_id":turn["turn_id"]}),flush=True)
+'''
+            child = subprocess.Popen([sys.executable, "-c", script, str(tmp_path), sid], cwd=tmp_path,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert child.stdout.readline().strip() == "claiming"
+            with pytest.raises(subprocess.TimeoutExpired):
+                child.wait(timeout=.2)
+            release.set()
+            turn, was_created = created.result(timeout=5)
+            output, errors = child.communicate(timeout=5)
+            assert child.returncode == 0, errors
+            assert was_created and json.loads(output)["turn_id"] == turn["turn_id"]
+        finally:
+            release.set()
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
+
+
 def drain(runtime, session_id, tmp_path):
     runtime.resume_session_queue(session_id=session_id, work_dir=tmp_path, objective="Research")
     # A worker that already retired has completed its queue cleanup.
@@ -48,12 +295,27 @@ def drain(runtime, session_id, tmp_path):
 
 
 @pytest.fixture
-def codex_startup(tmp_path):
+def codex_startup(tmp_path, monkeypatch):
     """Exercise the real stdio handshake and cleanup, without model execution."""
     capture = tmp_path / "requests.jsonl"
     attempts = tmp_path / "attempts"
     entered, release = tmp_path / "entered", tmp_path / "release"
     source = runpy.run_path(str(Path(__file__).parents[1] / "examples/loopx-chat-runtime-smoke.py"))["FAKE_CODEX"]
+    native_processes = []
+    popen = subprocess.Popen
+
+    def start_process(command, *args, **kwargs):
+        owned = isinstance(command, list) and command and command[0] == str(tmp_path / "codex")
+        if owned and native_processes:
+            # Check the actual owned handle before another process starts.
+            # The child must not infer cleanup from a potentially reused PID.
+            assert native_processes[-1].returncode is not None, "previous startup process must exit and be reaped before retry"
+        process = popen(command, *args, **kwargs)
+        if owned:
+            native_processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", start_process)
 
     def start(mode, *, stage="thread/resume"):
         script = source.replace("#!/usr/bin/env python3", f"#!{sys.executable}")
@@ -62,13 +324,6 @@ import os
 from pathlib import Path
 attempts = Path({str(attempts)!r})
 previous = json.loads(attempts.read_text()) if attempts.exists() else []
-if previous:
-    try:
-        os.kill(previous[-1], 0)
-    except ProcessLookupError:
-        pass
-    else:
-        raise AssertionError("previous startup process must be closed")
 attempt = len(previous) + 1
 attempts.write_text(json.dumps([*previous, os.getpid()]))''')
         script = script.replace('    method = request.get("method")', f'''

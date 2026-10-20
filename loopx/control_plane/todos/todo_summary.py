@@ -811,7 +811,7 @@ def compact_todo_group(
     vision_runs: list[dict[str, Any]] | None = None,
     evaluated_at: str | None = None,
 ) -> dict[str, Any] | None:
-    from .read_projection import project_todo_read_group
+    from .goal_todo_projection import project_todo_read_group
 
     if not items and not include_empty_source:
         return None
@@ -852,7 +852,7 @@ def compact_evaluated_todo_group(
     full_selection: bool = True,
     selection: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    from .read_projection import project_todo_read_group
+    from .goal_todo_projection import project_todo_read_group
 
     if not items and not include_empty_source:
         return None

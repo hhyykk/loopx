@@ -41,6 +41,33 @@ def _packet() -> dict[str, Any]:
     }
 
 
+def test_goal_selection_descriptor_presence_does_not_grant_activation() -> None:
+    packet = {
+        "schema_version": "loopx_start_goal_guided_v0",
+        "goal_id": None,
+        "agent_id": None,
+        "host_surface": "codex-app",
+        "guided_transaction": {
+            "blocked_by": "goal_selection", "writes_now": False,
+            "spends_quota_now": False,
+        },
+        "command_pack": {"host_loop_activation": {
+            "activation_state": "goal_selection_required",
+            "activation_allowed": False,
+            "activation_required_after_todo_write": False,
+        }},
+    }
+    contract = onboarding_entry_semantic_contract(packet)
+    assert contract["route"] == "select_goal"
+    assert contract["host_loop_activation_available"] is True
+    assert contract["host_loop_activation_after_todo_write"] is False
+    assert contract["host_surface"] is None
+    assert contract["activation_method"] is None
+    assert contract["writes_now"] is contract["spends_quota_now"] is False
+    packet["command_pack"]["host_loop_activation"] = {}
+    assert onboarding_entry_semantic_contract(packet)["host_loop_activation_available"] is False
+
+
 def test_direct_onboarding_actor_uses_no_tool_provider_boundary() -> None:
     captured: dict[str, Any] = {}
     contract = onboarding_entry_semantic_contract(_packet())

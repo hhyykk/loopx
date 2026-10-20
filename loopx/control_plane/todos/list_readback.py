@@ -72,7 +72,7 @@ def list_goal_todos(
     rollout_events = TodoResumeRolloutEvents(rollout_events, runtime_root=runtime_root, goal_id=goal_id)
 
     from ..coordination.local_authority import local_authority_is_promoted, LocalCoordinationAuthorityUnavailable
-    from .read_projection import project_todo_read
+    from .goal_todo_projection import project_todo_read
     from ..runtime.time import now_utc
 
     now = now_utc()
@@ -98,7 +98,12 @@ def list_goal_todos(
         payload = {"source_authority": "unknown_fail_closed"} if code == "local_authority_mode_read_failed" else failure
         raise LocalCoordinationAuthorityUnavailable(str(failure.get("reason") or "canonical Todo authority is unavailable"),
             code=code, payload=payload)
-    return result["payload"]
+    payload = result["payload"]
+    if "canonical_acceptance" in result:
+        from .goal_todo_projection import observe_todo_acceptance
+        payload = observe_todo_acceptance(payload, result["canonical_acceptance"],
+            registry_path=registry_path, goal_id=goal_id)
+    return payload
 
 
 def _legacy_todo_read_source(goal, state_file, *, todo_id, retained):
@@ -108,5 +113,5 @@ def _legacy_todo_read_source(goal, state_file, *, todo_id, retained):
         raise ValueError(f"active state file does not exist: {state_file}")
     state_text = state_file.read_text(encoding="utf-8")
     require_no_legacy_todo_events(goal, state_path=state_file)
-    from .read_projection import prepare_todo_source_text
+    from .goal_todo_projection import prepare_todo_source_text
     return prepare_todo_source_text(goal, state_text, state_file, todo_id=todo_id, retained=retained)

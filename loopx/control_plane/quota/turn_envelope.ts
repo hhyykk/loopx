@@ -10,7 +10,7 @@ import { EffectRuntimeRequestError } from "../effect_runtime_errors.ts";
 import { projectTurnStartUnavailableContext } from "../capability_hooks.ts";
 import { requireJsonObject } from "../runtime_decode.ts";
 import { projectPendingCapabilityIntent } from "../work_items/pending_capability_intent.ts";
-import { measureTurnEnvelope, turnEnvelopeBudgetBytes, TURN_ENVELOPE_SECTION_TARGETS } from "./turn_envelope_budget.ts";
+import { measureTurnEnvelope, TURN_ENVELOPE_SECTION_TARGETS } from "./turn_envelope_budget.ts";
 export { TURN_ENVELOPE_BUDGET_BYTES } from "./turn_envelope_budget.ts";
 
 export const TURN_ENVELOPE_SCHEMA_VERSION = "loopx_turn_envelope_v0";
@@ -310,16 +310,18 @@ function boundary(payload: JsonObject): JsonObject {
         .map((field) => [field, adapter[field]]),
     );
   }
-  for (const field of ["write_scope", "available_capabilities", "requires_parent_approval"]) {
-    const values = textList(source[field], 16, 180);
-    if (values.length > 0) result[field] = values;
+  // These are resolved restrictions, not display summaries. Preserve literal
+  // paths, every clause and explicit empty lists; budget warnings cannot trim
+  // an approval requirement or turn a path into a different glob.
+  for (const field of ["write_scope", "available_capabilities", "requires_parent_approval", "guards"]) {
+    if (Array.isArray(source[field])) result[field] = structuredClone(source[field]);
   }
   // Carry the already resolved approval from quota; dropping it leaves only
   // the bootstrap approval requirement and strands authorized execution.
   const approved = object(source.checkpointed_boundary_authority);
   const approvedScopes = Array.isArray(approved.active_write_scope)
     ? approved.active_write_scope.filter((scope): scope is string =>
-      typeof scope === "string" && scope.length > 0 && scope.length <= 180).slice(0, 16)
+      typeof scope === "string" && scope.length > 0)
     : [];
   if (approved.schema_version === "checkpointed_boundary_authority_v0"
       && Number.isInteger(approved.active_count) && Number(approved.active_count) > 0
@@ -330,7 +332,6 @@ function boundary(payload: JsonObject): JsonObject {
       active_write_scope: approvedScopes,
     };
   }
-  const guards = textList(source.guards, 8, 280);
   // Effective automation is already resolved for this Goal/Agent. Keep the
   // shared participation facts, not private config, diagnostics or recall.
   const memory = object(object(source.capabilities).reward_memory);
@@ -342,9 +343,7 @@ function boundary(payload: JsonObject): JsonObject {
       automatic_ingest: memory.automatic_ingest === true,
     }};
   }
-  if (guards.length > 0) result.guards = guards;
-  const stopCondition = text(source.stop_condition, 320);
-  if (stopCondition) result.stop_condition = stopCondition;
+  if (typeof source.stop_condition === "string") result.stop_condition = source.stop_condition;
   for (const field of ["execution_profile", "orchestration"]) {
     const value = object(source[field]);
     if (Object.keys(value).length > 0) result[field] = value;
@@ -723,7 +722,7 @@ function actionProjection(payload: JsonObject, protocolActionFields: JsonObject)
     payload, action, user, schedulerValue, protocolActionFields,
   );
   const context = object(interaction.agent_context);
-  if (Object.keys(context).length > 0) projection.agent_context = context;
+  if (Object.keys(context).length > 0) projection.agent_context = structuredClone(context);
   const workContext = object(object(interaction.agent_channel).work_context);
   const selectedTodoContextIsAlreadyInAction = workContext.complete === true
     && workContext.selected_todo_ref === "selected_todo"
@@ -777,22 +776,9 @@ function turnActionProjection(payload: JsonObject, protocolActionFields: JsonObj
     action.planning_horizon = compactHorizon;
     projection.action = action;
   }
-  const context = object(projection.agent_context);
-  // Guidance must not crowd out the actionable contract. Preserve a signed
-  // content reference to the existing full-decision route under budget pressure.
-  // Leave room for the CLI's indented JSON and envelope metadata too: a compact
-  // payload can fit the wire-byte ceiling while its emitted form exceeds the
-  // public TurnEnvelope character budget.
-  if (Object.keys(context).length > 0
-    && Buffer.byteLength(JSON.stringify(projection), "utf8") > turnEnvelopeBudgetBytes(projection) - 2_200) {
-    projection.agent_context = {
-      schema_version: context.schema_version, phase: context.phase, scope: context.scope,
-      target: "coordinator", authority: "guidance_only", delivery: "projected",
-      content_hash: canonicalHash(context),
-      detail_ref: "full_decision.interaction_contract.agent_context",
-      instruction: "Use the envelope detail_ref command to read capability context before planning.",
-    };
-  }
+  // The context owner already bounds these contributions. Replacing them with
+  // a reference makes a small contribution require the entire saved decision.
+  // Keep the content; the existing envelope budget still reports its cost.
   return projection;
 }
 

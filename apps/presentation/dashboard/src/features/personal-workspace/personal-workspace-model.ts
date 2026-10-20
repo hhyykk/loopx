@@ -1,6 +1,7 @@
 import type { GoalDraft } from "../../../../../../loopx/control_plane/collaboration/goal_draft.js";
 import type { TurnStep } from "../../data/turn-steps";
 import type { ChatProject, CollaborationReadback, LoopXModeSettings } from "../../data/chat-model";
+import type { BoundConversationTarget, ChatSessionSummary, PrivateConversation } from "../../data/chat";
 import type { TeamPlanAppliedOutcome } from "./team-plan-preview";
 import type { ActionReviewPlan } from "../../../../../../loopx/control_plane/presentation/action_review_plan.js";
 import type { GoalAcceptanceObservation } from "../../data/goal-acceptance-observation";
@@ -112,6 +113,9 @@ export type WorkspaceConversationDirectory = {
   selectedRef: string | null;
   /** null returns the conversation to the steward scope. */
   onSelect: (projectRef: string | null) => void;
+  onOpenOriginal?: (target: BoundConversationTarget) => void;
+  bound?: { target: BoundConversationTarget; session?: ChatSessionSummary; source?: PrivateConversation;
+    error?: string; retry: () => void };
 };
 
 export type WorkspaceTodo = WorkspaceAgentTodo & {
@@ -158,11 +162,20 @@ export type WorkspaceGoalSubagentConfiguration = {
 };
 
 export type WorkspaceGoal = {
+  sourceAccess?: {namespace: string; label: string; readOnly: true};
   /** Registry organization in this status source; not Agent ownership or execution dependency. */
   parentGoalId?: string | null;
   /** Bounded, safe text from this Goal's declared source document. */
   objective?: string | null;
   acceptanceObservation?: GoalAcceptanceObservation | null;
+  /** Driver readback only; it never changes Goal activation or grants work. */
+  workerObservations?: {
+    read_status: "read" | "stale" | "unreadable";
+    rows: Array<{
+      agent_id: string; status: "replan_paused" | "replan_outcome_unknown";
+      obligation_id: string; turn_instance_id: string | null; observed_at: string;
+    }>;
+  } | null;
   loadState?: "loading" | "error";
   loadError?: WorkspaceLoadError;
   activationState: "active" | "stopped";

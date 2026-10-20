@@ -29,7 +29,6 @@ from ..agents.agent_scope import (
     _agent_scope_deferred_resume_candidates,
     _agent_scope_frontier_action,
     _agent_scope_no_candidate_frontier,
-    _selected_candidate_priority_frontier,
     _attach_agent_identity_contracts,
 )
 from ..agents.capability_gate import missing_required_capabilities
@@ -460,22 +459,6 @@ def _delivery_preemptions_for_route(
         preemptions.append("control_repair")
     if not normal_delivery_allowed:
         preemptions.append("delivery_not_allowed")
-    requested_candidate = prepared.requested_action_candidate
-    agent_id = normalize_todo_claimed_by(
-        (prepared.agent_identity or {}).get("agent_id")
-    )
-    if (
-        not preemptions
-        and agent_id
-        and isinstance(prepared.agent_todo_summary, dict)
-        and isinstance(requested_candidate, dict)
-        and _selected_candidate_priority_frontier(
-            agent_id=agent_id,
-            summary=prepared.agent_todo_summary,
-            selected=requested_candidate,
-        )
-    ):
-        preemptions.append("ready_deferred_successor_priority_preemption")
     return preemptions
 
 
@@ -487,10 +470,12 @@ def _resolve_agent_lane_delivery_route(
     delivery_preemptions: list[str],
     should_run: bool,
     normal_delivery_allowed: bool,
-) -> dict[str, Any] | None:
-    """Project candidates once, then let TypeScript own their delivery route."""
+) -> tuple[dict[str, Any] | None, bool]:
+    """Return the selected route with its typed admission decision."""
 
     if prepared.requested_action_todo_id is not None:
+        scoped_fallback = prepared.scoped_user_gate_fallback or {}
+        scoped_selected = scoped_fallback.get("selected_executable") or {}
         qualification = qualify_action_selection_from_inventory(
             requested_todo_id=prepared.requested_action_todo_id,
             candidate=prepared.requested_action_candidate,
@@ -498,18 +483,27 @@ def _resolve_agent_lane_delivery_route(
             should_run=should_run,
             normal_delivery_allowed=normal_delivery_allowed,
             delivery_preemptions=delivery_preemptions,
+            scoped_fallback_todo_id=normalize_todo_id(scoped_selected.get("todo_id")),
+            quota_state=prepared.state,
+            goal_health_ok=prepared.goal_health_ok,
         )
         prepared.action_selection_qualification = qualification
+
+    if (prepared.action_selection_qualification or {}).get("state") == "qualified":
+        # The typed selection owner may admit this exact scoped fallback while
+        # the broader user-gated delivery lane remains closed. Keep selected
+        # workspace/boundary guards active without reopening normal delivery.
+        should_run = True
 
     if isinstance(prepared.guarded_agent_lane_next_action, dict):
         # Workspace/scope guards can change admission after initial selection.
         # Keep the selected identity frozen, but report the final qualification.
-        return prepared.guarded_agent_lane_next_action
+        return prepared.guarded_agent_lane_next_action, should_run
 
     if prepared.requested_action_todo_id is not None:
         qualification = prepared.action_selection_qualification or {}
         if qualification.get("state") != "qualified":
-            return None
+            return None, should_run
         if not isinstance(prepared.requested_action_candidate, dict):
             raise RuntimeError(
                 "qualified action selection is missing its projected candidate"
@@ -518,7 +512,7 @@ def _resolve_agent_lane_delivery_route(
             **prepared.requested_action_candidate,
             "selected_by": "agent_action_selection",
             "selection_binding": "pending_action_selection",
-        }
+        }, should_run
 
     item = prepared.item
     fallback = prepared.receipt_bound_agent_next_action
@@ -565,7 +559,7 @@ def _resolve_agent_lane_delivery_route(
         (prepared.agent_identity or {}).get("agent_id")
     )
     if not delivery_agent_id:
-        return fallback
+        return fallback, should_run
 
     continuity_todo = prepared.delivery_continuity_todo
     delivery_anchor = prepared.delivery_continuity_anchor
@@ -584,7 +578,7 @@ def _resolve_agent_lane_delivery_route(
         and fallback is None
         and replan_candidate is None
     ):
-        return None
+        return None, should_run
     delivery_route = evaluate_delivery_route(
         agent_id=delivery_agent_id,
         previous_todo_id=(
@@ -685,7 +679,7 @@ def _resolve_agent_lane_delivery_route(
         # The router may find an independent successor after the bound Todo
         # becomes unavailable.  That successor cannot replace an already
         # committed settlement identity inside the same heartbeat Turn.
-        return None
+        return None, should_run
 
     boundary = delivery_route.get("boundary")
     if (
@@ -696,8 +690,8 @@ def _resolve_agent_lane_delivery_route(
         return {
             **selected_action,
             "delivery_boundary": boundary["delivery_boundary"],
-        }
-    return selected_action
+        }, should_run
+    return selected_action, should_run
 
 
 def _selected_deferred_replan_frontier(
@@ -1123,7 +1117,7 @@ def _resolve_quota_should_run_route(
         capability_repair_allowed=capability_repair_allowed,
         workspace_repair_allowed=workspace_repair_allowed,
     )
-    agent_lane_next_action = _resolve_agent_lane_delivery_route(
+    agent_lane_next_action, should_run = _resolve_agent_lane_delivery_route(
         prepared,
         due_monitor_attempt=due_monitor_attempt,
         receipt_bound_replan_decision=receipt_bound_replan_decision,
@@ -1158,10 +1152,15 @@ def _resolve_quota_should_run_route(
                 agent_todo_summary=prepared.agent_todo_summary,
                 agent_lane_next_action=agent_lane_next_action,
                 work_lane_contract=prepared.work_lane_contract,
-                candidate_should_run=bool(
-                    (should_run and normal_delivery_allowed)
-                    or ready_deferred_resume_candidates
-                ),
+                # A satisfied dependency is readiness, not admission. The
+                # existing scoped fallback above qualifies an independent
+                # successor under a user gate; an unqualified ready row must
+                # not resurrect delivery refused by the current quota owner.
+                candidate_should_run=bool(should_run and (
+                    normal_delivery_allowed
+                    or (ready_deferred_resume_candidates
+                        and prepared.goal_health_ok and state == "eligible")
+                )),
             )
         )
         if (

@@ -378,7 +378,7 @@ def test_inspection_lists_registered_namespaces_without_local_refs(
     }
     assert namespace_catalog["manager_runtime"]["configuration_template"] == {
         "schema_version": "manager_runtime_profile_v0",
-        "runtime_profile": "restricted",
+        "runtime_profile": "trusted_owner",
     }
     assert namespace_catalog["manager_runtime"]["documentation"]["path"] == (
         "docs/architecture/rfcs/manager-runtime-profile-v0.md"

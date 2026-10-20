@@ -73,7 +73,7 @@ def parse_active_state_todos(
         and int(orchestration.get("max_children") or 0) > 0
     )
     items, archive_items, source_sections = parse_todo_source(state_text, goal=goal, state_path=state_path)
-    from .read_projection import source_todo_fields
+    from .goal_todo_projection import source_todo_fields
     from .standing_decision import standing_decision_source_items
 
     lineage = [*items["user"], *items["agent"],

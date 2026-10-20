@@ -1359,6 +1359,11 @@ def _agent_scope_no_candidate_frontier(
     if work_lane_contract_is_due_monitor_attempt(work_lane_contract):
         return None
     if isinstance(agent_lane_next_action, dict):
+        # Eligibility and real delivery gates have already been qualified by
+        # the typed action-selection owner. Priority ranks the default route;
+        # it must not replace an explicitly selected eligible Todo.
+        if agent_lane_next_action.get("selected_by") == "agent_action_selection":
+            return None
         return _selected_candidate_priority_frontier(
             agent_id=agent_id,
             summary=agent_todo_summary,

@@ -1264,7 +1264,11 @@ class ChatActionService(
         if action_kind == "goal.acceptance.check":
             if context.get("kind") != "goal" or context.get("goal_id") != normalized["goal_id"]:
                 raise ValueError("check plan context must match its target Goal")
-            fingerprint, _ = self._acceptance_preview(normalized)
+            fingerprint, preview = self._acceptance_preview(normalized)
+            if "resolved_document" in preview:
+                # Owner-produced review snapshot only; apply re-resolves the
+                # original reference against the native reviewed-context digest.
+                normalized["resolved_document"] = preview["resolved_document"]
             evidence = ["The existing typed acceptance owner validated this plan without changing configuration or executing commands."]
             permission = "local_command_execution"
         elif action_kind == "operation.execute":

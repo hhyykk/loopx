@@ -329,6 +329,22 @@ R5 短包投影也完整保留已有 CLI 结算计划，包括 effect identity�
 envelope 投影，Codex CLI 保持关闭隔离；这不代表安装态 heartbeat/App 或模型收益
 已验收。
 
+有界规划上下文现在保持内联，不再因短包预算压力而强制读取整份决策；既有 owner 的
+3 KiB 限制保留。共享 DSH/cloud adapter 传递签名内容，历史引用同时保留原捕获路由和
+哈希。thin renderer 仅在存在 `agent_context.detail_ref` 时要求能力补读，不能把也用于
+完整上下文的 `delivery=projected` 当作省略标志。原始来源与实际 Host 输入 oracle 通过
+File/SQLite CLI 和无模型 DSH 子进程覆盖开启／关闭、历史引用及签名拒绝。8 KiB 警告
+保持；选择默认形态前须计算 packet 与必要补读／源 IO。真实模型行为、安装采用及以下
+三项验收仍未完成。
+
+真实绑定的重规划暴露了共享 Host adapter 的另一处遗漏：保留了泛化动作，却丢失
+签名 replan packet 及其证据路由。DSH/cloud adapter 现在同时传递两者，保留既有
+完整 Goal 必读和同次捕获的 replan context。File/SQLite 从选择到重规划的资格验证
+通过仅使用协议 fixture 的 runner 核对实际 DSH provider 输入、签名篡改拒绝及来源／
+状态未变，不调用模型。写回、quota 和 scheduler 仍归外层 Turn executor；普通请求
+保持原输入。本切片只验证该传输边界，安装采用、后续模型决策、完整成本及以下三项
+验收仍未完成。
+
 第一批收敛的当前源码路径核对：
 
 | 执行事实 | 既有 owner／投影 | 保留的边界 |
@@ -340,6 +356,13 @@ envelope 投影，Codex CLI 保持关闭隔离；这不代表安装态 heartbeat
 | replan／Goal 收尾 | replan action packet 与既有 TS capsule 保留完整、有序 audit 步骤/指导、当前 judge（收尾评估） 及证据与非证明条件 | 同一捕获的 File/SQLite 决策验证条款保留与签名突变；完整证据仍走有权限的详情。宿主/模型采用仍开放；Todo 完成不证明 Goal 完成 |
 | 结算／scheduler | 完整 typed 结算计划及显式宿主调度投影；省略的调度 argv 引用同一捕获的完整决策 | 此投影退役未绑定的详情命令。实际宿主读回、过期写入拒绝与一次恢复仍待宿主采用验收 |
 | 可选 memory | 核验后的 boundary 参与事实及新鲜宿主绑定 | 关闭／recall／ingest／失效／provider 失败隔离持续保留；传输等价不是模型收益 |
+
+边界投影现完整保留范围、审批、守卫和停止条款，不再套用显示裁剪。共享 DSH／云端
+candidate 适配器也传递此前遗漏的签名限制，原范围／workspace 兼容字段各保留一份。
+独立来源 oracle、真实 File/SQLite CLI 和仅使用协议 fixture 的 Host 子进程能复现旧
+遗漏，并验证完整传递、篡改拒绝和不扣费回放。这只修复一个既有调用族的边界交付，
+不新增执行规则 owner。保留 8 KiB 警告，披露恢复条款的成本；live 模型行为、安装态
+采用和完整成本仍须在推广前分别验收。
 
 能力事实修复归既有 TS read-model owner。真实捕获的 File/SQLite 决策覆盖拒绝及
 准入，包含关闭、仅 recall、仅 ingest 与配置失效。新投影签名覆盖这些保留事实，

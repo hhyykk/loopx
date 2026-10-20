@@ -131,6 +131,7 @@ def read_canonical_snapshot(
                 <= {
                     "todo_read_model",
                     "goal_acceptance_contract",
+                    "goal_acceptance_oracle_observation_basis",
                     "handoff_mode",
                     "projection_readback",
                 }

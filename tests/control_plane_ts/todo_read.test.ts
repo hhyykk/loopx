@@ -19,6 +19,22 @@ const group = (items: JsonObject[], extra: JsonObject = {}) => readTodo({schema_
   kind: "group", items, lineage: [], evaluated: false, role: "agent", source_section: "Agent Todo",
   item_limit: 1, observed_at: Date.parse(now) / 1000, evaluated_at: now, ...extra});
 
+test("current acceptance checks survive full-source reads and selection without an enable flag", async () => {
+  const acceptance = {criteria: [], revision: 1, digest: "sha256:" + "a".repeat(64)};
+  const fields = await readTodo({schema_version: TODO_READ_REQUEST, kind: "fields",
+    todos: [row("todo_guarded")], goal_acceptance_contract: acceptance,
+    goal_acceptance_work_guards: {todo_guarded: {allowed: false}},
+    observed_at: Date.parse(now) / 1000, evaluated_at: now});
+  const summary = (fields.fields as JsonObject).agent_todos as JsonObject;
+  assert.deepEqual(summary.goal_acceptance_contract, acceptance);
+  assert.equal(((summary.items as JsonObject[])[0].goal_acceptance_guard as JsonObject).allowed, false);
+  const selected = await readTodo({schema_version: TODO_READ_REQUEST, kind: "select",
+    fields: fields.fields, field_evaluations: fields.field_evaluations, roles: ["agent"],
+    source_name: "file_authority", observed_at: Date.parse(now) / 1000, evaluated_at: now});
+  const summaries = (selected.projection as JsonObject).summaries as JsonObject;
+  assert.deepEqual((summaries.agent_todos as JsonObject).goal_acceptance_contract, acceptance);
+});
+
 for (const provider of ["file", "sqlite"] as const) {
   test(`${provider} full read keeps archived dependencies and fresh provider results without Markdown`, async t => {
     const root = await mkdtemp(join(tmpdir(), "loopx-todo-read-"));

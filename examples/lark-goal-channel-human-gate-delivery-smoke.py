@@ -101,8 +101,16 @@ for line in sys.stdin:
         print(json.dumps({"method": "turn/completed", "params": {
             "threadId": "synthetic-notice-thread", "turn": {"id": "notice-turn", "status": "completed"}}}), flush=True)
         continue
-    else:
+    elif method == "thread/name/set":
+        assert request["params"] == {
+            "threadId": "synthetic-notice-thread",
+            "name": "LoopX Chat",
+        }
+        result = {}
+    elif "id" not in request:
         continue
+    else:
+        raise SystemExit(f"unexpected fake codex request: {method}")
     print(json.dumps({"id": request["id"], "result": result}), flush=True)
 ''', encoding="utf-8")
     model.chmod(0o755)
