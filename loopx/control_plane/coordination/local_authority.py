@@ -7,8 +7,6 @@ fails closed instead of consulting the legacy Markdown projection.
 
 from __future__ import annotations
 
-from ..goals.acceptance_readback import configured_checks
-
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
