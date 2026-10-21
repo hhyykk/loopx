@@ -4,7 +4,7 @@
 - 替代 / 关闭：无
 - Proposed by：LoopX maintainers
 - Date：2026-08-15
-- Last revised：2026-10-20
+- Last revised：2026-10-21
 - Scope：LoopX 控制面核心从 Python 到 TypeScript 的增量、replacement-first
   迁移；不长期维护两份语义实现
 - Tracking issue：[#3225](https://github.com/loopx-project/loopx/issues/3225)
@@ -33,6 +33,12 @@ follow-up wire 契约、真实 runtime transport、已安装调用者，以及�
 SQLite CLI 性能。仅减少请求次数不能证明性能收益。
 
 ### 产品对话与通用异步 inbox
+
+**公共 quota 读取作用域。** `quota/should_run.py` 现在为每次完整公共 quota 读取
+复用既有 executable-revision 请求作用域。兼容 facade 和全局视图共用该生命周期，
+不再在每次 typed 判定前重新解析代码树。已有外层作用域仍可组合；下一次独立读取
+重新解析当前代码。该作用域不缓存调用者的 status 快照或既有 provider/callback
+读取。这不新增数据缓存、桥接操作、语义 owner 或 provider 路由，也不改变调度权限。
 
 **接收方 Inbox 读取事务（2026-10-19）。**
 `loopx/control_plane/collaboration/inbox_read.ts` 现在通过既有 typed owner 组合本地源扫描、分页、

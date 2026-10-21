@@ -4,7 +4,7 @@
 - Supersedes / closes: none
 - Proposed by: LoopX maintainers
 - Date: 2026-08-15
-- Last revised: 2026-10-20
+- Last revised: 2026-10-21
 - Scope: an incremental, replacement-first migration of the LoopX control-plane
   core from Python to TypeScript without maintaining two semantic
   implementations
@@ -35,6 +35,15 @@ matched complete SQLite CLI performance must qualify independently before
 delivery. Fewer requests alone do not establish a performance gain.
 
 ### Product conversations and asynchronous inbox
+
+**Public quota read scope.** `quota/should_run.py` now reuses the existing
+executable-revision request scope for each complete public quota read. The
+compatibility facade and global views share that lifetime instead of resolving
+the code tree before every typed decision. Existing outer scopes still compose;
+the next independent read resolves current code again. The caller's status
+snapshot and existing provider/callback reads are not cached by this scope.
+This adds no data cache, bridge operation,
+semantic owner or provider route, and does not change scheduling authority.
 
 **Receiver Inbox read transaction (2026-10-19).**
 `loopx/control_plane/collaboration/inbox_read.ts` now composes local source scans, pagination,
