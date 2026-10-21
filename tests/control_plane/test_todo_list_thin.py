@@ -12,9 +12,7 @@ from loopx.control_plane.testing.cli_output_budget import (
     measure_cli_output,
 )
 from loopx.control_plane.todos.contract import encode_metadata_value
-from loopx.control_plane.todos.list_projection import (
-    compact_thin_todo_list_payload,
-)
+from loopx.control_plane.todos.goal_todo_projection import project_todo_read
 from loopx.control_plane.todos.markdown import render_todo_markdown
 from loopx.todos import list_goal_todos
 
@@ -496,15 +494,28 @@ def test_thin_intrinsically_bounds_high_cardinality_and_reports_overflow(
         )
 
 
-def test_thin_widest_retained_shape_stays_inside_fixed_output_budget() -> None:
-    payload = compact_thin_todo_list_payload(
-        _widest_retained_thin_payload(items_per_role=5)
-    )
+def test_thin_widest_retained_shape_stays_inside_fixed_output_budget(tmp_path: Path) -> None:
+    source = _widest_retained_thin_payload(items_per_role=5)
+    groups = [{"role": role, "source_section": f"{role.title()} Todo",
+               "items": source[f"{role}_todos"]["items"], "include_empty_source": True}
+              for role in ("user", "agent")]
+    payload = project_todo_read({
+        "kind": "query", "source": {"runtime_root": str(tmp_path), "goal_id": GOAL_ID},
+        "observed_at": 1767225600, "evaluated_at": "2026-01-01T00:00:00Z",
+        "legacy_source": {"groups": groups, "lineage": [item for group in groups for item in group["items"]],
+                          "source_count": 10},
+        "query": {"goal_id": GOAL_ID, "read_scope": "active", "thin": True,
+                  "state_file": str(tmp_path / "state.md")},
+    })["payload"]
 
     assert payload["returned_todo_count"] == 4
     assert payload["omitted_todo_count"] == 6
     assert payload["todo_list_field_projection"]["item_limit_per_role"] == 2
     assert all("title" not in item for item in payload["todos"])
+    coverage = payload["projection_envelope"]["coverage"]
+    assert coverage["complete"] is True
+    assert coverage["included_count"] == coverage["available_count"] == 10
+    assert coverage["shown_count"] == 4 and coverage["truncated"] is True
 
     spec = CLI_OUTPUT_MODE_VARIANT_BY_ID["todo_list_thin"]
     rendered_by_format = {

@@ -12,7 +12,7 @@ import json
 from pathlib import Path, PurePosixPath
 
 from ...control_plane.content_digest import BARE_SHA256_PATTERN
-from ...control_plane.effect_runtime import effect_runtime_result
+from ...control_plane.effect_runtime import EffectRuntimeRejected, effect_runtime_result
 from ...file_lock import exclusive_file_lock
 from .trajectory_assessment import _digest, _write, execute, read_job, request_cancel
 
@@ -54,13 +54,16 @@ def _pack_id(owner_goal_id: str, record: dict) -> str:
         identity["solver_usage"] = record["solver_usage"]
     if "native_outcomes" in record:
         identity["native_outcomes"] = record["native_outcomes"]
+    if "base_pack_id" in record:
+        identity["base_pack_id"] = record["base_pack_id"]
     return _digest(identity)
 
 
-def _prepared(record: dict) -> dict:
+def _prepared(record: dict, output_language: str | None = None) -> dict:
     return effect_runtime_result(
         "benchmark.trajectory.prepare",
-        {"input": record["input"], "config": record["config"]},
+        {"input": record["input"], "config": {**record["config"],
+            **({"output_language": output_language} if output_language is not None else {})}},
     )
 
 
@@ -212,7 +215,8 @@ def _availability(record: dict, prepared: dict) -> str | None:
     return None
 
 
-def _summary(record: dict, reason: str | None) -> dict:
+def _summary(record: dict, reason: str | None, prepared: dict | None = None) -> dict:
+    analysis = prepared or record
     return {
         "pack_id": _pack_id(record["owner_goal_id"], record),
         "title": record["title"],
@@ -220,9 +224,9 @@ def _summary(record: dict, reason: str | None) -> dict:
         "selection": record["input"]["selection"],
         "episode_count": len(record["input"]["episodes"]),
         "source_count": len(record["input"]["sources"]),
-        "analysis_key": record["analysis_key"],
-        "method_version": record["method_version"],
-        "config": record["config"],
+        "analysis_key": analysis["analysis_key"],
+        "method_version": analysis["method_version"],
+        "config": analysis["config"],
         "availability": "unavailable" if reason else "available",
         "reason_code": reason,
         **({field: _captured_view(record, field) for field in ("solver_usage", "native_outcomes") if field in record}),
@@ -240,6 +244,7 @@ def register_pack(
     usage_jsonl: str | None = None,
     usage_session_id: str | None = None,
     native_outcomes_json: str | None = None,
+    base_pack_id: str | None = None,
 ) -> dict:
     """Trusted operator only; no HTTP/renderer path-registration endpoint."""
     if not title.strip():
@@ -261,6 +266,14 @@ def register_pack(
         },
     }
     _verify_sources(record)
+    if base_pack_id is not None:
+        _, previous = _resolve(runtime_root, owner_goal_id, base_pack_id)
+        # The typed owner validates Goal/case/run identity before registration.
+        # This merely links frozen versions; registration launches no analysis.
+        effect_runtime_result("benchmark.trajectory.continuation", {
+            **prepared, "previous": _prepared(previous),
+        })
+        record["base_pack_id"] = _opaque(base_pack_id)
     if (usage_jsonl is None) != (usage_session_id is None):
         raise ValueError(
             "Usage capture and expected session identity must be supplied together"
@@ -299,13 +312,19 @@ def register_pack(
     return {"ok": True, **_summary(record, None)}
 
 
-def discover(*, runtime_root: Path, owner_goal_id: str) -> dict:
+def discover(*, runtime_root: Path, owner_goal_id: str, output_language: str | None = None) -> dict:
     owner = _owner(runtime_root, owner_goal_id)
     index = _index(owner)
     packs = []
+    unreadable = []
     for pack_id in index["pack_ids"]:
-        _, record = _resolve(runtime_root, owner_goal_id, pack_id)
-        packs.append(_summary(record, _availability(record, _prepared(record))))
+        try:
+            _, record = _resolve(runtime_root, owner_goal_id, pack_id)
+            prepared = _prepared(record)
+            packs.append(_summary(record, _availability(record, prepared),
+                _prepared(record, output_language) if output_language is not None else None))
+        except (OSError, ValueError, KeyError, TypeError, EffectRuntimeRejected):
+            unreadable.append(pack_id)
     available = any(p["availability"] == "available" for p in packs)
     return {
         "ok": True,
@@ -313,6 +332,7 @@ def discover(*, runtime_root: Path, owner_goal_id: str) -> dict:
         "reason_code": None if available else "no_available_pack",
         "default_pack_id": index["default_pack_id"],
         "packs": packs,
+        **({"unreadable_pack_ids": unreadable} if unreadable else {}),
     }
 
 
@@ -342,6 +362,7 @@ def _public_job(job: dict) -> dict:
         "served_service_tier",
         "reused",
         "cancel_requested",
+        "reused_from_analysis_key",
     )
     result = {k: job[k] for k in fields if k in job}
     if job.get("error"):
@@ -352,18 +373,24 @@ def _public_job(job: dict) -> dict:
 
 
 def inspect_pack(
-    *, runtime_root: Path, owner_goal_id: str, pack_id: str | None = None
+    *, runtime_root: Path, owner_goal_id: str, pack_id: str | None = None,
+    output_language: str | None = None,
+    include_continuation: bool = True,
 ) -> dict:
     owner, record = _resolve(runtime_root, owner_goal_id, pack_id)
     prepared = _prepared(record)
     reason = _availability(record, prepared)
-    directory = _job(owner, record, record["analysis_key"])
+    if output_language is not None:
+        prepared = _prepared(record, output_language)
+    identity = prepared if output_language is not None else record
+    directory = _job(owner, identity, identity["analysis_key"])
     job = read_job(directory) if (directory / "receipt.json").exists() else None
     result = None
     if job is not None:
         if (
-            job["analysis_key"] != record["analysis_key"]
+            job["analysis_key"] != identity["analysis_key"]
             or job["scope"] != record["input"]["scope"]
+            or job["config"] != prepared["config"]
         ):
             raise PackUnavailable("receipt_mismatch")
         if job["status"] == "succeeded":
@@ -375,13 +402,12 @@ def inspect_pack(
                     job.get("input_sha256") != _digest(record["input"])
                     or job.get("assessment_sha256")
                     != hashlib.sha256(payload).hexdigest()
-                    or job.get("config") != record["config"]
                 ):
                     raise PackUnavailable("historical_result_unverified")
                 result = json.loads(payload)
                 if (
                     result.get("schema_version") != "trajectory_assessment_v1"
-                    or result.get("analysis_key") != record["analysis_key"]
+                    or result.get("analysis_key") != identity["analysis_key"]
                     or result.get("scope") != record["input"]["scope"]
                     or result.get("method_version") != record["method_version"]
                     or job.get("method_version") != record["method_version"]
@@ -399,15 +425,60 @@ def inspect_pack(
                         ),
                     },
                 )
-    return {
+    view = {
         "ok": True,
-        **_summary(record, reason),
+        **_summary(record, reason, prepared if output_language is not None else None),
         "objective": record["input"]["objective"],
         "episodes": record["input"]["episodes"],
         "job": _public_job(job) if job else None,
         "result": result,
         "applicability": "historical" if reason else "current",
     }
+    if include_continuation and record.get("base_pack_id"):
+        continuation, _ = _continuation(
+            runtime_root, owner_goal_id, record, prepared, result, output_language
+        )
+        if continuation is not None:
+            view["continuation"] = continuation
+        else:
+            view["continuation_unavailable"] = {"base_pack_id": record["base_pack_id"]}
+    return view
+
+
+def _continuation(runtime_root, owner_goal_id, record, prepared, result, language):
+    """Read one explicitly linked base, without recursively loading its history."""
+    base_id = record.get("base_pack_id")
+    if base_id is None:
+        return None, None
+    try:
+        _, previous = _resolve(runtime_root, owner_goal_id, base_id)
+        base = inspect_pack(runtime_root=runtime_root, owner_goal_id=owner_goal_id,
+                            pack_id=base_id, output_language=language, include_continuation=False)
+        old = _prepared(previous, language) if language is not None else _prepared(previous)
+    except (OSError, ValueError, KeyError, TypeError, EffectRuntimeRejected):
+        # A missing/corrupt base cannot disable a valid independently qualified
+        # successor. It also cannot certify reuse or an unchanged judgment.
+        return None, None
+    # Changed bytes can be compared to the frozen original excerpts, but a
+    # removed/unreadable source must not feed reuse or continuation context.
+    readable = True
+    try:
+        for source in previous["input"]["sources"]:
+            with _source_path(Path(previous["source_root"]), source["artifact"]).open("rb") as stream:
+                stream.read(1)
+    except (OSError, ValueError):
+        readable = False
+    usable = readable and base["result"] is not None and base["reason_code"] != "method_changed"
+    prior = {**old, **({"output": base["result"]} if usable else {})}
+    projection = effect_runtime_result("benchmark.trajectory.continuation", {
+        **prepared, "previous": prior, **({"output": result} if result is not None else {}),
+    })
+    return {
+        **projection,
+        "base_pack_id": base_id, "base_title": base["title"],
+        "base_analysis_key": base["analysis_key"], "base_available": usable,
+        "base_episode_count": base["episode_count"],
+    }, prior if projection["can_reuse"] else None
 
 
 def execute_pack(
@@ -416,16 +487,19 @@ def execute_pack(
     owner_goal_id: str,
     pack_id: str,
     analysis_key: str,
+    output_language: str | None = None,
     retry: bool = False,
     timeout_seconds: int = 900,
     codex: str = "codex",
 ) -> dict:
     owner, record = _resolve(runtime_root, owner_goal_id, pack_id)
-    _job(owner, record, analysis_key)
-    prepared = _prepared(record)
-    reason = _availability(record, prepared)
+    base = _prepared(record)
+    prepared = _prepared(record, output_language) if output_language is not None else base
+    _job(owner, prepared if output_language is not None else record, analysis_key)
+    reason = _availability(record, base)
     if reason:
         raise PackUnavailable(reason)
+    _, reuse = _continuation(runtime_root, owner_goal_id, record, prepared, None, output_language)
     return _public_job(
         execute(
             prepared,
@@ -433,15 +507,18 @@ def execute_pack(
             retry=retry,
             timeout_seconds=timeout_seconds,
             codex=codex,
+            **({"reuse_from": reuse} if reuse is not None else {}),
         )
     )
 
 
 def cancel_pack(
-    *, runtime_root: Path, owner_goal_id: str, pack_id: str, analysis_key: str
+    *, runtime_root: Path, owner_goal_id: str, pack_id: str, analysis_key: str,
+    output_language: str | None = None,
 ) -> dict:
     owner, record = _resolve(runtime_root, owner_goal_id, pack_id)
-    return _public_job(request_cancel(_job(owner, record, analysis_key)))
+    identity = _prepared(record, output_language) if output_language is not None else record
+    return _public_job(request_cancel(_job(owner, identity, analysis_key)))
 
 
 def read_citation(
@@ -453,12 +530,14 @@ def read_citation(
     source_id: str,
     first_line: int,
     last_line: int,
+    output_language: str | None = None,
 ) -> dict:
     _, record = _resolve(runtime_root, owner_goal_id, pack_id)
-    if analysis_key != record["analysis_key"]:
+    if analysis_key != (_prepared(record, output_language) if output_language is not None else record)["analysis_key"]:
         raise PackUnavailable("analysis_key_mismatch")
     view = inspect_pack(
-        runtime_root=runtime_root, owner_goal_id=owner_goal_id, pack_id=pack_id
+        runtime_root=runtime_root, owner_goal_id=owner_goal_id, pack_id=pack_id,
+        output_language=output_language,
     )
     result = view["result"]
     citations = [c for a in (result or {}).get("assessments", []) for c in a["citations"]]

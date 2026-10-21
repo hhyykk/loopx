@@ -18,6 +18,11 @@ new provider setting: legacy inputs and promoted File/SQLite inputs share the
 same typed summary owner. PostgreSQL uses the same provider-neutral records;
 service deployment and whole-Goal promotion remain separately qualified.
 
+The list's `projection_envelope` also separates source coverage from display.
+Its `included_count` covers all query matches; `shown_count` counts the final
+ordinary, hot, limited, thin or exact view. Display truncation alone does not
+raise `incomplete_coverage`; see the [envelope contract](contracts/projection-envelope-contract.md).
+
 | Field | Meaning |
 | --- | --- |
 | `open` | Nonterminal source rows, including blocked work; it is not executable work |

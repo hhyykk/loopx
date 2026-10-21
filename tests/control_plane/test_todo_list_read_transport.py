@@ -3,15 +3,19 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+from canonical_authority_fixture import (
+    initialize_canonical_authority,
+    isolate_sqlite_runtime,
+)
 
-from canonical_authority_fixture import initialize_canonical_authority, isolate_sqlite_runtime
-from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
-
+from loopx.control_plane.coordination.runtime_shadow import (
+    build_todo_runtime_shadow_projection,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 GOAL = "read-transport"
@@ -68,8 +72,8 @@ def read_cli(tmp_path, monkeypatch, request):
 
     yield request.param, run, prefix, state
     subprocess.run(
-        [sys.executable, "-c", "from loopx.control_plane.effect_runtime import effect_runtime_result;"
-         "effect_runtime_result('runtime.shutdown', {}, retry_safe=False)"],
+        [sys.executable, "-c", ("from loopx.control_plane.effect_runtime import effect_runtime_result;"
+         "effect_runtime_result('runtime.shutdown', {}, retry_safe=False)")],
         cwd=REPO, capture_output=True, text=True, timeout=30, check=True,
     )
 
@@ -107,7 +111,7 @@ def test_read_filters_errors_and_fresh_provider(read_cli):
         added = subprocess.run(
             [sys.executable, "-m", "loopx.cli", *prefix, "--format", "json", "todo", "add",
              "--goal-id", GOAL, "--role", "agent", "--text", "Fresh canonical requirement",
-             "--claimed-by", "agent-a"], cwd=REPO, capture_output=True, text=True, timeout=45,
+             "--claimed-by", "agent-a"], cwd=REPO, capture_output=True, text=True, timeout=45, check=False,
         )
         assert added.returncode == 0, added.stdout + added.stderr
     fresh = run()
@@ -121,6 +125,21 @@ def test_read_filters_errors_and_fresh_provider(read_cli):
         assert fresh["authority_read"]["provider_revision"] != full["authority_read"]["provider_revision"]
         assert fresh["authority_read"]["decision_read_from_provider"]
         assert fresh["authority_read"]["legacy_fallback_used"] is False
+
+
+def test_display_limits_report_complete_sources_and_actual_shown_items(read_cli):
+    _, run, _, _ = read_cli
+    for options, available in [((), 3), (("--agent-id", "agent-a"), 2),
+                               (("--limit", "1"), 3), (("--thin",), 3)]:
+        payload = run(*options)
+        envelope = payload["projection_envelope"]
+        coverage = envelope["coverage"]
+        assert envelope["alert"] is False
+        assert coverage["complete"] is True and coverage["omitted"] == []
+        assert coverage["expected_count"] == coverage["included_count"] == available
+        assert coverage["available_count"] == available
+        assert coverage["shown_count"] == len(payload["todos"])
+        assert coverage["truncated"] == (len(payload["todos"]) < available)
 
 
 def test_read_entrypoint_does_not_load_mutation_owners(read_cli):
@@ -170,5 +189,5 @@ def test_todo_help_does_not_load_mutation_owners():
         "\nassert 'loopx.state_refresh' not in sys.modules"
     )
     result = subprocess.run([sys.executable, "-c", script], cwd=REPO,
-                            capture_output=True, text=True, timeout=45)
+                            capture_output=True, text=True, timeout=45, check=False)
     assert result.returncode == 0, result.stdout + result.stderr

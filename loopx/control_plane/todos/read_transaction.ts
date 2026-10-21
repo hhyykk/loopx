@@ -154,14 +154,15 @@ async function todoListPayload(input: JsonObject, original: JsonObject[], fields
   // across runtimes for fields of the result it just received.
   const result = query.todo_id ? projectTodoContextPage({detail_payload: payload}) : query.thin ? compactThinTodoRead(payload) :
     query.json_references ? projectTodoContextPage({list_payload: payload}) : payload;
+  const shownCount = query.todo_id ? Number(result.todo !== null) : (result.todos as JsonObject[]).length;
   const observed = String(input.read_observed_at);
   result.projection_envelope = sealProjectionEnvelope({schema_version: PROJECTION_ENVELOPE_SEAL_REQUEST,
     projection: "goal_todo_read", observed_at: observed,
     sources: [{source_id: sourceName, read_status: "read", last_read_at: observed,
       item_count: canonical === null ? Number(requireJsonObject(input.legacy_source, "legacy source").source_count) : original.length}],
     coverage: {scope: "goal_todo_query", expected_count: projection.uncapped_todo_count,
-      included_count: todos.length, shown_count: todos.length, available_count: projection.uncapped_todo_count,
-      omitted: Number(projection.uncapped_todo_count) > todos.length ? [{reason: "query_limit", count: Number(projection.uncapped_todo_count) - todos.length}] : []}});
+      included_count: projection.uncapped_todo_count, shown_count: shownCount,
+      available_count: projection.uncapped_todo_count, omitted: []}});
   return {schema_version: TODO_READ_RESULT, payload: result,
     ...(canonical?.goal_acceptance_oracle_observation_basis ? {canonical_acceptance: {
       goal_acceptance_contract: canonical.goal_acceptance_contract,

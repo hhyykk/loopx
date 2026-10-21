@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ..capabilities.benchmark_toolkit import trajectory_assessment_store as store
 from ..feedback import validate_goal_id
+from ..control_plane.effect_runtime import EffectRuntimeRejected
 from .goal_source_routing import goal_source_catalog, linked_goal_source
 
 RESEARCH_ANALYSIS_PATH = "/api/chat/research-analysis"
@@ -64,11 +65,14 @@ class ResearchAnalysisRequestMixin:
             query = self._research_analysis_query()
             citation = urlparse(self.path).path.endswith("/citation")
             required = {"goal_id", "pack_id", "analysis_key", "source_id", "first_line", "last_line"} if citation else {"goal_id"}
-            allowed = required if citation else {"goal_id", "pack_id"}
+            allowed = (required if citation else {"goal_id", "pack_id"}) | {"output_language"}
             if not required <= query.keys() or query.keys() - allowed or any(len(v) != 1 for v in query.values()):
                 raise ValueError("Use the registered Goal and opaque pack identifiers")
             values = {key: value[0] for key, value in query.items()}
             goal_id = values.pop("goal_id")
+            language = values.pop("output_language", None)
+            if language is not None and not language:
+                raise ValueError("Output language must be nonempty")
             runtime = self._research_analysis_scope(goal_id)
             if runtime is None:
                 return
@@ -79,11 +83,11 @@ class ResearchAnalysisRequestMixin:
                 if first < 1 or last < first:
                     raise ValueError("Invalid citation range")
                 result = store.read_citation(runtime_root=runtime, owner_goal_id=goal_id,
-                    first_line=first, last_line=last, **values)
+                    first_line=first, last_line=last, output_language=language, **values)
             else:
-                catalog = store.discover(runtime_root=runtime, owner_goal_id=goal_id)
+                catalog = store.discover(runtime_root=runtime, owner_goal_id=goal_id, output_language=language)
                 pack_id = values.get("pack_id") or catalog["default_pack_id"]
-                pack = store.inspect_pack(runtime_root=runtime, owner_goal_id=goal_id, pack_id=pack_id) if pack_id else None
+                pack = store.inspect_pack(runtime_root=runtime, owner_goal_id=goal_id, pack_id=pack_id, output_language=language) if pack_id else None
                 if pack_id:
                     self._research_analysis_verify_source_goal(runtime, goal_id, pack_id, pack)
                 result = {"ok": True, "catalog": catalog, "pack": pack}
@@ -94,7 +98,7 @@ class ResearchAnalysisRequestMixin:
             self._send_json(result)
         except store.PackUnavailable as exc:
             self._send_error("The registered analysis source is unavailable.", status=409, error_code=exc.reason_code)
-        except (ValueError, TypeError, KeyError):
+        except (ValueError, TypeError, KeyError, EffectRuntimeRejected):
             self._send_error("Analysis needs a registered source in this Goal.", status=400, error_code="research_analysis_scope_invalid")
         except (OSError, RuntimeError):
             self._send_error("Analysis could not be read. Research history remains available.", status=503, error_code="research_analysis_unavailable")
@@ -106,11 +110,13 @@ class ResearchAnalysisRequestMixin:
             body = self._read_json(max_bytes=4096)
             cancel = urlparse(self.path).path.endswith("/cancel")
             required = {"goal_id", "pack_id", "analysis_key"}
-            allowed = required if cancel else required | {"retry"}
+            allowed = (required if cancel else required | {"retry"}) | {"output_language"}
             if body.keys() - allowed or not required <= body.keys() or any(not isinstance(body[k], str) or not body[k] for k in required):
                 raise ValueError("Only registered Goal/pack/key operations are accepted")
             if not cancel and type(body.get("retry", False)) is not bool:
                 raise ValueError("Retry must be an explicit boolean")
+            if "output_language" in body and (not isinstance(body["output_language"], str) or not body["output_language"]):
+                raise ValueError("Output language must be nonempty text")
             if getattr(self.server, "analysis_source_namespace", None) is None:
                 if (linked_goal_source(self.server, body["goal_id"]) is not None
                         or "source_namespace" in parse_qs(urlparse(self.path).query, keep_blank_values=True)):
@@ -120,7 +126,7 @@ class ResearchAnalysisRequestMixin:
             if runtime is None:
                 return
             args = dict(runtime_root=runtime, owner_goal_id=body["goal_id"],
-                pack_id=body["pack_id"], analysis_key=body["analysis_key"])
+                pack_id=body["pack_id"], analysis_key=body["analysis_key"], output_language=body.get("output_language"))
             self._research_analysis_verify_source_goal(runtime, body["goal_id"], body["pack_id"])
             # The server's existing threaded request is the asynchronous host.
             # Provider key/claim, source verification and cancellation
@@ -129,7 +135,7 @@ class ResearchAnalysisRequestMixin:
             self._send_json({"ok": True, "job": job})
         except store.PackUnavailable as exc:
             self._send_error("Analysis source changed or is unavailable; refresh before retrying.", status=409, error_code=exc.reason_code)
-        except (ValueError, TypeError, KeyError):
+        except (ValueError, TypeError, KeyError, EffectRuntimeRejected):
             self._send_error("Analysis request was not accepted. Refresh its source and retry.", status=400, error_code="research_analysis_request_invalid")
         except (OSError, RuntimeError):
             self._send_error("Analysis did not complete. Read its status before retrying.", status=503, error_code="research_analysis_unavailable")

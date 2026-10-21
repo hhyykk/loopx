@@ -17,6 +17,42 @@ import subprocess
 import time
 
 
+def resolve_execution_observation(producer):
+    """Select measurements without prescribing task structure or strategy."""
+    if producer not in (None, "local_probe"):
+        raise ValueError("execution_observation must be omitted or 'local_probe'")
+    return producer
+
+
+def execution_observation_from_env(env: dict[str, str]):
+    if "LOOPX_RESEARCH_LOOP" in env:
+        raise ValueError(
+            "LOOPX_RESEARCH_LOOP has been removed; remove it from the worker environment. "
+            "Use ordinary Goal/Todo planning and select LOOPX_EXECUTION_OBSERVATION=local_probe "
+            "only when needed."
+        )
+    return resolve_execution_observation(env.get("LOOPX_EXECUTION_OBSERVATION"))
+
+
+def runtime_execution_guidance(env: dict[str, str]) -> str:
+    return execution_observation_guidance() if execution_observation_from_env(env) else ""
+
+
+def execution_observation_guidance() -> str:
+    return (
+        "\nLocal execution observations:\nReuse applicable evidence from an execution that already "
+        "matches the candidate and input revision. When decision-critical measurements are missing, "
+        "use `loopx-research-probe --help` to wrap the relevant local execution within its existing "
+        "budget. Do not repeat an experiment merely to produce an attachment. Retain actual host "
+        "elapsed time, exit or timeout, and selected-file hashes; keep unmeasured values unknown. "
+        "Method ids are producer declarations and optional solver counters are reports, not "
+        "independently verified execution. Attach available execution_observation through ordinary "
+        "Explore writeback with matching candidate, input revision and evidence refs. This tool "
+        "does not create work or decide completion: use the original Goal, current Todo acceptance "
+        "and ordinary continuation or replan, respecting Stop, budgets and genuine blockers.\n"
+    )
+
+
 def candidate_snapshot(paths: list[Path], workspace: Path) -> tuple[str, list[dict[str, str]]]:
     files = []
     for path in paths:

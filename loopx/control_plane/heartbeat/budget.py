@@ -10,11 +10,12 @@ from typing import Any
 # Keep useful admission and authority instructions readable; do not abbreviate
 # them solely to fit a historical character ceiling.
 INTERFACE_BUDGET_CHARS = {
-    "full": 12_000,
-    # Matched scoped prompt: 7,286 -> 7,809 including Reward Memory.
-    # Default outcome intake/review preserves earlier continuation clauses.
-    "compact": 7_200,
-    "brief": 4_800,
+    # Complete outcome intake/review adds 523 authored characters. Matched
+    # no-memory bodies with the supported 320-character profile scope measure
+    # 12,688 / 7,531 / 5,285; preserve the instructions and bound their growth.
+    "full": 12_800,
+    "compact": 7_600,
+    "brief": 5_400,
     # Matched public CLI fixture: 3,306 -> 3,829 normalized body chars.
     # The same supported 320-char scope reaches 4,118, leaving 82 chars
     # above the complete outcome, authority, continuation and settlement rules.
@@ -22,6 +23,11 @@ INTERFACE_BUDGET_CHARS = {
     "visible_goal": 4_000,
 }
 NATIVE_GOAL_HOST_MAX_CHARS = INTERFACE_BUDGET_CHARS["visible_goal"]
+
+# Opt-in captured envelopes retain transport routes and same-capture recovery.
+# The no-memory, 128-char-root/320-char-scope CLI body measures 4,512 chars.
+# Keep its 4,600-char presentation allowance separate from ordinary thin.
+CAPTURED_ENVELOPE_PROMPT_HEADROOM_CHARS = 400
 
 # Reward Memory's outcome contract is intentionally readable rather than
 # squeezed into the ordinary heartbeat allowance.  Keep this fixed and tied to
@@ -72,6 +78,7 @@ def build_interface_budget(
     brief: bool = False,
     thin: bool = False,
     native_goal_host: bool = False,
+    captured_envelope: bool = False,
 ) -> dict[str, Any]:
     mode = (
         "visible_goal"
@@ -87,7 +94,16 @@ def build_interface_budget(
         if mode != "visible_goal" and _REWARD_MEMORY_PROMPT_MARKER in task_body
         else 0
     )
-    max_chars = INTERFACE_BUDGET_CHARS[mode] + reward_memory_headroom
+    captured_envelope_headroom = (
+        CAPTURED_ENVELOPE_PROMPT_HEADROOM_CHARS
+        if mode == "thin" and captured_envelope
+        else 0
+    )
+    max_chars = (
+        INTERFACE_BUDGET_CHARS[mode]
+        + reward_memory_headroom
+        + captured_envelope_headroom
+    )
     return {
         "mode": mode,
         "char_count": len(task_body),

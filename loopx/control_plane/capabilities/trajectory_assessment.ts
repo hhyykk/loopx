@@ -6,7 +6,7 @@ import {EffectRuntimeRequestError} from '../effect_runtime_errors.ts';
 
 export const TRAJECTORY_METHOD = 'research-episodes-v2';
 import {TRAJECTORY_METRICS} from './trajectory_assessment_types.ts';
-import type {TrajectoryMetric, TrajectoryInput, AssessmentVerdict, TrajectoryAssessment} from './trajectory_assessment_types.ts';
+import type {TrajectoryMetric, TrajectoryInput, AssessmentVerdict, TrajectoryAssessment, TrajectoryOutputLanguage} from './trajectory_assessment_types.ts';
 export * from './trajectory_assessment_types.ts';
 const object = (v: unknown, name: string): Record<string, unknown> => {
   if (!v || typeof v !== 'object' || Array.isArray(v)) throw new EffectRuntimeRequestError(`${name} must be an object`);
@@ -86,17 +86,33 @@ export const TRAJECTORY_OUTPUT_SCHEMA = {type: 'object', additionalProperties: f
     required: ['episode_id','metric','verdict','reason','citations'], properties: {
       episode_id: {type: 'string'}, metric: {type: 'string', enum: [...TRAJECTORY_METRICS]}, verdict: {type: 'string', enum: ['yes','no','unknown']},
       reason: {type: 'string'}, citations: {type: 'array', items: citationSchema}}}}, limitations: {type: 'array', items: {type: 'string'}}}};
+const LOCALIZED_OUTPUT_SCHEMA = {...TRAJECTORY_OUTPUT_SCHEMA,
+  required: [...TRAJECTORY_OUTPUT_SCHEMA.required, 'episode_questions'],
+  properties: {...TRAJECTORY_OUTPUT_SCHEMA.properties, episode_questions: {type: 'array', items: {
+    type: 'object', additionalProperties: false, required: ['episode_id', 'question'],
+    properties: {episode_id: {type: 'string'}, question: {type: 'string'}}}}}};
 
 export function prepareTrajectoryAssessment(params: Record<string, unknown>) {
   const input = parseTrajectoryInput(params.input);
   const config = object(params.config, 'config');
+  if (config.output_language !== undefined && config.output_language !== 'zh' && config.output_language !== 'en') {
+    throw new EffectRuntimeRequestError('output_language must be zh or en');
+  }
+  const language = config.output_language as TrajectoryOutputLanguage | undefined;
   // Only analysis identity; provider configuration/execution is owned by its adapter.
-  const configIdentity = {model: str(config.model, 'model'), effort: str(config.effort, 'effort'), service_tier: str(config.service_tier, 'service_tier')};
-  const analysis_key = createHash('sha256').update(JSON.stringify({method: TRAJECTORY_METHOD, rubric: RUBRIC, input, config: configIdentity})).digest('hex');
+  // Omission preserves the identity of already registered, language-unspecified artifacts.
+  const configIdentity = {model: str(config.model, 'model'), effort: str(config.effort, 'effort'), service_tier: str(config.service_tier, 'service_tier'),
+    ...(language ? {output_language: language} : {})};
   const numberedSources = input.sources.map(s => ({...s, text: s.text.split('\n').map((line, n) => `${s.first_line+n}: ${line}`).join('\n')}));
+  const languageInstruction = language ? `\n\nOutput language: ${language === 'zh' ? 'Simplified Chinese (简体中文)' : 'English'}. Write every reason, limitation and episode question in this language, regardless of the evidence language.
+Return episode_questions exactly once per supplied episode: episode_id unchanged and question as a concise faithful rendering of its research question. Preserve uncertainty, negation, comparisons, numbers and units. Do not add conclusions to questions. These are analytical renderings, not replacements for original records.
+Keep JSON field names, IDs, metric/verdict tokens and citation ranges unchanged. Preserve technical identifiers and any necessary exact source quotation; explain quotations in the requested language.\n` : '';
+  const analysis_key = createHash('sha256').update(JSON.stringify({method: TRAJECTORY_METHOD, rubric: RUBRIC, input, config: configIdentity,
+    ...(language ? {language_instruction: languageInstruction} : {})})).digest('hex');
   return {analysis_key, method_version: TRAJECTORY_METHOD, config: configIdentity, input,
     ...(params.native_outcomes === undefined ? {} : {native_outcomes: projectTrajectoryNativeOutcomes(params.native_outcomes, input)}),
-    prompt: `${RUBRIC}\n\nEvidence pack:\n${JSON.stringify({...input, sources: numberedSources})}`, output_schema: TRAJECTORY_OUTPUT_SCHEMA};
+    prompt: `${RUBRIC}${languageInstruction}\n\nEvidence pack:\n${JSON.stringify({...input, sources: numberedSources})}`,
+    output_schema: language ? LOCALIZED_OUTPUT_SCHEMA : TRAJECTORY_OUTPUT_SCHEMA};
 }
 export function qualifyTrajectoryAssessment(params: Record<string, unknown>): TrajectoryAssessment {
   const prepared = prepareTrajectoryAssessment(params);
@@ -123,7 +139,19 @@ export function qualifyTrajectoryAssessment(params: Record<string, unknown>): Tr
     return {episode_id: id, metric: m, verdict, reason: str(a.reason, 'reason'), citations};
   });
   if (seen.size !== expected.size) throw new EffectRuntimeRequestError('missing eligible episode metric; emit unknown instead');
+  const language = prepared.config.output_language;
+  const questions = language ? list(raw.episode_questions, 'episode_questions').map(value => {
+    const q = object(value, 'episode question');
+    const episode_id = str(q.episode_id, 'episode_id');
+    if (!input.episodes.some(e => e.id === episode_id)) throw new EffectRuntimeRequestError('question outside supplied episodes');
+    return {episode_id, question: str(q.question, 'episode question')};
+  }) : undefined;
+  if (questions) {
+    unique(questions.map(q => q.episode_id), 'episode questions');
+    if (questions.length !== input.episodes.length) throw new EffectRuntimeRequestError('missing episode question');
+  }
   return {schema_version: 'trajectory_assessment_v1', method_version: TRAJECTORY_METHOD, analysis_key: prepared.analysis_key,
+    ...(language ? {output_language: language, episode_questions: questions!} : {}),
     scope: input.scope, selection: input.selection, evidence_manifest: input.sources.map(({text: _text, ...s}) => s),
     calibration: 'uncalibrated_model', assessments, metrics: TRAJECTORY_METRICS.map(m => {
       const rows = assessments.filter(a => a.metric === m), yes = rows.filter(a => a.verdict === 'yes').length,

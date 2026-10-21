@@ -1090,6 +1090,7 @@ function buildPersonalHomeModel(
           hostSurface: thread.host_surface,
           lastEventAt: thread.last_event_at ?? null,
           state: thread.state,
+          reason: thread.reason ?? null,
           deliveryWindow: thread.delivery_window ? {
             state: thread.delivery_window.state,
             ageHours: thread.delivery_window.age_hours ?? null,
@@ -2084,7 +2085,7 @@ function PersonalGoalHome({
         channelId: `goal.${goal.goalId}`,
         goalId: goal.goalId,
       });
-      return { goalId: goal.goalId, session: listed.sessions[0] ?? null };
+      return { goalId: goal.goalId, session: currentChannelSession(listed, goal.agentId) };
     })).then((rows) => {
       if (cancelled) return;
       setRuntimeBindings((current) => {

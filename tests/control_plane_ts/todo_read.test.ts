@@ -134,3 +134,39 @@ test("source capture selects an evaluated view without reusing unrelated lineage
   assert.equal(projected.uncapped_todo_count, 1);
   assert.equal((projected.todos as JsonObject[])[0]!.todo_id, item.todo_id);
 });
+
+test("query display limits preserve complete source coverage and report the final view", async t => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-todo-coverage-"));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const items = Array.from({length: 30}, (_, i) => row(`todo_coverage_${i}`, {
+    index: i + 1, role: i < 15 ? "user" : "agent", task_class: i < 15 ? "user_action" : "advancement_task",
+  }));
+  const legacy = {groups: ["user", "agent"].map(role => ({role, source_section: `${role} Todo`,
+    items: items.filter(item => item.role === role), include_empty_source: true})),
+    lineage: items, full_bodies: items, source_count: items.length};
+  const cases = [
+    {name: "ordinary", query: {}, available: 30, shown: 30},
+    {name: "hot", query: {agent_id: "agent-a"}, available: 30, shown: 24},
+    {name: "limited", query: {limit: 1}, available: 30, shown: 2},
+    {name: "thin", query: {thin: true}, available: 30, shown: 4},
+    {name: "references", query: {json_references: true, limit: 1}, available: 30, shown: 2},
+    {name: "exact", query: {todo_id: items[0].todo_id}, available: 1, shown: 1},
+    {name: "missing", query: {todo_id: "todo_missing"}, available: 0, shown: 0},
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async () => {
+    const read = await readTodo({schema_version: TODO_READ_REQUEST, kind: "query",
+      source: {runtime_root: root, goal_id: "coverage"}, legacy_source: legacy,
+      observed_at: Date.parse(now) / 1000, evaluated_at: now,
+      query: {goal_id: "coverage", read_scope: "active", state_file: join(root, "state.md"), ...scenario.query}}, now);
+    const payload = read.payload as JsonObject, envelope = payload.projection_envelope as JsonObject;
+    const coverage = envelope.coverage as JsonObject;
+    assert.equal(envelope.alert, false);
+    assert.equal(coverage.complete, true);
+    assert.equal(coverage.expected_count, scenario.available);
+    assert.equal(coverage.included_count, scenario.available);
+    assert.deepEqual(coverage.omitted, []);
+    assert.equal(coverage.shown_count, scenario.shown);
+    assert.equal(coverage.available_count, scenario.available);
+    assert.equal(coverage.truncated, scenario.shown < scenario.available);
+  });
+});
