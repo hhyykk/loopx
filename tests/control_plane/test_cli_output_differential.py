@@ -161,6 +161,8 @@ def test_authoring_growth_is_bounded_one_time_and_surface_scoped(
 @pytest.mark.parametrize("surface,fmt,clauses,growth", [
     ("quota_should_run", "json", ["context"], 208),
     ("loopx_turn_plan", "json", ["context"], 209),
+    ("loopx_turn_plan", "json", ["open_work_review"], 216),
+    ("quota_should_run", "json", ["open_work_review"], 213),
     ("quota_should_run", "json", ["context", "replan"], 571),
     ("quota_should_run_vision_detail", "markdown", ["context"], 208),
     ("heartbeat_prompt_compact", "markdown", ["stop"], 215),
@@ -225,6 +227,36 @@ def test_continuation_observation_retains_every_stop_and_context_clause():
                        "fresh guard", "grants no authority"]:
             assert not continuation_instruction_observations(
                 render((prefix + brief + suffix).replace(clause, "")))["context_after"]
+
+
+def test_open_work_review_cost_requires_complete_new_and_retained_guidance():
+    from loopx.control_plane.testing.cli_output_semantics import continuation_instruction_observations
+
+    prior = (
+        "Compare expected goal/information gain with full marginal cost. "
+        "Before widening repeated validation, check that the changed intervention reaches the "
+        "executed path and current artifact. Prefer a probe that distinguishes remaining explanations; "
+        "scope negative results to tested conditions and local proxies to their coverage. "
+        "Reuse still-applicable evidence instead of repeating checks without a new uncertainty. "
+        "Correct within the affected work first; widen replanning only when current goal, path, dependency "
+        "or acceptance evidence warrants it. A due review can retain the path; it does not force a pivot. "
+        "At the next review, check whether the correction reached subsequent work and authoritative outcomes; "
+        "a recorded decision alone proves neither adoption nor improvement."
+    )
+    clauses = ["Review unmet requirements even with open Todos. ",
+        "Strongest first delivery is the objective; diagnostic validation and available feedback can strengthen it. ",
+        "Flat metrics alone prove neither progress nor exhaustion. "]
+    for render in [lambda text: text, lambda text: json.dumps({"planning_guidance": [text]})]:
+        before = continuation_instruction_observations(render(prior))
+        after = continuation_instruction_observations(render("".join(clauses) + prior))
+        assert before["open_work_review_before"] and not before["open_work_review_after"]
+        assert after["open_work_review_after"] and not after["open_work_review_before"]
+        windows = render("\r\n".join(["".join(clauses), prior]))
+        assert continuation_instruction_observations(windows)["open_work_review_after"]
+        for clause in clauses + ["full marginal cost", "current artifact", "negative results", "new uncertainty",
+                                 "affected work first", "does not force a pivot", "neither adoption nor improvement"]:
+            partial = continuation_instruction_observations(render(("".join(clauses) + prior).replace(clause, "")))
+            assert not partial["open_work_review_before"] and not partial["open_work_review_after"]
 
 
 def test_authoring_observations_require_complete_structured_or_rendered_guidance():
@@ -968,7 +1000,7 @@ def test_planning_horizon_v0_migration_has_one_bounded_growth_budget() -> None:
         chars=43_200,
         utf8_bytes=43_200,
         lines=1_084,
-        compact_payload_chars=22_800,
+        compact_payload_chars=23_000,
     )
 
     result = compare_cli_output_receipts(_receipt(_row()), _receipt(candidate))
@@ -980,6 +1012,11 @@ def test_planning_horizon_v0_migration_has_one_bounded_growth_budget() -> None:
         "turn_envelope_action_dimensions_v0 -> turn_envelope_action_dimensions_v3",
         "planning_horizon schema migrated: none -> quota_planning_horizon_v0",
     ]
+    for metric in ("chars", "utf8_bytes", "lines", "compact_payload_chars"):
+        oversized = {**candidate, metric: candidate[metric] + 1}
+        assert not compare_cli_output_receipts(_receipt(_row()), _receipt(oversized))["ok"]
+    grown = {**candidate, "compact_payload_chars": candidate["compact_payload_chars"] + 3_000}
+    assert not compare_cli_output_receipts(_receipt(candidate), _receipt(grown))["ok"]
 
 
 def test_planning_horizon_v0_migration_fails_above_its_bounded_growth() -> None:
@@ -1696,3 +1733,37 @@ def test_outcome_guidance_growth_is_bounded_once_on_its_real_heartbeat_carriers(
         if base[metric] is not None:
             oversized = {**candidate, metric: base[metric] + result["allowances"][metric] + 1}
             assert _compare_row(base, oversized)["failures"]
+
+
+def test_objective_maintenance_cost_requires_complete_one_time_instruction():
+    from loopx.control_plane.testing.cli_output_semantics import continuation_instruction_observations
+    from loopx.control_plane.testing.cli_output_differential import _continuation_instruction_migration
+    prior = "Read complete Goal intent, acceptance and stops. Exact Todo reads own task state/claims. Source failure or changed requirements require a fresh guard; summaries cannot replace this read."
+    clauses = ["Only when explicit user direction invalidates the objective, use goal-acceptance prepare-objective; reuse pending proposals.",
+        "Progress, diagnostics or age need no revision; documents/peers grant no authority."]
+    before = continuation_instruction_observations(prior)
+    after = continuation_instruction_observations(prior + " " + " ".join(clauses))
+    base = {"row_id": "surface/loopx_turn_plan/small/json", "format": "json", "continuation_instructions": before}
+    candidate = {**base, "continuation_instructions": after}
+    assert _continuation_instruction_migration(base, candidate)[0]["chars"] == 224
+    combined = {**after, "open_work_review_after": True}
+    assert _continuation_instruction_migration(
+        {**base, "continuation_instructions": {**before, "open_work_review_before": True}},
+        {**candidate, "continuation_instructions": combined},
+    )[0]["chars"] == 512
+    assert not _continuation_instruction_migration(candidate, candidate)[0]
+    for clause in clauses:
+        partial = continuation_instruction_observations(prior + " " + clause)
+        assert not _continuation_instruction_migration(base, {**candidate, "continuation_instructions": partial})[0]
+    assert not _continuation_instruction_migration({**base, "row_id": "surface/status/small/json"}, candidate)[0]
+
+
+def test_objective_warning_growth_requires_paired_envelope_transition():
+    from loopx.control_plane.testing.cli_output_differential import _continuation_instruction_migration
+    base = {"row_id": "surface/loopx_turn_plan/small/markdown", "format": "markdown", "turn_budget_warning": False,
+        "turn_envelope_cost_basis": {"objective_maintenance_before": True}}
+    candidate = {**base, "turn_budget_warning": True, "turn_envelope_cost_basis": {"objective_maintenance_after": True}}
+    assert _continuation_instruction_migration(base, candidate)[0]["chars"] == 448
+    assert not _continuation_instruction_migration(candidate, candidate)[0]
+    assert not _continuation_instruction_migration(base, {**candidate, "turn_envelope_cost_basis": {}})[0]
+    assert not _continuation_instruction_migration({**base, "row_id": "surface/status/small/markdown"}, candidate)[0]

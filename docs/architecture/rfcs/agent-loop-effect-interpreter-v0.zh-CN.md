@@ -329,6 +329,22 @@ R5 短包投影也完整保留已有 CLI 结算计划，包括 effect identity�
 envelope 投影，Codex CLI 保持关闭隔离；这不代表安装态 heartbeat/App 或模型收益
 已验收。
 
+PR 依赖观察现复用既有注册 TurnStart 生命周期，由执行性 quota guard、原生 Turn
+与兼容 prequota 共用。权限来自 typed Goal／Agent capability owner，包括已记住的
+宿主观察与撤销；已有授权时不必逐命令补 flag。能力自有诊断使 PR 业务规则留在 core
+Turn 之外；完整源 TS 计划、合并事实 owner 与正常执行准入仍为原权威。Goal 内
+single-flight 与每项依赖的持久节奏避免并发／到期读取重复。File/SQLite 验证覆盖业务
+额度暂停／停止、full/thin heartbeat 生成命令、跨入口观察、撤销、不确定效果、provider
+失败后的无关独立校验工作及原 journal 重放。App/Lark 共用上下文后端只消费 canonical
+就绪状态，不轮询。plan、只读／status／上下文、缺少权限与恢复路径均不添加观察。
+安装态执行器采用、既有真实 owner 的合法恢复、持续调度、模型结果与以下三批收敛验收
+仍开放。通用 memory 生命周期接入是另一项未完成边界；post-writeback hook 继续无效果。
+
+同次捕获决策中的所选 Task 继续条件与满足状态，现在沿完整选择投影、签名 envelope
+到实际协议宿主输入完整保留。File/SQLite 验证区分不同仓库的同号 PR，保留原事件时间
+和长要求尾部，独立验证后续工作并拒绝证明篡改。只读 managed-step 与原 journal
+重放不新增观察或扣费。本批补齐事实交付遗漏，安装采用与模型结果仍另行验收。
+
 有界规划上下文现在保持内联，不再因短包预算压力而强制读取整份决策；既有 owner 的
 3 KiB 限制保留。共享 DSH/cloud adapter 传递签名内容，历史引用同时保留原捕获路由和
 哈希。thin renderer 仅在存在 `agent_context.detail_ref` 时要求能力补读，不能把也用于

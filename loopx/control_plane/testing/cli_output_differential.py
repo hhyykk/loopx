@@ -126,11 +126,13 @@ _ACTION_PORTFOLIO_V0_MIGRATION_GROWTH_ALLOWANCE: dict[Metric, int] = {
 # default agent path and TurnEnvelope. This allowance applies only while the
 # schema and action-signature coverage move to v0/v3; after merge the candidate
 # becomes the new baseline and ordinary growth limits apply again.
+# Default Goal + flat work context costs 2,940 compact characters on the
+# matched multi-Agent fixture; preserve its work visibility and completeness.
 _PLANNING_HORIZON_V0_MIGRATION_GROWTH_ALLOWANCE: dict[Metric, int] = {
     "chars": 3_200,
     "utf8_bytes": 3_200,
     "lines": 84,
-    "compact_payload_chars": 2_800,
+    "compact_payload_chars": 3_000,
 }
 
 # Capability-owned context adds one bounded signed planning contribution. Only
@@ -801,7 +803,7 @@ def _continuation_instruction_migration(
                 and after.get(f"{clause}_before") is False
                 and after.get(f"{clause}_after") is True)
 
-    chars = 0
+    chars, lines = 0, 0
     if surface in {
         "quota_should_run", "loopx_turn_plan", "quota_should_run_all_detail",
         "quota_should_run_goal_boundary_detail", "quota_should_run_scheduler_detail",
@@ -814,6 +816,22 @@ def _continuation_instruction_migration(
             chars += 224
         if migrated("replan"):
             chars += 384
+        if migrated("objective_maintenance"):
+            # Matched fixture: maintenance +208 chars (including separator).
+            # The complete reviewed transition also carries platform-normalized
+            # projection metadata; preserve that prose with a bounded allowance.
+            chars += 224
+            lines = 4
+        if migrated("open_work_review"):
+            # Same fixture: +212 text bytes, +213 quota / +216 turn-plan
+            # JSON chars after accounting metadata. Preserve all prior prose;
+            # only this complete transition receives the one-time allowance.
+            chars += 224
+            if migrated("objective_maintenance"):
+                # Combined objective + work-review migration measured 497
+                # characters on Windows. Do not drop either reviewed clause to
+                # satisfy the legacy 224-character growth floor.
+                chars = max(chars, 512)
     elif surface in {"heartbeat_prompt_thin", "heartbeat_prompt_brief", "heartbeat_prompt_compact"}:
         # Complete stop/correction rollout: thin +154, brief +163, compact +215.
         if migrated("stop"):
@@ -834,10 +852,18 @@ def _continuation_instruction_migration(
         # a boolean budget diagnostic's single-character variation; later
         # growth, other surfaces, lines and shapes receive no new allowance.
         chars += 544
+    if (surface in {"loopx_turn_plan", "quota_should_run_turn_envelope"}
+            and base.get("format") == candidate.get("format") == "markdown"
+            and base.get("turn_budget_warning") is False and candidate.get("turn_budget_warning") is True
+            and (base.get("turn_envelope_cost_basis") or {}).get("objective_maintenance_before") is True
+            and (candidate.get("turn_envelope_cost_basis") or {}).get("objective_maintenance_after") is True):
+        # Measured warning appearance: +417/+419 chars and four lines. Preserve
+        # the warning and its target; paired JSON proves the reviewed cause.
+        chars, lines = max(chars, 448), 4
     if not chars:
         return {}, []
     return {
-        "chars": chars, "utf8_bytes": chars, "lines": 0,
+        "chars": chars, "utf8_bytes": chars, "lines": lines,
         "compact_payload_chars": chars if base.get("format") == "json" else 0,
     }, ["reviewed continuation instructions migrated; bounded one-time growth"]
 
