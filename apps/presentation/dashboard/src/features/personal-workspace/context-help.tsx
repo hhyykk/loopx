@@ -30,17 +30,21 @@ export function ContextHelp({label, children}: {label: string; children: ReactNo
   };
   useEffect(() => () => clearTimeout(timer.current), []);
   useEffect(() => {
-    if (!open) return;
+    // toggle is queued by the browser. Escape can arrive while the visible
+    // popover has not yet updated React state; guard the actual DOM state.
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && panel.current?.matches(":popover-open")) {
         event.preventDefault(); event.stopPropagation(); dismiss();
       }
     };
     window.addEventListener("keydown", escape, true);
+    return () => window.removeEventListener("keydown", escape, true);
+  }, []);
+  useEffect(() => {
+    if (!open) return;
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
-      window.removeEventListener("keydown", escape, true);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };

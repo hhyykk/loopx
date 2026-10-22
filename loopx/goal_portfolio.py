@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent_registry import registered_agent_ids_for_goal
+from .control_plane.effect_runtime import effect_runtime_request_scope
 from .control_plane.goals.activation import goal_activation_state
 from .control_plane.goals.goal_ref_validation import exact_goal_ref
 from .control_plane.quota.should_run import build_quota_should_run
@@ -186,10 +187,8 @@ def _read_goal(
             else collect_status(
                 registry_path=registry_path,
                 runtime_root_override=runtime_root_override,
-                scan_roots=[],
                 limit=8,
                 goal_id=goal_id,
-                include_public_boundary_scan=False,
             )
         )
         if include_goal_attention:
@@ -327,6 +326,7 @@ def _read_goal(
     return row
 
 
+@effect_runtime_request_scope()
 def build_goal_portfolio(
     *,
     registry_path: Path,
@@ -402,9 +402,7 @@ def build_goal_portfolio(
             shared_status = collect_status(
                 registry_path=registry_path,
                 runtime_root_override=runtime_root_override,
-                scan_roots=[],
                 limit=max(8, len(inspected)),
-                include_public_boundary_scan=False,
                 **({"activation_state_filter": "active"} if not include_stopped else {}),
             )
         except (OSError, ValueError, KeyError, TypeError, RuntimeError):

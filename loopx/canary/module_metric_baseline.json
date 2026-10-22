@@ -39,6 +39,9 @@
       "any_count": 25,
       "dict_any_count": 0
     },
+    "loopx/collaboration_mcp.py": {
+      "lines": 2039
+    },
     "loopx/codex_cli_probe.py": {
       "any_count": 37,
       "dict_any_count": 0

@@ -15,6 +15,7 @@ import pytest
 
 from loopx.cli import main as cli_main
 from loopx.control_plane.scheduler.execution_context import SchedulerRuntimeProfile
+from loopx.control_plane.testing.canary_harness import import_fixture_authority
 from loopx.control_plane.testing.cli_output_budget import (
     CLI_OUTPUT_BUDGET_BY_ID,
     CLI_OUTPUT_BUDGET_SPECS,
@@ -387,8 +388,6 @@ def _surface_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
         ],
         "loopx_turn_plan": common
         + [
@@ -398,8 +397,6 @@ def _surface_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
         ],
         "status": common
         + [
@@ -408,8 +405,6 @@ def _surface_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--limit",
             "5",
         ],
@@ -420,8 +415,6 @@ def _surface_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--limit",
             "5",
         ],
@@ -433,8 +426,6 @@ def _surface_commands(
             "--agent-id",
             AGENT_IDS[0],
             "--handoff-only",
-            "--scan-root",
-            str(project),
             "--limit",
             "5",
         ],
@@ -464,6 +455,7 @@ def _measure_scenario(root: Path, scenario: Scenario) -> dict[str, dict[str, dic
             stable_root,
             scenario,
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         results: dict[str, dict[str, dict]] = {}
         for output_format in ("json", "markdown"):
             commands = _surface_commands(
@@ -575,8 +567,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--include-detail",
             "scheduler",
         ],
@@ -588,8 +578,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--include-detail",
             "agent-todos",
         ],
@@ -601,8 +589,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--include-detail",
             "user-todos",
         ],
@@ -614,8 +600,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--include-detail",
             "goal-boundary",
         ],
@@ -627,8 +611,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--include-detail",
             "vision",
         ],
@@ -640,8 +622,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--include-detail",
             "all",
         ],
@@ -653,8 +633,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--turn-envelope",
         ],
         "loopx_turn_plan_transaction_detail": common
@@ -665,8 +643,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--include-transaction-detail",
         ],
         "loopx_turn_run_once_preview": common
@@ -683,8 +659,6 @@ def _mode_variant_commands(
             str(project),
             "--host-command-json",
             '["python3","-c","raise SystemExit(9)"]',
-            "--scan-root",
-            str(project),
             "--no-global-sync",
         ],
         "status_task_graph_detail": common
@@ -694,8 +668,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--limit",
             "5",
             "--include-task-graph",
@@ -707,8 +679,6 @@ def _mode_variant_commands(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--limit",
             "5",
         ],
@@ -872,6 +842,7 @@ def test_diagnose_keeps_selected_reads_once_and_out_of_the_goal_overview(
 ) -> None:
     with _stable_budget_fixture_root(tmp_path / "diagnose-selected-read") as stable_root:
         project, runtime, registry_path, state_file = _write_fixture(stable_root, SCENARIOS[0])
+        import_fixture_authority(registry_path, GOAL_ID)
         command = _surface_commands(
             project=project,
             runtime=runtime,
@@ -892,6 +863,7 @@ def test_quota_packet_drops_transient_path_but_keeps_verified_todo_reference(
 ) -> None:
     with _stable_budget_fixture_root(tmp_path / "quota-goal-read") as stable_root:
         project, runtime, registry_path, state_file = _write_fixture(stable_root, SCENARIOS[0])
+        import_fixture_authority(registry_path, GOAL_ID)
         command = _surface_commands(
             project=project,
             runtime=runtime,
@@ -912,6 +884,7 @@ def test_turn_envelope_references_selected_todo_without_duplicate_context(
 ) -> None:
     with _stable_budget_fixture_root(tmp_path / "turn-envelope-selected-read") as stable_root:
         project, runtime, registry_path, state_file = _write_fixture(stable_root, SCENARIOS[0])
+        import_fixture_authority(registry_path, GOAL_ID)
         command = _mode_variant_commands(
             project=project,
             runtime=runtime,
@@ -926,8 +899,13 @@ def test_turn_envelope_references_selected_todo_without_duplicate_context(
     assert payload["action"]["selected_todo"]["text_ref"] == "action.recommended_action"
     work_context = payload["work_context"]
     assert work_context["selected_todo_ref"] == "selected_todo"
-    assert work_context["selected_todo_authority"].startswith("markdown_active_state@sha256:")
-    assert "sources" not in work_context
+    source = next(row for row in work_context["sources"] if row["source"] == "selected_todo")
+    authority = source["content"]["authority_read"]
+    assert authority["source_authority"] == "file_v0"
+    assert authority["provider_revision"].startswith("file:")
+    assert authority["decision_read_from_provider"] is True
+    assert authority["legacy_fallback_used"] is False
+    assert "text" not in source["content"]["todo"]
 
 
 @pytest.mark.parametrize("surface_id", ["quota_should_run", "quota_should_run_turn_envelope"])
@@ -940,6 +918,7 @@ def test_compact_selected_todo_markdown_preserves_work_context_instruction(
             stable_root,
             SCENARIOS[0],
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         if surface_id == "quota_should_run":
             json_command = _surface_commands(
                 project=project,
@@ -1011,6 +990,7 @@ def test_quota_should_run_no_format_uses_machine_contract_json(
             stable_root,
             SCENARIOS[0],
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         explicit_json_command = _surface_commands(
             project=project,
             runtime=runtime,
@@ -1047,6 +1027,7 @@ def test_quota_cli_keeps_full_agent_todo_diagnostics_on_explicit_cold_path(
             stable_root,
             SCENARIOS[1],
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         default_command = _surface_commands(
             project=project,
             runtime=runtime,
@@ -1088,12 +1069,15 @@ def test_quota_cli_keeps_full_agent_todo_diagnostics_on_explicit_cold_path(
     )
     assert "backlog_items" not in default_summary
     assert detail_summary["backlog_items"]
-    assert "todo_summary_projection" not in detail_payload
+    assert detail_payload["todo_summary_projection"]["compacted_roles"] == ["user"]
+    assert detail_payload["todo_summary_projection"]["detail_ref"] == (
+        "quota should-run --include-detail user-todos"
+    )
     for key in ("interaction_contract", "scheduler_hint", "selected_todo"):
         assert default_payload.get(key) == detail_payload.get(key)
 
 
-def test_malformed_todo_state_fails_closed_without_dropping_bounded_detail(
+def test_unmigrated_malformed_todo_state_stays_bounded_and_refuses_ordinary_reads(
     tmp_path: Path,
 ) -> None:
     with _stable_budget_fixture_root(tmp_path / "malformed-todo-state") as stable_root:
@@ -1106,6 +1090,7 @@ def test_malformed_todo_state_fails_closed_without_dropping_bounded_detail(
             state_text.replace("status=open", "status=stuck", 1),
             encoding="utf-8",
         )
+        before = state_file.read_bytes()
         commands = _surface_commands(
             project=project,
             runtime=runtime,
@@ -1120,73 +1105,21 @@ def test_malformed_todo_state_fails_closed_without_dropping_bounded_detail(
             state_file=state_file,
             output_format="json",
         )["quota_should_run_todo_summary_detail"]
-
-        status_exit_code, status_text = _invoke_cli(commands["status"])
-        default_exit_code, default_text = _invoke_cli(commands["quota_should_run"])
-        detail_exit_code, detail_text = _invoke_cli(detail_command)
-
-    assert status_exit_code == 1, status_text
-    status_measurement = measure_cli_output(status_text, output_format="json")
-    assert_cli_output_baseline(
-        CLI_OUTPUT_BUDGET_BY_ID["status"],
-        scenario="crowded",
-        output_format="json",
-        text=status_text,
-        measurement=status_measurement,
-    )
-    status_payload = json.loads(status_text)
-    error_codes = {
-        row.get("code")
-        for row in status_payload["contract"]["error_diagnostics"]
-        if isinstance(row, dict)
-    }
-    assert "todo_status_invalid" in error_codes
-
-    assert default_exit_code == 1, default_text
-    default_measurement = measure_cli_output(default_text, output_format="json")
-    assert_cli_output_baseline(
-        CLI_OUTPUT_BUDGET_BY_ID["quota_should_run"],
-        scenario="crowded",
-        output_format="json",
-        text=default_text,
-        measurement=default_measurement,
-    )
-    default_payload = json.loads(default_text)
-    assert default_payload["status_health_ok"] is False
-    assert default_payload["should_run"] is False
-    assert default_payload["effective_action"] == "quota_skip"
-    default_summary = default_payload["agent_todo_summary"]
-    omitted_backlog = default_summary["payload_compaction"]["omitted_lanes"][
-        "backlog_items"
-    ]
-    assert omitted_backlog > 0
-    assert "backlog_items" not in default_summary
-    assert default_payload["todo_summary_projection"]["detail_ref"] == (
-        "quota should-run --include-detail agent-todos"
-    )
-
-    assert detail_exit_code == 1, detail_text
-    detail_measurement = measure_cli_output(detail_text, output_format="json")
-    assert_cli_output_mode_variant(
-        CLI_OUTPUT_MODE_VARIANT_BY_ID["quota_should_run_todo_summary_detail"],
-        output_format="json",
-        text=detail_text,
-        measurement=detail_measurement,
-    )
-    detail_payload = json.loads(detail_text)
-    assert detail_payload["status_health_ok"] is False
-    assert detail_payload["should_run"] is False
-    assert detail_payload["effective_action"] == "quota_skip"
-    detail_summary = detail_payload["agent_todo_summary"]
-    backlog_budget = detail_summary["payload_compaction"]["compacted_lanes"][
-        "backlog_items"
-    ]
-    assert backlog_budget["total"] > backlog_budget["shown"] > 0
-    assert len(detail_summary["backlog_items"]) == backlog_budget["shown"]
-    assert detail_summary["backlog_items"][0]["todo_id"] == "todo_fixture_000"
-    assert str(project) not in json.dumps(detail_summary["backlog_items"])
-    for key in ("decision", "should_run", "effective_action", "selected_todo"):
-        assert default_payload.get(key) == detail_payload.get(key)
+        for command in [commands["status"], commands["quota_should_run"], detail_command]:
+            exit_code, text = _invoke_cli(command)
+            assert exit_code == 1, text
+            payload = json.loads(text)
+            assert payload["error_code"] == "canonical_authority_required"
+            authority = payload.get("authority_read", payload)
+            assert authority["write_admitted"] is False
+            assert authority["decision_read_from_provider"] is False
+            assert authority["legacy_fallback_used"] is False
+            assert authority["recovery"] == {
+                "action": "migrate_goal_authority", "backup_required": True,
+            }
+            assert "todo_fixture_000" not in text
+            assert measure_cli_output(text, output_format="json")["chars"] < 2_000
+        assert state_file.read_bytes() == before
 
 
 def test_quota_cli_keeps_complete_vision_rules_with_reachable_duplicate_refs(
@@ -1198,6 +1131,7 @@ def test_quota_cli_keeps_complete_vision_rules_with_reachable_duplicate_refs(
             SCENARIOS[1],
             include_agent_vision=True,
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         default_command = _surface_commands(
             project=project,
             runtime=runtime,
@@ -1305,6 +1239,7 @@ def test_crowded_turn_plan_budget_preserves_executable_vision_authoring(
             SCENARIOS[1],
             include_agent_vision=include_agent_vision,
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         command = _surface_commands(
             project=project,
             runtime=runtime,
@@ -1337,6 +1272,7 @@ def test_crowded_quota_preserves_long_chain_decision_clauses(
         project, runtime, registry_path, state_file = _write_fixture(
             stable_root, SCENARIOS[1], include_agent_vision=include_agent_vision,
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         command = _surface_commands(
             project=project, runtime=runtime, registry_path=registry_path,
             state_file=state_file, output_format="json",
@@ -1370,6 +1306,7 @@ def test_quota_cli_keeps_full_user_todo_diagnostics_on_explicit_cold_path(
             SCENARIOS[2],
         )
         _write_user_todo_fixture(state_file)
+        import_fixture_authority(registry_path, GOAL_ID)
         default_command = _surface_commands(
             project=project,
             runtime=runtime,
@@ -1424,6 +1361,7 @@ def test_quota_cli_keeps_goal_boundary_authority_on_explicit_cold_path(
             stable_root,
             SCENARIOS[1],
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         _write_checkpointed_boundary_authority(registry_path)
         default_command = _surface_commands(
             project=project,
@@ -1489,6 +1427,7 @@ def test_quota_cli_deprecated_scheduler_detail_flag_matches_canonical_selector(
             SCENARIOS[2],
         )
         _write_user_todo_fixture(state_file)
+        import_fixture_authority(registry_path, GOAL_ID)
         _write_checkpointed_boundary_authority(registry_path)
         default_command = _surface_commands(
             project=project,
@@ -1526,6 +1465,7 @@ def test_quota_cli_all_detail_matches_repeated_canonical_selectors(
             SCENARIOS[2],
         )
         _write_user_todo_fixture(state_file)
+        import_fixture_authority(registry_path, GOAL_ID)
         _write_checkpointed_boundary_authority(registry_path)
         default_command = _surface_commands(
             project=project,
@@ -1561,6 +1501,7 @@ def test_agent_scoped_status_keeps_whole_goal_todo_index_on_cold_path(
             stable_root,
             SCENARIOS[1],
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         command = _surface_commands(
             project=project,
             runtime=runtime,
@@ -1606,6 +1547,7 @@ def test_status_and_quota_json_ignore_compatibility_reexport_bindings(
             stable_root,
             SCENARIOS[0],
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         commands = _surface_commands(
             project=project,
             runtime=runtime,
@@ -1720,6 +1662,7 @@ def test_explicit_compact_and_detail_modes_are_characterized(tmp_path: Path) -> 
 
 def _assert_mode_variant_budgets(root: Path, *, only: str | None = None) -> None:
     project, runtime, registry_path, state_file = _write_fixture(root, SCENARIOS[0])
+    import_fixture_authority(registry_path, GOAL_ID)
     for output_format in ("json", "markdown"):
         commands = _mode_variant_commands(
             project=project,
@@ -1750,6 +1693,7 @@ def test_thin_json_budget_retains_full_supported_scope(tmp_path: Path) -> None:
     # to the supported boundary. JSON/body budgets must fit complete guidance.
     with _stable_budget_fixture_root(tmp_path) as root:
         project, runtime, registry_path, state_file = _write_fixture(root, SCENARIOS[0])
+        import_fixture_authority(registry_path, GOAL_ID)
         command = _surface_commands(
             project=project, runtime=runtime, registry_path=registry_path,
             state_file=state_file, output_format="json",
@@ -1798,6 +1742,8 @@ def test_brief_long_path_budget_retains_semantics_across_parent_depths(
 ) -> None:
     from types import SimpleNamespace
 
+    from managed_effect_runtime_fixture import stop_disposable_effect_runtimes
+
     # Use the native namespace on every host, without changing pathlib or the
     # product's platform checks. Keep raw output measurements for enforcement.
     monkeypatch.setitem(globals(), "os", SimpleNamespace(name="nt", environ=os.environ))
@@ -1838,8 +1784,11 @@ def test_brief_long_path_budget_retains_semantics_across_parent_depths(
 
     monkeypatch.setitem(globals(), "_assert_mode_variant_budgets", capture_root)
     monkeypatch.setitem(globals(), "_invoke_cli", capture_output)
-    with tempfile.TemporaryDirectory(prefix="loopx-depth-") as directory:
+    with tempfile.TemporaryDirectory(prefix="loopx-depth-") as directory, contextlib.ExitStack() as cleanup:
         base = Path(directory).resolve()
+        # Each depth can start a real runtime in that temporary namespace.
+        # Retire only these owned processes before Windows removes their cwd.
+        cleanup.callback(stop_disposable_effect_runtimes, base)
         # Do not silently climb to an unqualified writable ancestor to fit.
         if len(str(base.joinpath(*("d" for _ in range(12))) / "loopx-brief-")) + 8 > 128:
             pytest.skip("Native temp namespace cannot fit the qualified depth-12 layout")
@@ -1899,6 +1848,7 @@ def test_todo_list_explicit_limit_stays_bounded_and_default_path_unchanged(
             stable_root,
             SCENARIOS[1],
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         limited_command = _mode_variant_commands(
             project=project,
             runtime=runtime,
@@ -1979,6 +1929,7 @@ def test_todo_list_thin_reduces_crowded_output_and_keeps_default_unchanged(
             stable_root,
             SCENARIOS[1],
         )
+        import_fixture_authority(registry_path, GOAL_ID)
         thin_command = _mode_variant_commands(
             project=project,
             runtime=runtime,
@@ -2040,6 +1991,7 @@ def test_todo_list_explicit_limit_bounds_monitor_and_blocker_lanes(
             SCENARIOS[1],
         )
         _write_todo_list_limit_stress_fixture(state_file)
+        import_fixture_authority(registry_path, GOAL_ID)
         command = _mode_variant_commands(
             project=project,
             runtime=runtime,
@@ -2086,6 +2038,7 @@ def test_turn_envelope_cli_preserves_codex_app_scheduler_binding(
         tmp_path,
         SCENARIOS[0],
     )
+    import_fixture_authority(registry_path, GOAL_ID)
     command = _mode_variant_commands(
         project=project,
         runtime=runtime,
@@ -2117,6 +2070,7 @@ def test_quota_should_run_cli_actions_keep_explicit_runtime_root(
         tmp_path,
         SCENARIOS[0],
     )
+    import_fixture_authority(registry_path, GOAL_ID)
 
     exit_code, text = _invoke_cli(
         [
@@ -2132,8 +2086,6 @@ def test_quota_should_run_cli_actions_keep_explicit_runtime_root(
             GOAL_ID,
             "--agent-id",
             AGENT_IDS[0],
-            "--scan-root",
-            str(project),
             "--runtime-profile",
             "codex_cli",
             "--turn-instance-id",
@@ -2186,6 +2138,7 @@ def test_first_class_runtime_profiles_fit_thin_prompt_budget_and_cli_round_trip(
                 root,
                 SCENARIOS[0],
             )
+            import_fixture_authority(registry_path, GOAL_ID)
             prompt = build_heartbeat_prompt(
                 goal_id=GOAL_ID,
                 active_state=state_file,
@@ -2215,8 +2168,6 @@ def test_first_class_runtime_profiles_fit_thin_prompt_budget_and_cli_round_trip(
                     GOAL_ID,
                     "--agent-id",
                     AGENT_IDS[0],
-                    "--scan-root",
-                    str(project),
                     "--runtime-profile",
                     profile.value,
                 ]

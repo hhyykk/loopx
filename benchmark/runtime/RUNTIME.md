@@ -79,6 +79,39 @@ Native Goal continuation stays with Codex; blocked Goals are not automatically
 unblocked. Plain exec versus Goal app-server also changes transport; it does
 not isolate the continuation effect alone.
 
+Native worker receipts retain both the latest Turn status and Goal status.
+`native_goal_outcome` distinguishes `complete`, `blocked`, `paused`,
+`budget_exhausted`, `usage_limited`, `cancelled`, `failed`, and `unknown`.
+A failed Turn takes precedence over a blocked or complete Goal and exits nonzero;
+intentional blocking/pausing and normal budget exhaustion do not become execution
+failures. `ok` indicates a handled stop, never task acceptance. Only completion
+may enter the explicitly enabled continuation option below.
+
+Terminal errors retain a digest, an allowlisted native error variant and an
+optional structured HTTP status. Unrecognized errors remain unknown; message
+text is not parsed into a category or copied into the receipt. The existing
+`error_event_count` counts error notifications, not requests: a terminal event
+that repeats an error does not increment it. A later native continuation clears
+the terminal-error fields and may complete normally.
+
+The EdgeBench adapter carries this outcome through artifact collection into
+`runtime-receipt.json`. If a native Goal fails after execution starts, its
+`partial_result.json` retains the complete native scoring result, with explicit
+`runtime_status` and `native_goal_outcome`. Failed, cancelled, usage-limited and
+unknown native outcomes do not publish `final_result.json`: existing SForge
+consumers use that file as a completion marker without interpreting the outcome
+labels. Handled terminal stops retain the existing final-result behavior;
+neither artifact grants result qualification. Ordinary non-native profile
+handling is unchanged. Adopt this behavior only for newly pinned attempts;
+frozen histories retain their original receipts and require explicit post-run
+classification. Roll back by pinning the previous source for another new attempt,
+not by renaming artifacts in a frozen run.
+
+The optional `native_goal_continue: true` loop retains the original task's
+requirements and evaluation rules after completion. Its continuation prompt no
+longer requires a candidate to improve on an accepted best before submission.
+Continuation remains off by default, with the same deadline and reserve rules.
+
 `turn` requires `validation_command`, an argv list for an independently
 protected validator available inside the task environment. It receives the
 normalized candidate result on stdin. Missing validation fails before execution.
@@ -166,6 +199,14 @@ host prepares two inputs before staging:
 For a task-entry comparison, pin the same source and vary only `task_entry`;
 keep task inputs, scoring, model, budget and evaluation windows fixed. Include
 planning time in the common run budget.
+
+New `loopx-planned` invocations deliver the product planning packet without the
+previous benchmark research-strategy prefix. Only explicitly selected execution
+observation tool context is added. This applies to both Harbor and SForge callers;
+task content, the Core first-delivery contract, identity/readback validation and
+host deadline enforcement remain unchanged. Pin the runner revision when comparing
+planning policies. This adapter change does not qualify model adoption, earlier
+evaluation or outcome improvement.
 
 The model writes or reuses actual task Todos through the public CLI. The worker
 reads the product packet again and checks the input digest, identity, Todo ids

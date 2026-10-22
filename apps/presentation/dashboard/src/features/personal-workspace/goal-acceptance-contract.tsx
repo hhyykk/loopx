@@ -21,26 +21,23 @@ export function GoalAcceptanceContractSection({goalId, contract: retained, copy,
   overview?: boolean; children?: ReactNode;
 }) {
   const zh = useWorkspaceI18n().locale === "zh-CN";
-  const [detailsExpanded, setDetailsExpanded] = useState(() => !overview || typeof window === "undefined" || !window.matchMedia("(max-width: 640px)").matches);
+  const [detailsExpanded, setDetailsExpanded] = useState(!overview);
   useEffect(() => {
-    if (!overview) return;
-    const media = window.matchMedia("(max-width: 640px)");
-    const update = () => setDetailsExpanded(!media.matches);
-    update(); media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    setDetailsExpanded(!overview);
   }, [goalId, overview]);
   const client = useQueryClient();
   const queryKey = ["goal-acceptance-readback", goalId];
   const read = useQuery({queryKey, queryFn: ({signal}) => acceptanceRequest(goalId, undefined, signal),
-    enabled: localSource && canManage, retry: false, refetchOnWindowFocus: "always",
-    refetchInterval: 15_000, refetchIntervalInBackground: false});
+    enabled: localSource, retry: false, staleTime: 15_000, refetchOnWindowFocus: true,
+    refetchInterval: query => query.state.error ? 60_000 : 15_000, refetchIntervalInBackground: false});
   const actions = useTypedActionReadback(!localSource || !canManage, goalId);
   const plan = !localSource || actions.isError ? null : preparedAcceptancePlan(actions.data ?? [], goalId);
   // A failed or loading delivery read revokes writes, not a newer same-source
   // declaration. Remote snapshots never inherit the local reader's cache.
   const contract = localSource && read.data?.goal_id === goalId ? read.data.goal_acceptance_contract : retained;
-  const fresh = localSource && canManage && !read.isError && read.data?.goal_id === goalId
+  const fresh = localSource && !read.isError && read.data?.goal_id === goalId
     && (!contract?.lifecycle_state || contract.lifecycle_state === "active");
+  const writeCurrent = canManage && fresh;
   const sourceKey = JSON.stringify([localSource, goalId, contract?.goal_ref ?? null,
     contract?.outcome_requirements?.current_lifetime ?? null]);
   const checksConfigured = hasConfiguredGoalChecks(contract);
@@ -54,7 +51,7 @@ export function GoalAcceptanceContractSection({goalId, contract: retained, copy,
   const [notice, setNotice] = useState("");
   const generation = useRef(0), flight = useRef(false);
   const source = useRef(sourceKey); source.current = sourceKey;
-  const writable = useRef(!!fresh); writable.current = !!fresh;
+  const writable = useRef(!!writeCurrent); writable.current = !!writeCurrent;
   useEffect(() => {
     generation.current++; flight.current = false;
     setDocument(null); setFilename(""); setError(""); setNotice(""); setBusy(false);
@@ -106,7 +103,7 @@ export function GoalAcceptanceContractSection({goalId, contract: retained, copy,
         <p>{copy.guidance}</p>
         <div className="delivery-acceptance-controls">
           <button type="button" disabled={busy || readOnly} onClick={() => {setError(""); void read.refetch(); void actions.refetch();}}>{zh ? "刷新结果" : "Refresh result"}</button>
-          <label>{zh ? "导入现有 JSON 合同（可选）" : "Import an existing JSON contract (optional)"}<input type="file" accept="application/json,.json" disabled={busy || !fresh}
+          <label>{zh ? "导入现有 JSON 合同（可选）" : "Import an existing JSON contract (optional)"}<input type="file" accept="application/json,.json" disabled={busy || !writeCurrent}
             onChange={event => {const file = event.target.files?.[0]; const token = ++generation.current; setDocument(null); setFilename("");
               if (!file) return; if (file.size > 262144) {setError(zh ? "文件超过 256 KB。" : "File exceeds 256 KB."); return;}
               void file.text().then(text => {if (token !== generation.current) return; const parsed: unknown = JSON.parse(text);
@@ -116,8 +113,8 @@ export function GoalAcceptanceContractSection({goalId, contract: retained, copy,
             }}/></label>
           {document ? <details open><summary>{zh ? "待保存配置" : "Configuration to save"} · {filename}</summary><pre>{JSON.stringify(document, null, 2)}</pre>
             <p>{zh ? "保存会更新所列任务的关联，不会运行检查。" : "Saving updates the listed task associations and does not run checks."}</p></details> : null}
-          <button type="button" disabled={busy || !fresh || !document || !!error} onClick={() => void operate("configure")}>{zh ? "保存配置" : "Save configuration"}</button>
-          <button type="button" disabled={busy || !fresh || !checksConfigured} onClick={() => void operate("clear-checks")}>{zh ? "移除检查配置" : "Remove check configuration"}</button>
+          <button type="button" disabled={busy || !writeCurrent || !document || !!error} onClick={() => void operate("configure")}>{zh ? "保存配置" : "Save configuration"}</button>
+          <button type="button" disabled={busy || !writeCurrent || !checksConfigured} onClick={() => void operate("clear-checks")}>{zh ? "移除检查配置" : "Remove check configuration"}</button>
         </div>
         <dl className="delivery-acceptance-source"><div><dt>{copy.source}</dt><dd><code>{goalId}</code></dd></div>
           {checksConfigured ? <><div><dt>{copy.scope}</dt><dd>{contract.scope?.kind === "selected_work" ? copy.selectedWork : copy.allWork}</dd></div>
@@ -164,9 +161,6 @@ export function GoalAcceptanceContractSection({goalId, contract: retained, copy,
     {compact || overview && !checksConfigured && !plan ? children : null}
     {outcomes}
     {compact ? <>
-      {overview ? <p className="goal-overview-note">{contract !== undefined
-        ? (zh ? "成果核对默认可用；尚未配置自动检查。" : "Outcome review is available by default; no automated checks are configured.")
-        : (zh ? "此来源未提供自动检查命令（可选）。" : "This source has not provided automated check commands (optional).")}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
     </> : <section className={`delivery-acceptance-contract${overview ? " is-overview" : ""}`} aria-label={copy.title} aria-busy={busy}>
     <div className="delivery-acceptance-content">

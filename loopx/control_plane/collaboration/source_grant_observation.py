@@ -1,5 +1,6 @@
 """Provider/store observation for the typed context-recipient policy owner."""
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +14,7 @@ from ..projects.registry_codec import (
 )
 from . import conversation_scope
 from .inbox import _hash, _read, _root
+from .source_policy_fence import source_policy_fence
 from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
 
 POLICY_SCHEMA = "loopx_manager_context_policy_v1"
@@ -156,17 +158,102 @@ def _source_registry_recipients(registry_path: Path | None, *, context_only: boo
 
 
 def source_execution_bindings(
-    runtime_root: Path, registry_path: Path | None, session: dict[str, Any], turn: dict[str, Any]
+    runtime_root: Path, registry_path: Path | None, session: dict[str, Any], turn: dict[str, Any],
+    *, required_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Observe one compatible registry; TS owns sender and exact binding grants."""
     if conversation_scope(session, origin=turn.get("origin", "unknown"))["kind"] != "external_audience":
+        if required_binding is not None:
+            raise ValueError("original source execution grant requires verified external provenance")
         return {"bindings": []}
     observed = _source_registry_recipients(registry_path)
     ingress, source = external_source_policy(runtime_root, session, turn)
     result: dict[str, Any] = effect_runtime_result("collaboration.source.execution_bindings", {
         "source": source, "sender_id": ingress["sender_id"], "available": observed["available"],
+        **({"required_binding": required_binding} if required_binding is not None else {}),
     })
     return result
+
+
+def require_delegation_source_execution(runtime_root: Path, registry_path: Path, *,
+        goal_id: str, requester_agent_id: str, source_request_id: str,
+        binding: dict[str, Any], caller_goal_ref: dict[str, Any] | None,
+        policy_locked: bool = False) -> None:
+    """Reobserve the original Chat source; the existing TS owner decides its grant.
+
+    A return address only locates frozen evidence. It never grants execution,
+    and observing it must not recover or mutate the original Chat store.
+    """
+    from .goal_instance_scope import collaboration_goal_scope
+    from .inbox import _entry
+    from .source_chat_observation import observe_source_chat
+
+    try:
+        policy_guard = (
+            nullcontext()
+            if policy_locked
+            else source_policy_fence(_root(runtime_root) / "policy.json")
+        )
+        with policy_guard, collaboration_goal_scope(
+            registry_path, goal_id=goal_id, agents=(requester_agent_id, binding["agent_id"]),
+            caller_goal_ref=caller_goal_ref, require_active=True,
+        ) as scope:
+            original = _entry(runtime_root, goal_id, binding["agent_id"], source_request_id, scope=scope)
+            route = _read(_root(runtime_root) / "roundtrips" / (source_request_id + ".json"))
+            if (original.get("execution_binding_id") != binding["id"]
+                    or any(route.get(key) != original.get(key) for key in
+                           ("request_id", "goal_id", "agent_id", "source_id", "goal_ref"))):
+                raise ValueError("original source execution identity changed")
+            session, turn = observe_source_chat(runtime_root, route)
+            target = {"goal_id": goal_id, "agent_id": binding["agent_id"]}
+            grant = source_context_target_authority(runtime_root, session, turn, target)
+            if grant.get("source_id") != original["source_id"] or target not in grant.get("targets", []):
+                raise ValueError("original source execution context is no longer authorized")
+            source_execution_bindings(runtime_root, registry_path, session, turn,
+                required_binding={**target, "requester_agent_id": requester_agent_id, "binding_id": binding["id"]})
+    except (OSError, ValueError, KeyError, TypeError, EffectRuntimeRejected) as exc:
+        raise ValueError("original source execution authority is unavailable or revoked") from exc
+
+
+def read_delegation_source_execution(service, binding_id: str, operation_id: str, *,
+        source_request_id: str, brief: dict, conversation: dict) -> dict:
+    """Observe the existing exact-Goal sources for the typed replay comparison.
+
+    This performs no request publication, worker submission or result adoption.
+    Legacy sources retain their legacy lifetime profile; they are not promoted.
+    """
+    from .goal_instance_scope import collaboration_goal_scope, decide_collaboration_lifecycle
+    from .inbox import _entry
+    from .peers import _operation_address, require_operation_id
+
+    require_operation_id(operation_id)
+    runtime_root, registry_path = service.root, service.registry
+    goal_id, requester_agent_id = service.goal_id, service.agent_id
+    caller_goal_ref = service._caller_goal_ref()
+    binding = service.binding(binding_id, require_active=True)
+    require_delegation_source_execution(runtime_root, registry_path, goal_id=goal_id,
+        requester_agent_id=requester_agent_id, source_request_id=source_request_id,
+        binding=binding, caller_goal_ref=caller_goal_ref)
+    record = _read(service.path(operation_id))
+    with collaboration_goal_scope(registry_path, goal_id=goal_id,
+            agents=(requester_agent_id, binding["agent_id"]),
+            caller_goal_ref=caller_goal_ref, require_active=True) as scope:
+        original = _entry(runtime_root, goal_id, binding["agent_id"], source_request_id, scope=scope)
+        peer = _entry(runtime_root, goal_id, binding["agent_id"], record["identity"]["request_id"], scope=scope)
+        _, operation_path = _operation_address(runtime_root, scope, requester_agent_id, operation_id)
+        for entry in (original, peer):
+            decide_collaboration_lifecycle(scope, operation="history_inspect", record=entry)
+        try:
+            effect_runtime_result("collaboration.delegation.source_replay", {
+                "config": _read(service.config), "binding_id": binding["id"], "agent_id": requester_agent_id,
+                "goal_id": goal_id, "goal_ref": scope.record_identity().get("goal_ref"), "record": record,
+                "operation_id": operation_id, "source_request_id": source_request_id,
+                "source_request": original, "peer_request": peer, "peer_operation": _read(operation_path),
+                "brief": brief, "conversation": conversation,
+            })
+        except EffectRuntimeRejected as exc:
+            raise ValueError("delegation operation identity conflict") from exc
+    return service.read(operation_id)
 
 
 def source_context_authority(

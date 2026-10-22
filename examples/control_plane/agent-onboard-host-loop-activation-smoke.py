@@ -301,7 +301,7 @@ def main() -> int:
         state_file.parent.mkdir(parents=True)
         project_registry.parent.mkdir(parents=True)
         global_registry.parent.mkdir(parents=True)
-        state_file.write_text("# Active State\n", encoding="utf-8")
+        state_file.write_text("# Active State\n\n## Agent Todo\n", encoding="utf-8")
         registry = {
             "goals": [
                 {
@@ -504,7 +504,6 @@ def main() -> int:
             str(home) + arg[len("$HOME") :] if arg.startswith("$HOME/") else arg
             for arg in app_ssh_quota_argv
         ]
-        app_ssh_quota_argv.extend(["--scan-root", str(project)])
         app_ssh_quota_run = subprocess.run(
             app_ssh_quota_argv,
             cwd=project,

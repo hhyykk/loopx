@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .decision_summary import compact_quota_decision
@@ -704,6 +705,70 @@ def _promote_interaction_contract(payload: dict[str, Any]) -> dict[str, Any]:
     return promoted
 
 
+def _reference_inline_goal_acceptance(payload: dict[str, Any]) -> dict[str, Any]:
+    """Share exact JSON copies in this display only; never trim the contract.
+
+    Work context is the preferred full carrier, then the planning horizon.
+    This Python CLI adapter only changes serialization after owner decisions;
+    canonical state, captures and replan context construction remain untouched.
+    """
+    paths: list[tuple[str | int, ...]] = []
+    interaction = payload.get("interaction_contract")
+    channel = interaction.get("agent_channel") if isinstance(interaction, dict) else None
+    context = channel.get("work_context") if isinstance(channel, dict) else None
+    sources = context.get("sources") if isinstance(context, dict) else None
+    for index, source in enumerate(sources if isinstance(sources, list) else []):
+        if (isinstance(source, dict) and source.get("source") == "goal_acceptance"
+                and isinstance(source.get("content"), dict)
+                and source["content"].get("status", "loaded") == "loaded"
+                and isinstance(source["content"].get("goal_acceptance_contract"), dict)
+                and source["content"]["goal_acceptance_contract"]):
+            paths.append(("interaction_contract", "agent_channel", "work_context",
+                          "sources", index, "content", "goal_acceptance_contract"))
+            break
+    paths.extend([
+        ("planning_horizon", "core_goal", "acceptance_contract"),
+        ("autonomous_replan_obligation", "replan_context", "core_goal", "acceptance_contract"),
+        ("agent_todo_summary", "goal_acceptance_contract"),
+    ])
+    carriers: dict[str, str] = {}
+    result = payload
+    for path in paths:
+        parent: Any = result
+        for part in path[:-1]:
+            if isinstance(parent, dict) and isinstance(part, str):
+                parent = parent.get(part)
+            elif isinstance(parent, list) and isinstance(part, int) and part < len(parent):
+                parent = parent[part]
+            else:
+                parent = None
+                break
+        field = str(path[-1])
+        value = parent.get(field) if isinstance(parent, dict) else None
+        if not isinstance(value, dict) or not value or field + "_ref" in parent:
+            continue
+        # Python equality conflates True/1 and False/0. Compare JSON types and
+        # the complete content, including revision, scope, failures and sources.
+        encoded = json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+        reference = carriers.get(encoded)
+        if reference is None:
+            carriers[encoded] = "$" + "".join(
+                f"[{part}]" if isinstance(part, int) else f".{part}" for part in path)
+            continue
+        if len(encoded) <= len(reference) + 8:
+            continue
+        # Copy only the affected spine, so callers retain their original facts.
+        result = dict(result)
+        target: Any = result
+        for part in path[:-1]:
+            child = target[part]
+            target[part] = list(child) if isinstance(child, list) else dict(child)
+            target = target[part]
+        del target[field]
+        target[field + "_ref"] = reference
+    return result
+
+
 def compact_quota_should_run_cli_payload(
     payload: dict[str, Any],
     *,
@@ -798,6 +863,7 @@ def compact_quota_should_run_cli_payload(
         agent_lane_next_action = dict(agent_lane_next_action)
         agent_lane_next_action.pop("content_revision", None)
         compact["agent_lane_next_action"] = agent_lane_next_action
+    compact = _reference_inline_goal_acceptance(compact)
     return _promote_interaction_contract(
         _promote_runtime_capability_reentry(compact)
     )

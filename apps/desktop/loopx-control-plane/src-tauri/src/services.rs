@@ -127,8 +127,17 @@ struct OwnedService {
 
 impl OwnedService {
     fn stop(&mut self) {
+        #[cfg(target_os = "macos")]
+        let group = self.child.id();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        #[cfg(target_os = "macos")]
+        if let Err(error) = crate::service_lifetime::wait_for_group_exit(group) {
+            eprintln!(
+                "LoopX owned {} stop not confirmed: {error}",
+                self.kind.label()
+            );
+        }
     }
 }
 
@@ -255,6 +264,28 @@ impl ServiceSet {
     }
 }
 
+// Ownership transfer (adopt, update handoff, stop) is exercisable without a
+// real runtime: the set owns exactly the groups a test hands it, so a reclaim
+// is observable on the same job objects production uses.
+#[cfg(test)]
+pub(crate) fn owned_set_for_test(children: Vec<GroupChild>) -> ServiceSet {
+    ServiceSet {
+        owned: children
+            .into_iter()
+            .map(|child| OwnedService {
+                child,
+                kind: ServiceKind::Status,
+            })
+            .collect(),
+        runtime: SelectedRuntime {
+            executable: String::new(),
+            identity: None,
+        },
+        last_recovery_attempt: None,
+        healed: false,
+    }
+}
+
 /// One service's connection attempt. The child this App spawned travels with
 /// the outcome even when the attempt failed, so `ServiceSet` can stop it
 /// instead of leaking a process that no longer has an owner.
@@ -350,7 +381,11 @@ fn connect_owned_service(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let child = command.group_spawn().map_err(|error| {
+    #[cfg(target_os = "macos")]
+    let child = crate::service_lifetime::spawn(&command);
+    #[cfg(not(target_os = "macos"))]
+    let child = command.group_spawn();
+    let child = child.map_err(|error| {
         ServiceError(format!(
             "could not start private LoopX {}: {error}",
             kind.label()

@@ -41,7 +41,7 @@ export async function readTodoRuntime(value: unknown): Promise<JsonObject> {
   const clock = Date.parse(observed);
   if (!Number.isFinite(clock) || clock > Date.now()) throw new EffectRuntimeRequestError("invalid original Todo read observation");
   let result = await readTodo(input, observed);
-  if (result.rejection || result.source_request || (result.canonical && !result.fields && !result.payload)) return result;
+  if (result.rejection || (result.canonical && !result.fields && !result.payload)) return result;
   if (input.kind === "group") {
     const {items, evaluations, orchestration, ...projection} = result;
     result = {...projection, selected_count: (items as unknown[]).length,

@@ -196,12 +196,16 @@ def test_native_goal_rounds_graceful_deadline_and_opt_in_continuation():
     clock[0] = 0
     calls.clear()
     def completing(suffix, timeout):
-        calls.append(suffix[:40])
+        calls.append(suffix)
         tick(400)
         return "complete"
     rounds, outcome = native_goal_rounds(completing, budget_seconds=1000, continue_after_complete=True, clock=lambda: clock[0], reserve_seconds=300)
     assert (rounds, outcome) == (2, "complete")
     assert calls[0] == "" and calls[1].startswith("\n\nContinuation 1")
+    assert "600 seconds remain" in calls[1]
+    assert "original task under its existing requirements and evaluation rules" in calls[1]
+    assert "not by a prior improvement claim" in calls[1]
+    assert "submit only if it improves" not in calls[1]
     # A Goal still active at the budget edge is normal exhaustion, not a failure.
     clock[0] = 0
     def never_ends(suffix, timeout):
@@ -209,7 +213,7 @@ def test_native_goal_rounds_graceful_deadline_and_opt_in_continuation():
     assert native_goal_rounds(never_ends, budget_seconds=1000, continue_after_complete=True, clock=lambda: clock[0]) == (1, "budget_exhausted")
     # A non-complete terminal status stops without continuation.
     clock[0] = 0
-    assert native_goal_rounds(lambda s, t: "cancelled", budget_seconds=1000, continue_after_complete=True, clock=lambda: clock[0]) == (1, "stopped")
+    assert native_goal_rounds(lambda s, t: "cancelled", budget_seconds=1000, continue_after_complete=True, clock=lambda: clock[0]) == (1, "cancelled")
 
 
 def test_fresh_wakes_share_environment_without_resuming_or_duplicate_session_copies(
@@ -635,7 +639,7 @@ def test_seeded_phase_bootstrap_records_default_turns_or_explicit_cadence(tmp_pa
         # launching a model or mutating any active project.
         build_parser().parse_args(args)
         calls.append(args)
-        return {"todo_id": "todo_fixture", "after": {"execution_profile": {field: value}}}
+        return {"todo_id": "todo_fixture", "after": {"execution_profile": {field: value, "planning_horizon_goal": True}}}
 
     monkeypatch.setattr(agent, "_write_task_document", write_task)
     monkeypatch.setattr(agent, "_registry_exists", registry_exists)
@@ -652,7 +656,8 @@ def test_seeded_phase_bootstrap_records_default_turns_or_explicit_cadence(tmp_pa
     configured = [args for args in calls if option in args]
     assert configured and all(args[args.index(option) + 1] == str(value)
                               for args in configured)
-    assert agent._replan_receipt() == {field: value}
+    assert agent._replan_receipt() == {field: value, "planning_horizon_goal": True}
+    assert all("--execution-planning-horizon-goal" in args for args in configured)
 
 
 def test_requested_stride_requires_configuration_readback_before_execution(tmp_path, monkeypatch):
@@ -670,7 +675,7 @@ def test_requested_stride_requires_configuration_readback_before_execution(tmp_p
 
     async def wrong_strategy(*args, **kwargs):
         return {"after": {"execution_profile": {
-            "replan_after_effective_turns": 6, "stride_strategy": "off",
+            "replan_after_effective_turns": 6, "stride_strategy": "off", "planning_horizon_goal": True,
         }}}
 
     monkeypatch.setattr(agent, "_registry_exists", prepared)
@@ -1058,7 +1063,7 @@ raise SystemExit(1)
             extra_env={"FAKE_DIE": "1"})
 
 
-@pytest.mark.parametrize("requested,actual", [(True, False), (False, True), (None, True)])
+@pytest.mark.parametrize("requested,actual", [(True, False), (False, True), (None, False), (None, None), (None, 1)])
 def test_horizon_setting_must_match_restored_goal_before_work(tmp_path, monkeypatch, requested, actual):
     pytest.importorskip("harbor")
     from benchmark.runtime.harbor import BenchmarkCodex

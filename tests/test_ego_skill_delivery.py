@@ -54,13 +54,7 @@ def test_refresh_copies_installed_skill_without_editing_app_and_reuses_idle_task
     assert "without another ownership-confirmation question" in text
     assert "Stop immediately for active user interaction" in text
     assert "explicit pause" in text and "unrelated space" in text
-    assert "create one replacement without asking only when" in text
-    assert "recorded successful `finish({ keep: [] })`" in text
-    assert "confirms that numeric id is absent" in text
-    assert "Absence alone does not prove normal closure" in text
     assert "A refused claim never permits replacement" in text
-    assert "never recovery from a stuck, blocked, timed-out" in text
-    assert "single space for subsequent rounds" in text
     assert "Finish exactly\nonce per space lifetime" in text
     assert "grants no new operation" in text
     assert "Finish once; protect user tabs." in text
@@ -120,9 +114,16 @@ def test_guidance_correction_refreshes_existing_install_without_version_bump(
     current_policy = delivery._POLICY
     # The old policy is a completed managed installation, not a user edit.
     # Corrected guidance must replace it even when Ego and LoopX versions match.
+    previous_policy = (
+        "\n\n## LoopX: continuing an authorized browser task\n\n"
+        "Create one replacement only after successful finish({ keep: [] }).\n"
+        "Absence alone does not prove normal closure.\n"
+    )
     with monkeypatch.context() as old:
-        old.setattr(delivery, "_POLICY", "\n\nPrevious managed continuation policy.\n")
+        old.setattr(delivery, "_POLICY", previous_policy)
         assert workflow_skill_install(skills_dir=skills, execute=True)["ok"]
+    old_marker = json.loads((entry / ".loopx-ego-skill.json").read_text())
+    assert (entry / "SKILL.md").read_text().endswith(previous_policy)
     assert (
         workflow_skill_install(skills_dir=skills)["ego_browser"]["status"]
         == "would_refresh"
@@ -133,6 +134,11 @@ def test_guidance_correction_refreshes_existing_install_without_version_bump(
         entry / "SKILL.md"
     ).read_text() == upstream.decode().rstrip() + current_policy
     marker = json.loads((entry / ".loopx-ego-skill.json").read_text())
+    assert marker["loopx_version"] == old_marker["loopx_version"]
+    assert (
+        "Absence alone does not prove normal closure"
+        not in (entry / "SKILL.md").read_text()
+    )
     assert (
         marker["policy_sha256"] == hashlib.sha256(current_policy.encode()).hexdigest()
     )

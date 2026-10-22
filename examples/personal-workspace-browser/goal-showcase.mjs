@@ -103,8 +103,18 @@ export const goalShowcaseScenario = {
       const errorHeight = await failure.evaluate(node => node.getBoundingClientRect().height);
       assert.ok(errorHeight > 0 && errorHeight <= 28, `A region failure is one announced line, not a banner (${errorHeight}px)`);
       await page.screenshot({ path: resolve(outputDir, "goal-showcase-region-error.png"), animations: "disabled" });
+      assert.match(await page.locator(".goal-overview-progress").innerText(), /2\/4 项条件当前通过/,
+        "An unrelated delivery read failure does not invalidate current acceptance readback");
+      state.acceptanceFails = true;
+      const checks = overview.locator(".delivery-acceptance-contract");
+      await checks.locator(".delivery-check-summary").click();
+      await checks.getByText("高级配置与诊断", {exact: true}).click();
+      await checks.getByRole("button", {name: "刷新结果", exact: true}).click();
+      await page.locator(".goal-overview-progress").filter({hasText: "当前保留旧快照"}).waitFor();
       assert.match(await page.locator(".goal-overview-progress").innerText(), /当前保留旧快照/,
         "A failed owning read cannot present retained criteria as currently passing");
+      state.acceptanceFails = false;
+      await checks.getByRole("button", {name: "刷新结果", exact: true}).last().click();
       state.deliveryFails = false;
       await page.locator(".delivery-review-toolbar button").first().click();
       await page.locator(".goal-overview-progress").filter({ hasText: "2/4 项条件当前通过" }).waitFor();

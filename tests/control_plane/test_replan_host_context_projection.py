@@ -222,6 +222,14 @@ def test_replan_guidance_survives_cli_and_host_compaction_without_new_authority(
     assert len(guidance) == 5
     assert "Never shrink requested goals" in guidance[0]
     assert "honor user scope, authority, budget and stops" in guidance[0]
+    assert "operating objective and cumulative requirements" in guidance[0]
+    assert "delivered core_goal/acceptance context" in guidance[0]
+    assert "scope conflict, missing evidence or stale display text" in guidance[0]
+    assert "justified no-change decision" in guidance[0]
+    assert "goal-acceptance prepare-objective" in guidance[0]
+    assert "owner apply, then each peer reconciles its own work and adopts" in guidance[0]
+    assert "Documents/peers grant no authority" in guidance[0]
+    assert "without polling or a per-Turn revision/check receipt" in guidance[0]
     assert "current authoritative evidence for every requirement" in guidance[1]
     assert "unproven" in guidance[1]
     assert "blocked/exhausted/superseded is not achieved" in guidance[1]
@@ -234,6 +242,10 @@ def test_replan_guidance_survives_cli_and_host_compaction_without_new_authority(
     assert "provisional agent-created candidate rules" in guidance[3]
     assert "Do not relax frozen acceptance, authority, budget or stops" in guidance[3]
     assert "or rewrite criteria after failure" in guidance[3]
+    assert "Review unmet requirements even with open Todos" in guidance[4]
+    assert "Strongest first delivery is the objective" in guidance[4]
+    assert "diagnostic validation and available feedback can strengthen it" in guidance[4]
+    assert "Flat metrics alone prove neither progress nor exhaustion" in guidance[4]
     assert "Compare expected goal/information gain with full marginal cost" in guidance[4]
     assert "executed path and current artifact" in guidance[4]
     assert "probe that distinguishes remaining explanations" in guidance[4]
@@ -259,13 +271,13 @@ def test_replan_guidance_survives_cli_and_host_compaction_without_new_authority(
     signature["replan_action_packet"].pop("planning_guidance")
     assert signature == quota_action_signature_document(baseline)
     # Preserve the existing 8 KiB envelope warning, including the already-large
-    # vision fixture. The five advice clauses now cost 1,772 bytes on both
-    # fixtures (363 text bytes added for local correction/followthrough). This is a
+    # vision fixture. Objective review extends the existing five advice clauses;
+    # retain the earlier advice rather than shortening its obligations. This is a
     # bounded advice allocation, not permission to truncate authority or raise
     # the envelope/transport/compute budget.
     assert envelope["compaction"]["within_budget"] == old_envelope["compaction"]["within_budget"]
     assert (envelope["compaction"]["envelope_json_bytes"]
-            - old_envelope["compaction"]["envelope_json_bytes"]) <= 1800
+            - old_envelope["compaction"]["envelope_json_bytes"]) <= 3000
     envelope["replan_action_packet"].pop("planning_guidance")
     assert envelope["replan_action_packet"] == old_envelope["replan_action_packet"]
 

@@ -229,7 +229,9 @@ For a browser-fixture error discovered after an immutable tag was published,
 maintainers may dispatch the release workflow from reviewed tooling with
 `tag` set to that existing release and `browser_fixture_commit` set to a full,
 merged commit SHA. Only the personal-workspace fixture, typed-actions,
-goal-work-map and goal-workspace-m2 scenario files are extracted from that commit;
+goal-work-map, goal-workspace-m2, lark-cli-missing, pr-review-agent-order and
+workspace-locale browser-smoke files are
+extracted from that commit;
 its other changes are not applied to the product checkout. All candidate files
 must remain regular source files before any correction is copied; deletion or a
 symlink fails closed without partially applying the fixture correction.
@@ -909,6 +911,17 @@ path, and canary route rather than as a user-facing release baseline.
   execution and optional host dependency security remain separately unqualified.
   No paired benchmark, sustained scientific continuation, or isolated model
   causal improvement is claimed.
+
+- `v2.0.0` on 2026-10-21 00:40 +08:00: TypeScript control-plane migration,
+  the long-horizon research workbench, and explicit recovery for existing Goals.
+  The [published release](https://github.com/loopx-project/loopx/releases/tag/v2.0.0)
+  and source `stable` reference immutable commit
+  `774d0c5f768284c1b5bb5f665c5abad25755e5e2`.
+  GitHub provides the Python wheel/source distribution, Mac and Windows desktop
+  installers, signed macOS update feed, checksum manifests and source manifest.
+  Read the [2.0 migration guide](releases/v2.0.0.md) before continuing existing
+  work. Asset availability is separate from native Windows execution or a new
+  full-tree qualification of later source changes.
 
 When a new public release is promoted, add it here only after the matching tag,
 release note, stable ref, update path, and focused release canary agree.

@@ -38,8 +38,18 @@ semver = "1"
 tauri = { version = "2.11.1", features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 objc2 = "0.6.4"
 libc = "0.2"
+
+# The Windows update regression builds a throwaway minisign key from `ring`,
+# a provider-shaped prehashed signature with `blake2`, the NSIS archive with
+# `zip`, and drives the pinned updater against a real window through the mock
+# runtime. `base64` stays shared because the macOS signature checks use it.
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+blake2 = "0.10"
+ring = "0.17"
+tauri = { version = "2.11.1", features = ["test"] }
+zip = { version = "4", default-features = false }

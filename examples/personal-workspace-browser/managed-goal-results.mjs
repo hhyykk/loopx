@@ -37,22 +37,21 @@ export const managedGoalResultsScenario = {
     try {
       assert.equal(reads, 0, "The directory must not read a Goal's report body");
       await page.locator(".personal-goal-link", {hasText: "Product Release"}).click();
-      // Overview and Files each own an exact acceptance read. Wait for the
-      // first surface before navigating; racing it must not decide the count.
-      const overviewResults = page.getByRole("region", {name: "已验收的团队报告"});
-      await overviewResults.getByRole("table").waitFor();
-      assert.equal(reads, 1, "Overview must revalidate the selected body once");
-      assert.deepEqual(readOrder, ["inventory", "body"]);
+      await page.getByTestId("goal-declared-objective").waitFor();
+      assert.equal(await page.getByRole("region", {name: "已验收的团队报告"}).count(), 0,
+        "Full reports belong in Files, not a second copy in Overview");
+      assert.equal(reads, 0, "Overview must not read a report body");
       await page.getByRole("navigation", {name: "Goal 视图"}).getByRole("button", {name: "成果", exact: true}).click();
       const results = page.getByRole("region", {name: "已验收的团队报告"});
       await results.getByRole("table").waitFor();
-      assert.equal(reads, 2, "Files must independently revalidate the selected body once");
-      assert.deepEqual(readOrder, ["inventory", "body", "inventory", "body"]);
+      assert.equal(reads, 1, "Files must revalidate the selected body once");
+      assert.deepEqual(readOrder, ["inventory", "body"]);
       assert.match(await results.textContent(), /Revised cash flow/);
       assert.equal(await results.locator("script,img").count(), 0);
       await page.screenshot({path: resolve(outputDir, "managed-goal-results-desktop.png"), animations: "disabled"});
       await page.setViewportSize({width: 390, height: 844});
       assert(await results.evaluate(el => el.scrollWidth <= el.clientWidth), "Files report must fit a phone");
+      await results.getByRole("button", {name: "下载原文", exact: true}).scrollIntoViewIfNeeded();
       await page.screenshot({path: resolve(outputDir, "managed-goal-results-mobile.png"), animations: "disabled"});
       stale = true;
       await results.getByRole("button", {name: "刷新", exact: true}).click();

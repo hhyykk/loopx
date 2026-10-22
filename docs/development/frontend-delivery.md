@@ -173,6 +173,23 @@ CLI-only prerequisites are partial delivery; catalog text or a command-copy
 button is not the journey. Reuse the typed capability owner rather than adding
 frontend-only decisions or a setting for a capability with no persistent policy.
 
+For artifact creation, follow the user's request through the existing conversation
+and artifact journey where it can already deliver preview, download, feedback and
+revision. A requested HTML page, game, mini-world or video is an output format,
+not a requirement to build an editor or simulator into LoopX. The Agent can author
+the work with the host's tools and reusable capability/provider operations; add a
+product control only when the accepted workflow needs it. Keep work-specific
+content, rules and scenes in the editable artifact rather than imposing one
+generic example as the capability's product model.
+
+Validate this route with an actual brief, the resulting usable work and a
+meaningful revision. For video, inspect the complete film's message, visuals,
+sound and pacing alongside its editable project and sources. Compare techniques
+on the same communication objective while allowing each its own composition;
+separate rendering/playback correctness from creative judgment, audience evidence
+and complete production cost. A new interface, a fixed demonstration or a passing
+encoder does not answer whether the requested work is good.
+
 Carry the same task through these steps:
 
 1. **Compare the journey.** Write the current and proposed user steps in the
@@ -207,6 +224,11 @@ Carry the same task through these steps:
    [explanations on demand](design.md#explanations-on-demand): keep results and
    consequential qualifiers visible, share optional contextual help by region,
    and reuse existing provenance details instead of adding footnotes to each card.
+   Record the default-versus-detail choices in this same brief. Requirements,
+   reviews and evidence must remain reachable without all rendering expanded.
+   Design the requested detail as well as its closed summary: comparable rows,
+   readable body text and one place for shared explanations. Moving the same
+   repeated text wall behind a disclosure does not complete this step.
 3. **Implement and challenge.** Use the smallest meaningful regression derived
    from the accepted outcome. Select realistic populated data and one negative
    or recovery path likely to falsify the claim: multiple owners, out-of-order
@@ -214,6 +236,9 @@ Carry the same task through these steps:
    Select by the touched risk, not all cases for every patch. Reuse shared TS
    projections; fix the owning selector rather than sorting an already-sorted
    mock or adding a frontend-only source of truth.
+   For information-density changes, compare small and realistically large
+   datasets with long text and mixed states. A one-item fixture cannot qualify
+   a repeated list; use the affected feature alongside the shared showcase.
 4. **Walk the actual product.** Start at the affected user entry, use the built
    packaged surface, inspect the rendered viewport, perform the task and read
    back the result. Validate affected narrow/keyboard/language behavior. Pair
@@ -222,6 +247,10 @@ Carry the same task through these steps:
    For contextual help, verify hover-to-panel continuity, keyboard focus/Escape,
    touch dismissal and narrow positioning. Confirm that opening help causes no
    operation and that failures/unknowns remain legible with every help closed.
+   Complete the [populated page review](design.md#populated-page-review): inspect
+   the default whole page and a selected expanded item, including lower regions.
+   A more compact component fails the task if the page's primary result remains
+   buried or if details, uncertainty or failed items became inaccessible.
    Record source/build identity and fixture boundaries. Source preview, packaged
    browser, installed App and real model each prove different things.
 5. **Review the task before the diff narrative.** The review capability's
@@ -232,6 +261,15 @@ Carry the same task through these steps:
    Reused evidence needs its revision and unchanged assumptions. A material
    unsupported claim remains unproven. A necessary confirmation can be accepted
    with its authority basis; green CI cannot justify redundant confirmation.
+   Reject an information dump from the rendered evidence even when all fields
+   and controls pass their local checks; report missing dense-page evidence as
+   unverified rather than marking the design contract satisfied by a read receipt.
+   Fill the capability-owned `visual_review` with actual default/expanded
+   observations and the affected narrow composition, using the same captures
+   and revision boundaries. Keep automated data/folding/overflow checks distinct
+   from visual inspection. Publish the observed hierarchy, repetition and reading
+   quality, plus unverified scope; do not generalize a closed-view pass to the
+   whole page. A nonvisual change records why this review is not applicable.
 6. **Deliver and read back.** Report the observable improvement, evidence limits
    and whether code is proposed, merged, packaged or installed. After an
    authorized upgrade, reopen the exact installed surface and check the same

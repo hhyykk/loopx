@@ -5,17 +5,30 @@
 LoopX's existing workflow-skill refresh now carries a small continuation policy
 for an **already installed** Ego browser skill. An authorized task can reuse its
 known idle TaskSpace after an ordinary finish or handoff without another chat
-confirmation. If the Agent’s recorded successful `finish({ keep: [] })` closed
-that space, and the current inventory confirms its id is absent, later browser
-work within the same authorization can create one replacement and reuse its
-initial Page. A missing space without that closure evidence, a refused claim or
-a stuck/failed space cannot use this exception. Keep one active space, record
-its identity and finish once per space lifetime.
+confirmation. If a successful, complete inventory confirms that the task's
+known Agent-created TaskSpace is absent, the same authorization permits one
+replacement and reuse of its initial Page. This covers unexpected loss without
+requiring a normal-closure receipt or another authorization question. Unknown
+cause stays unknown; failed inventory is not evidence of absence. An existing
+space, a missing Page label, a refused claim or a stuck/blocked Page does not
+permit replacement. Keep one active space, record its identity and finish once
+per space lifetime.
+
+Record a stable unique recovery name and the attempt before creation, then the
+returned id. A lost receipt permits one inventory lookup for that exact name,
+reusing only a unique Agent-created, Agent-owned match; it does not permit
+another creation or claim. Carry that attempt across shell processes and
+heartbeats. If the replacement disappears before verified continuation, stop
+the loop and diagnose the recurring loss. Inspect the actual destination
+before replaying an external effect whose outcome is unknown.
 
 Active user intervention, explicit pauses, reserved control,
 unknown task identity and browser-owned permission/login prompts retain their
-existing stops. This is Agent guidance; it neither changes Ego's native control
-checks nor gives the public-source reader a claim/takeover tool.
+existing stops, even if the old space later disappears. This is Agent guidance;
+it neither changes Ego's native control checks nor gives the public-source
+reader a claim/takeover tool. That optional reader already bounds its own
+confirmed-missing recovery; the host policy now admits the same known-missing
+case instead of making a normal-closure receipt a prerequisite.
 
 Normal LoopX Python-package upgrades already run `workflow-skills --install`;
 the POSIX and Windows installers use the same Ego delivery adapter. The adapter

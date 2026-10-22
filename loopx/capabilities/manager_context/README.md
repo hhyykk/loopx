@@ -1,6 +1,10 @@
 # Manager context delivery
 
 Built-in capability for original intent delivery and receiver-owned replanning.
+The `manager-inbox` CLI uses the shared selected-command dispatcher and one
+executable-revision scope per command. It retains the existing handler and
+live source reads; it does not load the full compatibility CLI or cache request
+records between commands.
 The owner's local manager channel uses registered workers automatically.
 An external conversation requires a trusted operator's sender-bound policy in
 `<runtime-root>/.local/manager-context/policy.json`:
@@ -154,6 +158,20 @@ not a returned answer; a queued conclusion is not delivered; delivery is not
 requester adoption or independent acceptance. A current cancellation is omitted
 only after its active publication reservation is gone. Failed reads and scan or
 prompt overflow remain explicit rather than becoming an empty queue.
+
+The App's steward header exposes the same unfinished-request classification in
+an in-place inventory. `GET /api/chat/request-inventory?session_id=<original-session>`
+reads requests from that exact conversation source, including earlier Sessions
+on its channel and this Chat host. Optional `view=history` retains concluded and
+cancelled requests; `offset` reads the next bounded page. Current binding and
+Goal visibility are checked before and after reading. Original-Chat delivery
+and explicit peer-return consumption remain different receipt paths. The list
+does not mark reads, accept work, start an Agent or certify an overall outcome.
+Unreadable/missing sources and incomplete scans keep counts visibly partial.
+
+管家标题栏提供常驻委派入口，按接收方查看待跟进请求，并可展开当前交办内容、关联
+工作和原对话。同一来源的较早会话不会因重开会话而丢失；其它用户、来源、群聊和
+项目会话不混入。结论已回传与成果已验收不是同一事实，历史记录仍可回看。
 
 The automatic agenda is a partial read (`read_complete=false`): it cannot fulfill
 the full Inbox read or replace its requirements. Before acting, read the current
@@ -544,6 +562,23 @@ unsupported transport remains an explicit delivery gap. A path mentioned only in
 text is not an attachment. This slice does not qualify local-Web file presentation,
 group disclosure, cross-host transfer or inline video playback. Installed live
 provider qualification remains separate from the synthetic transport regressions.
+
+Oversized Markdown results stay rich posts. The Lark presentation splitter counts
+UTF-8 bytes of the serialized provider request, including escaped JSON, numbering
+and attachments, against the documented 30 KB post bound (30,000 bytes as a
+conservative local interpretation). It keeps the complete
+body across ordered parts without a fixed part-count cap or a plain-text fallback;
+code fences and table column headers continue across oversized blocks. The
+existing private Lark part-delivery journal retains the frozen plan and each
+provider locator. Recovery verifies known writes before continuing never-sent
+parts; unknown writes, changed intent or lost locators cannot be blindly resent.
+Attachments remain on the last concrete post. The adapter marks a composite
+delivery complete only after every part and required attachment readback succeeds.
+An atomic link or table row that cannot fit one post remains an explicit delivery
+failure; it is never silently truncated or sent as plain text.
+Historical single-text receipts remain verify-only compatibility. Intentional
+text and identity-verified mention delivery keep their existing contracts.
+
 Before downgrading to an older runtime that does not understand result files,
 pause the reply pump while any file-bearing result remains pending; an old
 text-only reader cannot certify attachment delivery. Retain the result snapshots
@@ -623,10 +658,20 @@ read-only verification. A matching message advances the original delivery to
 message, or verified mismatch becomes `explicit_unverified`. CLI, Manager read,
 and Chat expose the same public-safe state and reason without returning the
 provider locator. The Lark adapter keeps locator interpretation and provider
-readback; `manager-context` remains the sole result/delivery writer. The typed
-`control_plane/collaboration/return_delivery.ts` boundary owns provider-neutral
-attempt validation and verification classification; Python retains file-lock,
-persistence and adapter orchestration only.
+readback. The existing `control_plane/collaboration/return_delivery.ts` owner now
+performs delivery admission, state transitions, backoff and atomic delivery-receipt
+writes for exact-instance and legacy routes. It reuses the request, result and
+Goal-lifetime owners. Python observes original Chat/authority facts, holds the
+existing Host fences and invokes the actual transcript/provider adapters.
+
+The obsolete Python exact/legacy delivery coordinators and attempt-normalization
+RPC are removed. The shared transaction accepts bounded scan hints, rechecks each
+selected receipt under its mutation lock, and uses source/revision and exact
+admission-token fences before persistence. Attempt-aware providers persist their
+acceptance checkpoint before verification continues; it is not deferred to a final callback.
+The same stored request/result/route identities and public delivery readback remain.
+This retires this delivery orchestration family, not Inbox acceptance, source grants,
+all Python IO or installed/live-provider qualification.
 
 Unclassified readback exceptions retain the saved attempt and retry with backoff;
 their wording never establishes revoked authority or a missing route. Adapters

@@ -148,7 +148,15 @@ export const navigationSortingScenario = {
       if (unknownUsage.length !== 2 || unknownUsage.some(value => value !== "—|未采集")) throw new Error(`Unknown usage became a zero or disappeared: ${unknownUsage}`);
       await overview.getByRole("alert").filter({ hasText: "交付快照读取失败" }).waitFor({ state: "visible" });
       await overview.getByText("验收观测不可用，Goal 是否达成仍未知。", { exact: true }).waitFor({ state: "visible" });
+      // An optional media reader must reject an incomplete successful response
+      // without unmounting the Goal's existing reports or navigation.
+      let mediaReadable = false;
+      await page.route("**/api/chat/content-media", route => route.fulfill({json: mediaReadable
+        ? {ok: true, compositions: [], provider: {status: "unavailable", enabled: false, next_action: null}}
+        : {ok: true}}));
       await goalNav.getByRole("button", { name: "成果", exact: true }).click();
+      const media = page.getByRole("region", {name: "视频制作", exact: true});
+      await media.getByRole("alert").waitFor();
       const output = page.getByTestId("personal-goal-outputs").getByRole("button", { name: /Product Release milestone report/ });
       await output.waitFor({ state: "visible" });
       if ((await output.locator("small").innerText()).includes("Product Release")) throw new Error("Output metadata repeated the selected Goal");
@@ -157,6 +165,10 @@ export const navigationSortingScenario = {
       await outputDrawer.waitFor({ state: "visible" });
       if (!await outputDrawer.locator("dl").first().innerText().then(text => text.includes("Product Release") && text.includes("Agent"))) throw new Error("Compacting output cards lost provenance in their existing drawer");
       await page.getByRole("button", { name: /关闭详情/ }).click();
+      mediaReadable = true;
+      await media.getByRole("button", {name: "重新读取", exact: true}).click();
+      await media.getByText(/还没有准备好的作品/).waitFor();
+      if (await media.getByRole("alert").count()) throw new Error("A valid media read did not recover the optional region");
       pass(26, "Overview keeps direct decisions, explicit unknown usage and read failures; output provenance is one click away.");
       await page.locator(".personal-goal-link").filter({ hasText: "Progress Projection" }).click();
       await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: /^(Tasks|任务)$/ }).click();
@@ -247,7 +259,8 @@ export const navigationSortingScenario = {
       await remote.getByRole("button", { name: /^(Tasks|任务)$/, current: "page" }).waitFor({ state: "visible" });
       if (await remote.getByRole("button", { name: "Goal 设置", exact: true }).count()) throw new Error("Remote Goal exposed local capability settings");
       await remote.getByRole("button", { name: "概览", exact: true }).click();
-      await remote.locator(".goal-overview-source-note").waitFor({ state: "visible" });
+      await remote.getByRole("group", { name: "工作视图", exact: true }).getByRole("button", { name: "关系图", exact: true }).click();
+      await remote.getByText("此来源仅提供同步的状态与验收观察，交付链需要实时本机来源。", { exact: true }).waitFor({ state: "visible" });
       if (await remote.locator(".delivery-review").count()) throw new Error("Remote Overview queried the local delivery source");
       await remote.getByRole("button", { name: "任务", exact: true }).click();
       await remote.locator(".personal-object-list", { hasText: "进行中" }).locator("button").first().click();

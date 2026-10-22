@@ -33,6 +33,18 @@ admission、安装或手机旅程已通过；grant 撤销后历史仍可读，
 Lark 页面选择一个非默认 App、当前可用工作区和宿主 executor，读回监听状态、待回复
 数量及恢复缺口；重新绑定不会把旧 Session 移到其它工作区。
 
+既有群聊监听器也可通过同一个已核验 App profile 接入本人私聊。在设置 → Lark
+中选择原 profile 和本人私聊；同 App 的别名不能另起竞争监听器。单个 consumer
+将明确的群聊事件交给既有群聊准入，将私聊交给 Core 本人准入；拒绝后不转投
+另一受众。群聊授权和审阅回调保持独立，解绑一路保留另一路。HTTP/Core fixture
+覆盖配置、本人未登录、App 不匹配和路由移除，不代表远程 Agent 投递或安装态
+provider 往返已通过。
+未保存 App id 的旧群聊配置使用刚核验的私聊 profile 身份，同时保留原 profile
+级 consumer lease 及 App 级 lease，同时隔离旧进程与新别名。配置在发布 Core
+绑定前校验实际共享组合；发布前 App 身份变化
+则拒绝，绑定保持不变。真实 HTTP/Core/runtime-refresh fixture 覆盖此路径及冷启动
+监听发现，不发送 provider 消息或执行模型。
+
 共享 typed Core 核验 App、本人、受众和当前工作区 grant，拥有稳定 Session、原生
 Turn FIFO 和确切 stop/new/status 目标。传输层保存独立的受理与最终投递意图，通过
 provider 读回确认回复；发生没有 receipt 的不确定写入时不盲目重发。两 App 复用
@@ -128,6 +140,11 @@ ID，不授予权限。IO 完成后，Core 在既有请求与来源路由锁内�
 渲染路径。未知话题和旧版已固定渲染文字的 journal 保留原路径，不跨事务缓存身份；
 投递校验、typed 受理决定及停止恢复仍归原 owner。File/Core 测试覆盖事务与拒绝、
 重放边界；真实 provider 的读取耗时不单独证明完整停止回执或 Web SLA。
+
+带结构化 Bot 提及前缀的控制命令使用同一有界读取路径。事件中的渲染名称或提及 key
+只提示读取哪个来源；原始正文的开头提及必须匹配本次新核验的 App，并解析为同一个
+确切命令。普通文字、其他 Bot 的提及或不匹配的提示不能授予控制权。原始渲染消息
+保持不变，用于确切重放及兼容旧 journal。
 
 本机群绑定仍启用且 Core 已完成、固定原目标的停止请求，可在 Core 重新核验绑定和
 App 身份时，并行读取两条原 provider 消息。两项只读观测全部成功后，仍须核对来源、

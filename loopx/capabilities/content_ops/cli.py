@@ -565,7 +565,7 @@ def handle_content_ops_command(
         issue_fix_result = handle_content_ops_issue_fix_command(args)
         if issue_fix_result is not None:
             payload, renderer = issue_fix_result
-        elif args.content_ops_command == "media":
+        elif args.content_ops_command in {"media", "generation", "image"}:
             payload = handle_media_command(args)
             renderer = lambda value: json.dumps(value, ensure_ascii=False, indent=2) + "\n"
         elif args.content_ops_command == "reference":

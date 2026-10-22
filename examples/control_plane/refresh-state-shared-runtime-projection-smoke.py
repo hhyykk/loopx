@@ -27,6 +27,7 @@ from loopx.control_plane.runtime.runtime_projection_route import (  # noqa: E402
 from loopx import doctor as doctor_module  # noqa: E402
 from loopx import paths as paths_module  # noqa: E402
 from loopx.paths import global_registry_path  # noqa: E402
+from loopx.control_plane.testing.canary_harness import import_fixture_authority  # noqa: E402
 from loopx.presentation.renderers.status_markdown import (  # noqa: E402
     render_status_markdown,
 )
@@ -136,6 +137,8 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
         + "\n",
         encoding="utf-8",
     )
+    import_fixture_authority(source_registry, GOAL_ID)
+    import_fixture_authority(shared_registry, GOAL_ID)
     return project, project_runtime, source_registry, shared_registry
 
 
@@ -175,6 +178,7 @@ def write_route_source(
         + "\n",
         encoding="utf-8",
     )
+    import_fixture_authority(registry, goal_id)
     return registry, goal_id
 
 

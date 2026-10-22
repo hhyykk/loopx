@@ -8,6 +8,39 @@ Connector packets remain preview-level. Local item lifecycle, reference
 preparation and optional video composition have their own delivery boundaries;
 none grants publication authority.
 
+## Creation outcomes / 创作结果
+
+Start with the requested work: its audience, message, factual sources and desired
+form. Use the existing conversation and artifact preview/revision path with the
+host's authoring tools and reusable Content-Ops operations. HTML, games and
+mini-worlds can be standalone works, source material or scenes within a video;
+their mention does not require a new LoopX workbench or a fixed teaching model.
+Choose content, interaction, scene structure and visual style for the brief.
+Templates and renderer examples are starting points, not a universal composition.
+
+Use specialized host tools for custom editable scenes, animation or interactive
+projects when the brief needs them. Their rendered image/video assets can enter
+the existing source-bound composition path; retain the editable project with the
+deliverable. The optional renderer's supported scene kinds bound that renderer,
+not the creative methods available to the Agent. This guidance adds no new
+authoring command or runtime execution permission.
+
+Qualify a creation technique by using it in a real requested work, retaining the
+editable project and sources, and making a meaningful revision. When comparing
+video techniques, use the same factual brief and communication objective, allow
+each technique to shape the film, and review complete results for message,
+visuals, sound, pacing and full production cost. Keep mechanical checks, creative
+judgment, audience observations and untested claims distinct. Follow the shared
+[task-first delivery guide](../../../docs/development/frontend-delivery.md#task-first-delivery--从用户任务开始)
+for the frontend journey; artifact creation does not require its own editor.
+
+从用户要完成的作品出发，明确读者、表达目的、事实来源和作品形式。HTML、Game、
+Mini-World 既可独立交付，也可成为视频中的素材或镜头；按具体 brief 创作，保留
+可修改工程，通过实际作品及修改后的结果验收。复用已有对话和产物预览、反馈、
+修订入口。用同一事实与表达目标比较各项视频能力，允许各自发挥构图与叙事优势，
+同时审阅完整成片的表达、画面、声音、节奏与全部制作成本；机械检查、创意判断、
+观众证据和未验证项分别记录。
+
 The capability also ships a provider-neutral item lifecycle for real local
 operations queues. It preserves stable item identity, revision-bound approval,
 delivery receipts, exact readback, and supersession without copying draft bodies
@@ -31,18 +64,45 @@ or role-incomplete page sets. See
 
 `loopx content-ops media` prepares source-bound private compositions and renders
 them through the optional local `loopx-media` extension. The packaged
-**Settings → Capabilities → a Goal → Content production** workbench renders,
+**Goal → Files → Content artifacts** workbench renders,
 cancels and reads the same compositions, video, captions, transcript and source
 checks. It reuses existing layout tokens and content-item revision/approval,
 while keeping heavy image/audio/video computation in the optional distribution.
 See the [composition contract](../../../docs/reference/protocols/content-ops-media-v0.md)
 and [renderer installation and recovery](../../../packages/loopx-media/README.md).
 
+Creation and requested changes stay in the current Goal conversation; the results
+view returns to that conversation without sending a message. Capability settings
+retain configuration only and do not load production records or start work.
+Delivery requirements and checks reuse the existing Goal acceptance owner, also
+used by non-media deliverables; renderer checks do not create an acceptance or
+publication decision. This integration is Goal-scoped. Ordinary project
+conversations without a Goal are not routed through a fabricated Goal.
+
+`loopx content-ops generation` prepares immutable, priced cloud-footage intents
+and explicitly submits/checks/collects a bounded Seedance 2.5 video through the
+same optional provider, with a separate cloud-generation permission. The
+**Generated footage** view shows drafts, upload/usage consequences, original
+task readback and verified local files. It never repeats an ambiguous paid
+submission or equates stopping observation with remote cancellation. Use the
+saved movie as a source-bound excerpt in a local composition; precise text and
+diagrams remain local. See the same provider guide for credentials, cost
+estimates, unavailable states and recovery.
+
+`loopx content-ops image` prepares and submits one Seedream 5.0 Pro image with
+an optional immutable reference through the same extension. **Generated images**
+shows the draft, consequence, unavailable/unknown states and verified downloads.
+This synchronous route uses a separate image credential, has no cloud task
+polling and recovers saved responses without repeating a paid request. Compose
+the resulting hash-bound image with exact local text; creative/source acceptance
+and billing remain separate from byte readiness. See the provider guide's
+[image setup and recovery](../../../packages/loopx-media/README.md#optional-generated-images).
+
 `loopx content-ops reference` reads an existing private source/style catalog,
 prepares version-checked capture/correction artifacts, retrieves topic/structure
 references, and prepares outlines with original credit and reuse conditions.
-The same TypeScript owner runs in the packaged **Content production → Source
-style references** workbench. Imports stay in browser page memory; downloads are private
+The same TypeScript owner runs in the packaged **Goal → Files → Content artifacts
+→ Prepare source and style references** disclosure. Imports stay in browser page memory; downloads are private
 review artifacts. This preview does not write the original catalog or activate
 a source. Inventory reuses Material Lifecycle, while managed apply/rollback
 still requires that owner's qualified source provider. See

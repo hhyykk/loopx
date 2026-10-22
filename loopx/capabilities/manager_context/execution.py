@@ -15,7 +15,7 @@ from ...agent_registry import load_goal_from_registry
 from ...collaboration_mcp import Delegations
 from ...control_plane.collaboration import conversation_scope
 from ...control_plane.collaboration.source_grant_observation import (
-    source_execution_bindings,
+    read_delegation_source_execution, source_execution_bindings,
 )
 from ...control_plane.effect_runtime import EffectRuntimeRejected
 from ...orchestration import compact_orchestration_policy, normalize_subagent_execution_config
@@ -89,7 +89,16 @@ def dispatch(root: Path, registry: Path, *, session: dict[str, Any], turn: dict[
         # Recover an existing operation instead of probing a now-completed Todo
         # and misreporting an accepted result as a refused new launch.
         if service.path(operation).exists():
-            row = service.read(operation)
+            row = read_delegation_source_execution(service, selected, operation,
+                source_request_id=receipt["request_id"], brief=request["brief"],
+                conversation={"session_id": session["session_id"], "turn_id": turn["turn_id"]})
+            if row["status"] == "prepared":
+                # The requester may have died after persisting the operation
+                # but before starting its worker. Rejoin that same owner under
+                # fresh source authority; never retry an uncertain running Host.
+                if not execution_allowed() or grant not in _grants(root, registry, session, turn):
+                    raise ValueError("source execution grant changed before recovery")
+                row = service.resume(operation, prepared_source_request_id=receipt["request_id"])
             return {"submitted": True, "operation_id": operation, "todo_id": binding["todo_id"],
                     "status": row["status"], "replayed": True}
         preflight = service.inspect(selected)

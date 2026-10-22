@@ -12,6 +12,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
+from loopx.control_plane.testing.canary_harness import import_fixture_authority
+
 
 PROBE_SCHEMA_VERSION = "loopx_cli_output_probe_v0"
 FIXTURE_CONTRACT_VERSION = "loopx_cli_output_public_fixture_v0"
@@ -132,7 +134,24 @@ def _receipt_row(
         "next_action_basis_count": semantics.next_action_basis_count(payload),
         "authoring_inputs": semantics.authoring_input_observations(text),
         "continuation_instructions": semantics.continuation_instruction_observations(text),
+        "turn_budget_warning": "TurnEnvelope exceeds its performance target by " in text
+            and "Turn routing is unchanged." in text and "Review over-target sections:" in text,
     }
+
+
+def _link_turn_warning_basis(rows: list[dict]) -> list[dict]:
+    """The terse Markdown warning describes the paired JSON envelope's cost.
+
+    Reuse that measured semantic basis, never infer instruction presence from
+    a warning or grant it an unconditional output allowance.
+    """
+    by_id = {row["row_id"]: row for row in rows}
+    for row in rows:
+        if row["format"] == "markdown":
+            paired = by_id.get(row["row_id"].removesuffix("markdown") + "json")
+            if paired is not None:
+                row["turn_envelope_cost_basis"] = paired["continuation_instructions"]
+    return rows
 
 
 def _assert_output_contract(
@@ -176,6 +195,7 @@ def _default_rows(
                 root,
                 scenario,
             )
+            import_fixture_authority(registry_path, probe.GOAL_ID)
             for output_format in ("json", "markdown"):
                 commands = probe._surface_commands(
                     project=project,
@@ -238,7 +258,7 @@ def _default_rows(
                     )
     if enforce_budget:
         probe._assert_scenario_matrix(measurements)
-    return rows
+    return _link_turn_warning_basis(rows)
 
 
 def _variant_rows(
@@ -252,6 +272,7 @@ def _variant_rows(
         fixture_root / "mode_variants",
         probe.SCENARIOS[0],
     )
+    import_fixture_authority(registry_path, probe.GOAL_ID)
     rows: list[dict] = []
     for output_format in ("json", "markdown"):
         commands = probe._mode_variant_commands(
@@ -303,7 +324,7 @@ def _variant_rows(
                     text=text,
                 )
             )
-    return rows
+    return _link_turn_warning_basis(rows)
 
 
 def _blocking_gate_rows(
@@ -326,6 +347,7 @@ def _blocking_gate_rows(
             f"blocks_agent={probe.AGENT_IDS[0]} "
             "unblocks_todo_id=todo_fixture_000 -->\n"
         )
+    import_fixture_authority(registry_path, probe.GOAL_ID)
     command = probe._mode_variant_commands(
         project=project,
         runtime=runtime,
@@ -387,6 +409,7 @@ def _multi_subagent_rows(probe, semantics, fixture_root, *, enforce_budget=True)
         "model_config": {"model": "example-small", "reasoning_effort": "max"},
     }
     registry_path.write_text(json.dumps(registry))
+    import_fixture_authority(registry_path, probe.GOAL_ID)
     variant_id = "quota_should_run_turn_envelope"
     command = probe._mode_variant_commands(
         project=project, runtime=runtime, registry_path=registry_path,

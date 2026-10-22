@@ -7,7 +7,6 @@ from ..control_plane.quota.spend_sources import (
     VALID_SLOT_SPEND_SOURCES,
 )
 from ..control_plane.scheduler.execution_context import SchedulerRuntimeProfile
-from ..paths import default_public_scan_root
 from .quota_request import (
     QUOTA_DETAIL_SECTIONS,
     register_quota_monitor_poll_request_arguments,
@@ -321,17 +320,6 @@ def register_quota_command(
             "the goal state file so stale-loop projections can distinguish a "
             "live polling driver from one that died mid-wait."
         ),
-    )
-    quota_parser.add_argument(
-        "--scan-root",
-        default=default_public_scan_root(),
-        help="Public files to scan for obvious private material. Defaults to the LoopX install root.",
-    )
-    quota_parser.add_argument(
-        "--scan-path",
-        action="append",
-        default=[],
-        help="Specific public file or directory to scan. Repeatable. Overrides --scan-root when set.",
     )
     quota_parser.add_argument(
         "--use-projection-cache",

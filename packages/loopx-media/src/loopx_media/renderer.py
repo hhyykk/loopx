@@ -1,8 +1,8 @@
 """Bounded local rendering. Stdin is an admitted private composition envelope.
 
-No account, network, arbitrary command, source-directory discovery or publication.
-The content-ops caller provides immutable source snapshots and an exclusive attempt
-directory. This renderer implements the protocol; it does not admit that effect.
+Ordinary render requests have no network or account effects. The separately
+permissioned generation operations use the provider's bounded cloud transport.
+The content-ops caller admits both effects; neither grants publication.
 """
 from __future__ import annotations
 
@@ -50,7 +50,8 @@ def font_file(content: str = "LoopX") -> str | None:
                  "C:/Windows/Fonts/arial.ttf"):
         if Path(name).is_file():
             with TTFont(name, fontNumber=0, lazy=True) as font:
-                if required <= set(font.getBestCmap() or {}): return name
+                if required <= set(font.getBestCmap() or {}):
+                    return name
     return None
 
 
@@ -112,7 +113,10 @@ def soundtrack(plan: dict, sources: dict[str, Path], out: Path, ff: str, check) 
         for path in (text, aiff, wav):
             path.unlink()
     with wave.open(str(destination), "wb") as audio:
-        audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(44100); audio.writeframes(timeline)
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(44100)
+        audio.writeframes(timeline)
     return {"mode": mode, "cues": rows, "subjective_listening": "not_tested"}
 
 
@@ -122,6 +126,9 @@ def render(request: dict) -> dict:
     plan, out = request["plan"], Path(request["attempt_directory"])
     if any(shot["kind"] in {"excerpt", "blender"} and shot.get("body") for shot in plan["shots"]):
         raise ValueError("The spatial layout does not support body text; revise the brief")
+    if any(shot.get("framing", "editorial") not in {"editorial", "full_frame"}
+           or ("framing" in shot and shot["kind"] not in {"excerpt", "blender"}) for shot in plan["shots"]):
+        raise ValueError("Unsupported shot framing")
     out.mkdir(mode=0o700, exist_ok=False)
     started = time.monotonic()
     cancel = Path(request["cancel_file"])
@@ -159,7 +166,8 @@ def render(request: dict) -> dict:
         shot["title"] + " " + shot["body"] + " " + shot["boundary"] + " " + " ".join(shot.get("nodes", []))
         for shot in plan["shots"])
     font_path = font_file(visible_text)
-    if not font_path: raise ValueError("No installed font covers this brief; install a suitable font before retrying")
+    if not font_path:
+        raise ValueError("No installed font covers this brief; install a suitable font before retrying")
     fonts = {}
 
     def font(size):
@@ -168,9 +176,8 @@ def render(request: dict) -> dict:
             fonts[pixels] = ImageFont.truetype(font_path, pixels) if font_path else ImageFont.load_default(size=pixels)
         return fonts[pixels]
 
-    def draw_text(draw, position, text, size, color=INK, max_width=None, max_lines=4):
+    def text_lines(draw, text, size, limit, max_lines):
         selected = font(size)
-        limit = max_width or width - position[0] * 2
         lines, current = [], ""
         # Preserve English words and allow CJK line breaks without inventing
         # spaces or silently drawing missing-glyph boxes.
@@ -179,13 +186,20 @@ def render(request: dict) -> dict:
             cjk = bool(re.fullmatch(r"[\u2e80-\u9fff\uf900-\ufaff]", word))
             candidate = current + (" " if current and not cjk and not previous_cjk else "") + word
             if draw.textlength(candidate, font=selected) > limit and current:
-                lines.append(current); current = word
+                lines.append(current)
+                current = word
             else:
                 current = candidate
             previous_cjk = cjk
-        if current: lines.append(current)
+        if current:
+            lines.append(current)
         if len(lines) > max_lines or any(draw.textlength(line, font=selected) > limit for line in lines):
             raise ValueError("Text exceeds the layout; revise or split the shot")
+        return lines
+
+    def draw_text(draw, position, text, size, color=INK, max_width=None, max_lines=4):
+        selected = font(size)
+        lines = text_lines(draw, text, size, max_width or width - position[0] * 2, max_lines)
         x, y = position
         for line in lines:
             draw.text((x, y), line, fill=color, font=selected)
@@ -198,6 +212,21 @@ def render(request: dict) -> dict:
     try:
         for index, shot in enumerate(plan["shots"]):
             count = round(shot["seconds"] * fps)
+            full_frame = shot.get("framing") == "full_frame"
+            media_height = height
+            if full_frame:
+                # Keep every source edge visible, including a source's own text.
+                # Attribution has a measured strip, never an occluding overlay.
+                inset = max(8, round(20 * scale))
+                boundary_font = font(22)
+                boundary_lines = text_lines(ImageDraw.Draw(Image.new("RGB", (1, 1))),
+                                            shot["boundary"], 22, width - 2 * inset, 3)
+                ascent, descent = boundary_font.getmetrics()
+                line_height = ascent + descent + max(2, round(4 * scale))
+                strip_height = len(boundary_lines) * line_height + 2 * inset
+                media_height = height - strip_height
+                if media_height < height / 2:
+                    raise ValueError("Source boundary leaves insufficient picture space; shorten or split the shot")
             decoder = None
             source_image = None
             if shot["kind"] == "excerpt":
@@ -207,29 +236,39 @@ def render(request: dict) -> dict:
                 else:
                     # Set the frame clock before scaling; a trailing fps filter
                     # after swscale can lose the final source frame at EOF.
-                    decoder = subprocess.Popen([ff, "-v", "error", "-ss", str(shot["start_seconds"]), "-i", str(sources[asset["id"]]), "-t", str(shot["seconds"]), "-vf", f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={style['background']}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                    resize = f"scale={width}:{height}:force_original_aspect_ratio=decrease"
+                    if full_frame:
+                        # Raw RGB carries no sample-aspect metadata. Bake the
+                        # display aspect into pixel dimensions before dropping it.
+                        resize = f"scale=w='min({width},{media_height}*dar)':h='min({media_height},{width}/dar)',setsar=1"
+                    decoder = subprocess.Popen([ff, "-v", "error", "-ss", str(shot["start_seconds"]), "-i", str(sources[asset["id"]]), "-t", str(shot["seconds"]), "-vf", f"fps={fps},{resize},pad={width}:{media_height}:(ow-iw)/2:(oh-ih)/2:color={style['background']}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             try:
                 for n in range(count):
                     check()
                     im = Image.new("RGB", (width, height), style["background"])
                     draw = ImageDraw.Draw(im)
                     margin = round(56 * scale)
-                    draw_text(draw, (margin, round(27 * scale)), "LOOPX / CONTENT STUDIO", 16, accent)
-                    draw.line((margin, round(65 * scale), width - margin, round(65 * scale)), fill=LINE)
+                    if not full_frame:
+                        draw_text(draw, (margin, round(27 * scale)), "LOOPX / CONTENT STUDIO", 16, accent)
+                        draw.line((margin, round(65 * scale), width - margin, round(65 * scale)), fill=LINE)
                     if shot["kind"] in {"excerpt", "blender"}:
                         frame = source_image
                         if shot["kind"] == "blender":
                             with Image.open(spatial_frames[shot["id"]] / f"frame-{n+1:04}.png") as image:
                                 frame = image.convert("RGBA")
                         if decoder:
-                            raw = decoder.stdout.read(width * height * 3)
-                            if len(raw) != width * height * 3:
+                            raw = decoder.stdout.read(width * media_height * 3)
+                            if len(raw) != width * media_height * 3:
                                 raise ValueError("Excerpt is shorter than the declared shot; no frozen-frame substitution")
-                            frame = Image.frombytes("RGB", (width, height), raw)
-                        fitted = frame.copy()
-                        fitted.thumbnail((width - 2 * margin, round(height * 0.62)))
-                        im.paste(fitted, ((width - fitted.width) // 2, round(height * 0.27)), fitted.getchannel("A") if fitted.mode == "RGBA" else None)
-                        draw_text(draw, (margin, round(88 * scale)), shot["title"], 32, ink, max_lines=2)
+                            frame = Image.frombytes("RGB", (width, media_height), raw)
+                        if full_frame:
+                            fitted = ImageOps.contain(frame, (width, media_height))
+                            im.paste(fitted, ((width - fitted.width) // 2, (media_height - fitted.height) // 2), fitted.getchannel("A") if fitted.mode == "RGBA" else None)
+                        else:
+                            fitted = frame.copy()
+                            fitted.thumbnail((width - 2 * margin, round(height * 0.62)))
+                            im.paste(fitted, ((width - fitted.width) // 2, round(height * 0.27)), fitted.getchannel("A") if fitted.mode == "RGBA" else None)
+                            draw_text(draw, (margin, round(88 * scale)), shot["title"], 32, ink, max_lines=2)
                     else:
                         enter = 1 - (1 - min(1, n / max(1, fps * 0.6))) ** 3
                         y = round((125 + 16 * (1 - enter)) * scale)
@@ -249,28 +288,40 @@ def render(request: dict) -> dict:
                                 active = progress > 0
                                 draw.rounded_rectangle((x, y, x + box_w, y + h), radius=round(10 * scale), fill=style["background"], outline=accent if active else LINE, width=2)
                                 node_end = draw_text(draw, (x + round(13 * scale), y + round(20 * scale)), label, 22, ink if active else muted, max_width=box_w - round(26 * scale), max_lines=3)
-                                if node_end > y + h - 8: raise ValueError("Node label overflows; shorten or split the diagram")
+                                if node_end > y + h - 8:
+                                    raise ValueError("Node label overflows; shorten or split the diagram")
                                 if j:
                                     a, b = x - gap + 4, x - 4
                                     draw.line((a, y + h / 2, a + (b - a) * progress, y + h / 2), fill=accent, width=2)
                                     if progress == 1:
                                         draw.polygon(((b, y+h/2), (b-6, y+h/2-4), (b-6, y+h/2+4)), fill=accent)
-                    draw_text(draw, (margin, height - round(56 * scale)), shot["boundary"], 16, muted, max_lines=2)
-                    bar = margin + (width - 2 * margin) * (frames / request["frame_count"])
-                    draw.line((margin, height-8, bar, height-8), fill=accent, width=3)
-                    if frames == 0: im.save(out / "poster.png")
-                    encoder.stdin.write(im.tobytes()); frames += 1
+                    if full_frame:
+                        for row, line in enumerate(boundary_lines):
+                            draw.text((inset, media_height + inset + row * line_height), line, fill=ink, font=boundary_font)
+                    else:
+                        draw_text(draw, (margin, height - round(56 * scale)), shot["boundary"], 16, muted, max_lines=2)
+                        bar = margin + (width - 2 * margin) * (frames / request["frame_count"])
+                        draw.line((margin, height-8, bar, height-8), fill=accent, width=3)
+                    if frames == 0:
+                        im.save(out / "poster.png")
+                    encoder.stdin.write(im.tobytes())
+                    frames += 1
             finally:
                 if decoder:
                     decoder.stdout.close()
                     decoder.terminate()
-                    try: decoder.wait(timeout=3)
-                    except subprocess.TimeoutExpired: decoder.kill(); decoder.wait()
+                    try:
+                        decoder.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        decoder.kill()
+                        decoder.wait()
         encoder.stdin.close()
-        if encoder.wait(timeout=15) != 0: raise ValueError("Video encoder failed")
+        if encoder.wait(timeout=15) != 0:
+            raise ValueError("Video encoder failed")
     finally:
         if encoder.poll() is None:
-            encoder.kill(); encoder.wait()
+            encoder.kill()
+            encoder.wait()
     check()
     if audio["mode"] == "silent":
         (out / "silent.mp4").rename(video)
@@ -284,7 +335,8 @@ def render(request: dict) -> dict:
     if audio["mode"] != "silent":
         with wave.open(str(out / "narration.wav")) as wav:
             samples = array.array("h", wav.readframes(wav.getnframes()))
-        if sys.byteorder != "little": samples.byteswap()
+        if sys.byteorder != "little":
+            samples.byteswap()
         peak = max((abs(sample) for sample in samples), default=0)
         audio.update(peak_dbfs=round(20 * math.log10(peak / 32768), 2) if peak else None,
                      clipped_samples=sum(abs(sample) >= 32767 for sample in samples))
@@ -292,6 +344,7 @@ def render(request: dict) -> dict:
     result = {"ok": True, "protocol": PROTOCOL, "plan_digest": request["plan_digest"], "files": files,
               "qa": {"full_decode": "passed", "frames": frames, "width": width, "height": height, "fps": fps,
                      "source_hashes_verified": True, "narration": audio, **({"blender_scenes": spatial_qa} if spatial_qa else {}),
+                     **({"full_frame_shots": [shot["id"] for shot in plan["shots"] if shot.get("framing") == "full_frame"]} if any(shot.get("framing") == "full_frame" for shot in plan["shots"]) else {}),
                      "audience_understanding": "not_tested", "creative_review": "not_tested"},
               "cost": {"render_wall_seconds": round(time.monotonic() - started, 3)}, "publish_authorized": False}
     (out / "manifest.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -305,12 +358,22 @@ def main() -> int:
             from .blender import available
             ff = imageio_ffmpeg.get_ffmpeg_exe()
             run([ff, "-version"], timeout=5)
-            if not font_file(): raise ValueError("Install a supported local font")
+            if not font_file():
+                raise ValueError("Install a supported local font")
             print(json.dumps({"ok": True, "protocol": PROTOCOL, "system_speech": sys.platform == "darwin", "font": "system", "blender_extra_present": available()}))
             return 0
         raw = sys.stdin.buffer.read(1024 * 1024 + 1)
-        if len(raw) > 1024 * 1024: raise ValueError("Render request exceeds the protocol limit")
-        result = render(json.loads(raw))
+        if len(raw) > 1024 * 1024:
+            raise ValueError("Render request exceeds the protocol limit")
+        request = json.loads(raw)
+        if str(request.get("operation", "")).startswith("generation."):
+            from .generation import operate
+            result = operate(request)
+        elif str(request.get("operation", "")).startswith("image."):
+            from .images import operate
+            result = operate(request)
+        else:
+            result = render(request)
     except RenderCancelled:
         result = {"ok": False, "error_code": "cancelled"}
     except (OSError, ValueError, KeyError, TypeError, TimeoutError, subprocess.SubprocessError):

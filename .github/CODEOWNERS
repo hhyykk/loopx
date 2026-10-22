@@ -75,6 +75,13 @@
 /examples/control_plane/lark-* @huangruiteng @steven-kid @songoow @loopx-agent
 /tests/extensions/test_lark_*.py @huangruiteng @steven-kid @songoow @loopx-agent
 
+# Windows installer and dedicated Windows filesystem tests.
+# Cross-platform core, workflows and release policy retain their existing routes.
+/loopx/windows_install.py @huangruiteng @BigDataDZ @songoow @loopx-agent
+/scripts/install-windows.ps1 @huangruiteng @BigDataDZ @songoow @loopx-agent
+/tests/test_windows_install.py @huangruiteng @BigDataDZ @songoow @loopx-agent
+/tests/test_windows_atomic_writes.py @huangruiteng @BigDataDZ @songoow @loopx-agent
+
 # --- Governance, CI and release policy (must stay last) ---------------------
 /.github/ @huangruiteng @songoow @loopx-agent
 /scripts/ci/ @huangruiteng @songoow @loopx-agent

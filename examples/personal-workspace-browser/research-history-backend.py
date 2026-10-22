@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import signal
 import tempfile
+import sys
 from urllib.parse import urlparse
 
 from loopx.capabilities.explore.result_log import validate_explore_result_event
@@ -22,11 +23,16 @@ from loopx.chat_server import (
 )
 from loopx.chat_store import ChatSessionStore
 from loopx.control_plane.effect_runtime import restart_effect_runtime
+from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "control_plane"))
+from canonical_authority_fixture import initialize_canonical_authority
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--assets-dir", type=Path, help="Frozen packaged UI for before/after inspection.")
     parser.add_argument("--fixture", type=Path, action="append",
         help="Captured-event wrapper; repeat for independently selectable Goals.")
     args = parser.parse_args()
@@ -64,6 +70,8 @@ def main():
             log = runtime / "goals" / captured_goal / "explore-result-log.jsonl"
             log.parent.mkdir(parents=True)
             log.write_text("".join(json.dumps(event, ensure_ascii=False) + "\n" for event in capture["events"]))
+            initialize_canonical_authority(runtime, captured_goal, build_todo_runtime_shadow_projection(
+                goal_id=captured_goal, todos=capture.get("todos", []), handoff_mode="soft_claim"), state_path=state, provider="sqlite")
             original.update({path: path.read_bytes() for path in (state, log)})
         registry = root / "registry.json"
         registry.write_text(json.dumps({"schema_version": 1, "common_runtime_root": str(runtime), "goals": goals}))
@@ -80,9 +88,10 @@ def main():
                 if path == "/api/chat/explore-results":
                     metrics["history_reads"] += 1
                 if path in {"/healthz", "/status.json", "/api/chat/explore-results",
-                    "/api/chat/capabilities", "/api/chat/endpoints", "/api/chat/sessions",
+                    "/api/chat/capabilities", "/api/chat/endpoints", "/api/chat/sessions", "/api/chat/goal-configuration",
+                    "/api/chat/research-analysis",
                     "/api/actions", "/api/chat/goals/contexts", "/api/chat/goal-results",
-                    "/api/chat/sidebar-goal-order", "/api/chat/usage-statistics",
+                    "/api/chat/sidebar-goal-order", "/api/chat/usage-statistics", "/api/chat/todo/detail",
                     "/api/chat/delivery-review", "/api/chat/goal-acceptance", "/api/chat/projects",
                     DEFAULT_EXTENSION_PRESENTATION_SURFACES_PATH, DEFAULT_EXTENSION_PROJECTION_PATH,
                 } or path.startswith("/chat/"):
@@ -100,7 +109,7 @@ def main():
         server.registry_path, server.runtime_root = registry, runtime
         server.runtime_root_override, server.selected_goal_id = str(runtime), None
         server.scan_roots, server.limit, server.verbose = [], 10, False
-        server.assets_dir = default_chat_assets_dir()
+        server.assets_dir = args.assets_dir or default_chat_assets_dir()
         # Native empty stores keep ordinary read-only workspace hydration real.
         # No captured execution state or machine runtime is admitted here.
         server.chat_store = ChatSessionStore(runtime)

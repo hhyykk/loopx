@@ -110,6 +110,8 @@ def test_turn_milestone_intent_is_replay_stable(
         "path_delta_mode": "material_replan",
         "agent_vision_json": json.dumps(vision),
         "summary": "The prior stage closed and an active successor was authored.",
+        "work_evidence": ["fixture:validated-artifact"],
+        "validation_evidence": ["fixture:independent-artifact-check"],
     }
     host_runner = tmp_path / ("turn_replan_dsh_runner.py" if host_kind == "dsh" else "turn_replan_host.py")
     if host_kind == "dsh":
@@ -144,7 +146,7 @@ def test_turn_milestone_intent_is_replay_stable(
         *base, "turn", "run-once", *host_args, "--goal-id", GOAL_ID,
         "--agent-id", AGENT_ID, "--project", str(workspace),
         "--validation-command-json", json.dumps([sys.executable, "-c", validator]),
-        "--execution-mode", "isolated-headless", "--scan-root", str(project),
+        "--execution-mode", "isolated-headless",
         "--no-global-sync", "--execute",
     ]
     turn_module = None
@@ -178,7 +180,7 @@ def test_turn_milestone_intent_is_replay_stable(
         )
 
     first = _cli(args)
-    assert first["status"] == "committed" and first["result_kind"] == "replan_required"
+    assert first["status"] == "committed" and first["result_kind"] == "replan_required", first
     assert first["effects"]["host_invoked"] and first["effects"]["state_written"]
     assert first["effects"]["quota_spent"]
     assert (workspace / "host-count.txt").read_text(encoding="utf-8") == "1"

@@ -72,6 +72,13 @@ def test_real_cli_references_reconstruct_all_scoped_lanes_and_counts(tmp_path, m
     isolate_sqlite_runtime(tmp_path, monkeypatch)
     registry, state = _write_fixture(tmp_path)
     runtime = Path(json.loads(registry.read_text())["common_runtime_root"])
+    if provider == "legacy":
+        from loopx.control_plane.coordination.local_authority import CanonicalAuthorityRequired
+        before = state.read_bytes()
+        with pytest.raises(CanonicalAuthorityRequired):
+            list_goal_todos(registry_path=registry, goal_id=GOAL_ID, json_references=True)
+        assert state.read_bytes() == before
+        return
     if provider != "legacy":
         goal = json.loads(registry.read_text())["goals"][0]
         active, archived, _ = parse_todo_source(state.read_text(), goal=goal, state_path=state)

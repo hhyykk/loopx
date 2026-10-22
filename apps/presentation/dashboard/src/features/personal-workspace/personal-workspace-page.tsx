@@ -1,3 +1,4 @@
+import {readSettingsRoute, writeSettingsRoute} from "./workspace-settings-route";
 import {hasConfiguredGoalChecks} from "../../data/goal-acceptance-observation";
 import {useDeliveryReview} from "./delivery-review-state";
 import {useGoalWorkspaceDigest} from "./goal-masthead";
@@ -10,6 +11,7 @@ import type { ConversationHistoryStatus } from "../../data/use-conversation-hist
 import { GoalDraftCard } from "./goal-draft-card";
 import type { GoalDraft } from "../../../../../../loopx/control_plane/collaboration/goal_draft.js";
 import { CollaborationCard } from "./collaboration-card";
+import {ConversationRequests} from "./conversation-requests";
 import {
   compileActionReviewPlan,
   isStaleActionFailure,
@@ -45,7 +47,6 @@ import { useTypedActionReadback, useTypedActionProposalReadback } from "../../da
 import { ChannelHeader } from "./channel-header";
 import { GoalLoopXMode } from "./goal-loopx-mode";
 import { GoalTeamResults } from "./goal-team-results";
-import {GoalExploreResults} from "./goal-explore-results";
 import { GoalManagedResults } from "./goal-managed-results";
 import { GoalResearchResults, type GoalResearchApi } from "./goal-research-results";
 import { sendLoopXMessage, type LoopXModeSnapshot } from "../../data/chat";
@@ -56,6 +57,8 @@ import { monitorScheduleReadback } from "./monitor-readback";
 import {GoalAgentWorkPage} from "./goal-agent-work-page";
 import { GoalSidebar } from "./goal-sidebar";
 import { GoalTasksView } from "./goal-tasks-view";
+import { GoalResearchMode } from "./goal-research-mode";
+import { GoalResearchWorkbench } from "./goal-research-workbench";
 import { GoalOverview, goalOverviewAttentionId } from "./goal-overview";
 import { GoalVitals, GoalVitalsSkeleton, type GoalVitalRegion } from "./goal-masthead";
 import { GoalWorkspacePanels } from "./goal-workspace-panels";
@@ -88,6 +91,8 @@ import { GoalActivityChip, GoalIdentityMark } from "./goal-activity-view";
 import { ManagerBrief } from "./manager-brief";
 // Loaded on demand: settings and their editors are a separate chunk that
 // arrives when the owner first opens Settings, not on every workspace visit.
+const ContentProductionResults = lazy(() => import("./content-production-results").then(module => ({default: module.ContentProductionResults})));
+
 const WorkspaceSettingsPage = lazy(() => import("./workspace-settings-page").then((module) => ({ default: module.WorkspaceSettingsPage })));
 import { UsageStatisticsNotice } from "./usage-statistics-notice";
 import { readWorkspaceTheme, writeWorkspaceTheme, type WorkspaceTheme } from "./workspace-theme";
@@ -107,6 +112,8 @@ import { deriveRuntimeReadiness, runtimeRequirement, runtimeSetupGuideUrl, type 
 import { buildSeenMarker, compareSeenMarker, readSeenMarker, seenMarkerStorage, seenMarkerStorageKey, writeSeenMarker, type SeenMarkerInput, type SinceYouLookedDelta } from "./since-you-looked";
 import { deriveGoalSuggestions, type GoalSuggestion } from "./goal-suggestions";
 import { projectGoalAcceptanceCriteria } from "../../data/goal-acceptance-observation";
+import { WorkspaceCommandPalette } from "./workspace-command-palette";
+import { workspaceCommandEntries } from "./workspace-command-entries";
 import { WorkspaceShell } from "./workspace-shell";
 import type { StatusSourceControl } from "./status-source-switcher";
 import "./personal-workspace.css";
@@ -310,6 +317,7 @@ function GoalOutputsView({
   goalId,
   localResults,
   researchApi,
+  production,
 }: {
   active: boolean;
   items: Array<Extract<WorkspaceTimelineItem, { kind: "output" }>>;
@@ -319,6 +327,7 @@ function GoalOutputsView({
   goalId: string;
   localResults: boolean;
   researchApi?: GoalResearchApi;
+  production?: ReactNode;
 }) {
   const { locale, t } = useWorkspaceI18n();
   const [teamSnapshot, setTeamSnapshot] = useState<LoopXModeSnapshot | null>(null);
@@ -344,8 +353,8 @@ function GoalOutputsView({
     && teamSnapshot?.settings.agent_id && teamSnapshot?.settings.execution_config);
   return (
     <>
-      <section className="personal-object-list personal-files-list" data-testid="personal-goal-outputs">
-        <header><strong>{t("files.title")}</strong>{!teamConfigured ? <span>{items.length}</span> : null}</header>
+      {items.length > 0 || reportState?.loading || reportState?.error || !production ? <section className="personal-object-list personal-files-list" data-testid="personal-goal-outputs">
+        <header><strong>{t("files.title")}</strong>{!teamConfigured && !production ? <span>{items.length}</span> : null}</header>
         {reportState?.loading ? (
           <p className="personal-object-list-state" role="status"><RefreshCw className="is-spinning" size={14} />{t("files.loadingReports")}</p>
         ) : null}
@@ -368,9 +377,10 @@ function GoalOutputsView({
             ].filter(Boolean).join(" · ")}</small>
           </button>
         ))}
-        {localResults ? <GoalManagedResults goalId={goalId} zh={locale === "zh-CN"} /> : null}
-      </section>
-      {active && localResults ? <GoalExploreResults key={goalId} goalId={goalId} zh={locale === "zh-CN"} /> : null}
+        {localResults && !production ? <GoalManagedResults goalId={goalId} zh={locale === "zh-CN"} /> : null}
+      </section> : null}
+      {production}
+      {production && localResults ? <GoalManagedResults goalId={goalId} zh={locale === "zh-CN"} hideEmpty /> : null}
       {active && researchApi ? <GoalResearchResults key={`${goalId}:${researchApi.indexUrl}:${researchApi.detailUrl}`} goalId={goalId} api={researchApi} zh={locale === "zh-CN"} /> : null}
       {active && teamSessionId && !teamSnapshot && !teamError ? <p className="personal-object-list-state" role="status">{t("files.checkingTeam")}</p> : null}
       {active && teamSessionId && teamError ? <p className="personal-object-list-state is-error" role="alert">{t("files.teamLoadFailed")} <button type="button" onClick={() => setTeamRefresh(value => value + 1)}>{t("startup.retry")}</button></p> : null}
@@ -965,12 +975,14 @@ export function PersonalWorkspacePage({
   const { locale, t } = useWorkspaceI18n();
   const [localGoalId, setLocalGoalId] = useState<string | null>(controlledGoalId ?? null);
   const sourceGoal = model.goals.find(goal => goal.goalId === (controlledGoalId === undefined ? localGoalId : controlledGoalId));
+  const researchReadSourceUrl = sourceGoal?.sourceAccess ? `/status.json?source_namespace=${sourceGoal.sourceAccess.namespace}` : statusSourceControl?.activeSource.kind === "runtime" && statusSourceControl.connectionState !== "loading" && statusSourceControl.connectionState !== "error" ? statusSourceControl.activeSource.statusUrl : undefined;
   const readOnly = sourceReadOnly || sourceGoal?.sourceAccess?.readOnly === true;
   const [localAgentId, setLocalAgentId] = useState(controlledAgentId ?? agents.find((agent) => agent.available)?.agentId ?? "codex");
   const selectionScope = `${statusSourceControl?.activeSource.statusUrl ?? "/status.json"}:${controlledGoalId === undefined ? localGoalId : controlledGoalId}`;
   const runtimeSourceUnavailable = statusSourceControl?.activeSource.kind === "runtime"
     && statusSourceControl.connectionState === "error";
-  const [selectionState, setSelectionState] = useState<{scope: string; value: WorkspaceDrawerSelection | null} | null>(null);
+  const [selectionState, setSelectionState] = useState<{scope: string; value: WorkspaceDrawerSelection | null} | null>(
+    () => ({scope: selectionScope, value: readSettingsRoute(new URL(window.location.href))}));
   const selection = selectionState?.scope === selectionScope ? selectionState.value : null;
   const currentSelectionScope = useRef({scope: selectionScope, generation: 0});
   if (currentSelectionScope.current.scope !== selectionScope) {
@@ -984,6 +996,10 @@ export function PersonalWorkspacePage({
     if (todoId !== (routedTodoId ?? null)) callbacks.onSelectTodo?.(todoId);
   }
   const restoredTodoRoute = useRef("");
+  const paletteContext = `${selectionScope}:${sourceGoal?.sourceAccess?.namespace ?? ""}`;
+  const paletteUnavailable = statusSourceControl?.connectionState === "error";
+  const [paletteScope, setPaletteScope] = useState<string | null>(null);
+  useEffect(() => setPaletteScope(null), [paletteContext]);
   const [railScope, setRailScope] = useState<string | null>(null);
   const [taskInspectorExpanded, setTaskInspectorExpanded] = useState(false);
   const [activeSessionRun, setActiveSessionRun] = useState<WorkspaceRun | null>(null);
@@ -1168,9 +1184,22 @@ export function PersonalWorkspacePage({
     settingsReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     settingsFromModelMenuRef.current = returnToModel;
     setMobileSidebarOpen(false);
+    writeSettingsRoute(target);
     setSelection(target);
   }
+  useEffect(() => {
+    const restore = () => {
+      const target = readSettingsRoute(new URL(window.location.href));
+      // Task history has its own route reader. Leaving settings may clear its
+      // selection, but an unrelated history event must not clear a restored task.
+      setSelectionState(current => target ? {scope: currentSelectionScope.current.scope, value: target}
+        : current?.value?.kind === "settings" ? null : current);
+    };
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, []);
   function closeSettings() {
+    writeSettingsRoute(null, true);
     setSelection(null);
     window.requestAnimationFrame(() => {
       const target = settingsFromModelMenuRef.current
@@ -1180,7 +1209,7 @@ export function PersonalWorkspacePage({
       else document.querySelector<HTMLElement>(".personal-mobile-menu")?.focus({ preventScroll: true });
     });
   }
-  const settingsOpen = selection?.kind === "settings";
+  const settingsOpen = selection?.kind === "settings" && !readOnly;
   const managerProjectionId = selectedGoalId;
   const items = useMemo(() => {
     const heartbeatSchedules: WorkspaceTimelineItem[] = Object.values(proposals)
@@ -1322,7 +1351,7 @@ export function PersonalWorkspacePage({
     composerRef.current?.focus();
     composerRef.current?.scrollIntoView({ block: "nearest" });
   }
-  const composerCollapsed = Boolean(selectedGoal) && selectedGoalTab === "overview" && !overviewComposerOpen
+  const composerCollapsed = Boolean(selectedGoal) && selectedGoalTab !== "chat" && !overviewComposerOpen
     && !composer.trim() && !actionDraft && !imageAttachments.length && !imageAttachmentError && !sending && !conversationTurnRunning;
   const managerChatItems = useMemo(
     () => items.filter((item) => item.kind === "message"
@@ -1372,7 +1401,7 @@ export function PersonalWorkspacePage({
       goalId: selectedGoal.goalId, goalTitle: selectedGoal.title, ownerLabel: item.claimedBy}}});
   }, [selectionScope, routedTodoId, selectedGoal, readOnly, locale, selectionState]);
   const workspaceReview = useDeliveryReview(selectedGoal, model.userTodos, !readOnly && !settingsOpen
-    && (selectedGoalTab === "overview" || selectedGoalTab === "tasks") && !selectedGoal?.loadState, selectionScope);
+    && (selectedGoalTab === "overview" || selectedGoalTab === "tasks" || selectedGoalTab === "files") && !selectedGoal?.loadState, selectionScope);
   const workspaceDigest = useGoalWorkspaceDigest(selectedGoal, model.userTodos, items,
     workspaceReview.usable ? workspaceReview.snapshot?.goal_map : null);
   // "Since you looked" (RFC goal-workspace-surface §5.7): compare the current
@@ -2486,18 +2515,21 @@ export function PersonalWorkspacePage({
     }, 1800);
   }
 
+  const settingsTarget = selection?.kind === "settings" ? selection : null;
   const settingsPage = settingsOpen ? (
     <Suspense fallback={<p className="personal-lazy-loading" role="status">{t("common.loading")}</p>}>
       <WorkspaceSettingsPage
+        scope={settingsTarget?.scope ?? (settingsTarget?.goalId ? "goal" : "machine")}
+        onNavigate={target => {writeSettingsRoute(target); setSelection(target);}}
         onOpenOriginalConversation={!readOnly && !rootGoalId && workspaceConversations?.onOpenOriginal ? target => {
           closeSettings(); workspaceConversations.onOpenOriginal!(target);
         } : undefined}
         callbacks={effectiveDrawerCallbacks}
-        focusGoalConnection={Boolean(selection?.kind === "settings" && selection.goalId)}
+        focusGoalConnection={Boolean(settingsTarget?.goalId && settingsTarget.tab === "lark")}
         goalNotifications={model.goalNotifications ?? []}
         goals={workspaceGoals}
-        initialGoalId={selection?.kind === "settings" ? selection.goalId ?? selectedGoalId : selectedGoalId}
-        initialTab={selection?.kind === "settings" ? selection.tab ?? (selectedGoalId ? "lark" : "steward") : "steward"}
+        initialGoalId={settingsTarget?.goalId}
+        initialTab={settingsTarget?.tab ?? (settingsTarget?.goalId ? "capabilities" : "steward")}
         onChanged={() => void refreshSettingsState()}
         onClose={closeSettings}
         onThemeChange={updateTheme}
@@ -2647,11 +2679,26 @@ export function PersonalWorkspacePage({
                     goalId={selectedGoal.goalId}
             localResults={!readOnly && active}
             researchApi={researchApi}
+            production={active && !readOnly && selectedGoalTab === "files" ? <Suspense fallback={<p role="status">{locale === "zh-CN" ? "正在读取作品…" : "Loading artifacts…"}</p>}>
+              <ContentProductionResults key={selectedGoal.goalId} goalId={selectedGoal.goalId} review={workspaceReview}
+                onOpenConversation={() => {setSelectedGoalTab("chat"); requestAnimationFrame(() => composerRef.current?.focus());}} />
+            </Suspense> : undefined}
                   />) : null;
   return (
     <>
     <div hidden={settingsOpen}>
     <WorkspaceShell
+      overlay={<WorkspaceCommandPalette key={paletteContext} open={paletteScope === paletteContext}
+        enabled={!settingsOpen && !mobileSidebarOpen} readOnly={readOnly} unavailable={paletteUnavailable}
+        onOpen={() => setPaletteScope(paletteContext)} onClose={() => setPaletteScope(null)}
+        entries={workspaceCommandEntries({ goals: workspaceGoals, goalId: selectedGoalId, readOnly,
+          userTodos: model.userTodos, sourceId: seenStatusSource,
+          unavailable: paletteUnavailable, items: items.filter(item => item.kind !== "proposal"
+            || (!actionReadback.isError && actionReadback.data?.some(current => current.proposal_id === item.proposal.previewId))) })}
+        onSelect={entry => {
+          if (entry.destination.kind === "goal") selectGoal(entry.destination.goalId);
+          else setSelection(entry.destination.selection);
+        }} />}
       notice={serviceNotice}
       drawer={drawerSelection ? <ContextDrawer agents={agents} attentionHistory={model.attentionHistory ?? model.userTodos} onSelectAttention={(item) => setSelection({ kind: "attention", item })} callbacks={effectiveDrawerCallbacks} goalNotifications={model.goalNotifications ?? []} goals={workspaceGoals} inspectorExpanded={taskInspectorExpanded} larkConnections={readOnly ? [] : larkConnections}
         todoReadbackUnavailable={drawerSelection.kind === "todo" && !workspaceGoals.some((goal) =>
@@ -2684,6 +2731,10 @@ export function PersonalWorkspacePage({
         <div className="personal-channel">
           <div>
           <ChannelHeader
+            requestInventory={!readOnly && !rootUnavailable && !runtimeSourceUnavailable && !selectedGoalId && !selectedWorkspaceRef
+              && (!originalConversation || originalConversation.source?.context_kind === "steward") ? <ConversationRequests
+                key={originalConversation?.session?.session_id ?? "owner"} sessionId={conversationSessionId} ownerFallback={!originalConversation}
+                refreshKey={`${managerMessages.length}:${managerMessages.at(-1)?.id ?? ""}:${Boolean(managerMessages.at(-1)?.pending)}`}/> : undefined}
             originalConversationTitle={originalConversation ? `${originalConversation.source?.app_ref ?? "Lark"} · ${originalTitle}` : undefined}
             agents={agents}
             scopeUnavailable={rootUnavailable}
@@ -2739,6 +2790,8 @@ export function PersonalWorkspacePage({
             readOnlySourceLabel={readOnly ? sourceGoal?.sourceAccess?.label ?? statusSourceControl?.activeSource.label : undefined}
             selectedGoal={runtimeSourceUnavailable ? null : selectedGoal}
             selectedGoalTab={selectedGoalTab}
+            composerVisible={!composerCollapsed}
+            researchControl={selectedGoal && !selectedGoal.loadState && !readOnly && !runtimeSourceUnavailable && selectedGoalTab === "research" ? <GoalResearchMode key={selectionScope} goalId={selectedGoal.goalId} zh={locale === "zh-CN"} refreshRevision={historyRefreshRevision} onSettings={() => openSettings({goalId: selectedGoal.goalId, kind: "settings", tab: "capabilities"})}/> : undefined}
             goalLifecycleBusy={selectedGoal ? lifecycleBusyGoalIds.has(selectedGoal.goalId) : false}
             onOpenWorkspace={() => selectGoal(null)}
             onRequestGoalLifecycle={selectedGoal && (!readOnly || callbacks.onExecuteGoalLifecycle)
@@ -2751,8 +2804,8 @@ export function PersonalWorkspacePage({
               {statusSourceControl.errorMessage ? <details><summary>{t("source.failureDetails")}</summary><p>{statusSourceControl.errorMessage}</p></details> : null}</div>
             {callbacks.onRefresh ? <button disabled={refreshState === "loading"} type="button" onClick={() => void refreshWorkspace()}>{t("startup.retry")}</button> : null}
           </section> : null}
-          {!runtimeSourceUnavailable && selectedGoal && !selectedGoal.loadState && !agentWorkActive ? <GoalVitals digest={workspaceDigest} goal={selectedGoal} items={items} userTodos={model.userTodos} onFocusRegion={focusGoalRegion} />
-            : !runtimeSourceUnavailable && selectedGoal?.loadState === "loading" ? <GoalVitalsSkeleton /> : null}
+          {!runtimeSourceUnavailable && selectedGoal && !selectedGoal.loadState && !agentWorkActive && selectedGoalTab === "overview" ? <GoalVitals digest={workspaceDigest} goal={selectedGoal} items={items} userTodos={model.userTodos} onFocusRegion={focusGoalRegion} />
+            : !runtimeSourceUnavailable && selectedGoal?.loadState === "loading" && selectedGoalTab === "overview" ? <GoalVitalsSkeleton /> : null}
           {!readOnly ? <UsageStatisticsNotice onDetails={() => openSettings({ kind: "settings", tab: "machine" })} /> : null}
           </div>
             {selectedGoalId && selectedGoalTab === "chat" && !agentWorkActive && !readOnly && selectedAgentId === "codex" && callbacks.onStartLoopX ? <GoalLoopXMode
@@ -2798,17 +2851,22 @@ export function PersonalWorkspacePage({
               <section className="personal-manager-greeting" role="status" data-testid="goal-status-loading">
                 <div><strong>{t(selectedGoal.loadState === "error" ? "startup.goalError" : "startup.goalLoading")}</strong>
                 <p>{t(selectedGoal.loadError ? `startup.error.${selectedGoal.loadError}` : "startup.independent")}</p>
-                {selectedGoal.loadState === "error" ? <button className="min-h-11 rounded-md border px-3 py-2 text-sm" type="button" onClick={() => void callbacks.onRefresh?.("missing")}>{t("startup.retry")}</button> : null}</div>
+                {selectedGoal.loadState === "error" ? selectedGoal.loadError === "authority" && !readOnly ?
+                  <button className="min-h-11 rounded-md border px-3 py-2 text-sm" type="button" onClick={() => openSettings({goalId: selectedGoal.goalId, kind: "settings", tab: "ownership"})}>{t("startup.storageSettings")}</button>
+                  : <button className="min-h-11 rounded-md border px-3 py-2 text-sm" type="button" onClick={() => void callbacks.onRefresh?.("missing")}>{t("startup.retry")}</button> : null}</div>
               </section>
             ) : selectedGoal ? (
-              <GoalWorkspacePanels key={`${statusSourceControl?.activeSource.statusUrl ?? "/status.json"}:${selectedGoal.goalId}`}
+              <GoalWorkspacePanels key={`${researchReadSourceUrl ?? statusSourceControl?.activeSource.statusUrl ?? "/status.json"}:${selectedGoal.goalId}`}
                 activeTab={selectedGoalTab} scrollRef={channelScrollRef} panels={{
                   overview: <GoalOverview sinceYouLooked={sinceYouLooked?.goalId === selectedGoal.goalId ? sinceYouLooked.delta : null} onMarkSeen={markSeen} onOpenAgentConversation={callbacks.onSelectWorkAgent} railOpen={railScope === selectionScope} onCloseRail={() => setRailScope(null)} digest={workspaceDigest} review={workspaceReview} active={!settingsOpen && selectedGoalTab === "overview"} goal={selectedGoal} items={items} userTodos={model.userTodos} readOnly={readOnly}
                     onOpenDetails={() => setSelection({ kind: "goal", item: selectedGoal })} onSelect={setSelection} onView={setSelectedGoalTab}
                     selectedTodoId={drawerSelection?.kind === "todo" ? drawerSelection.item.todoId : null}
-                    board={taskBoard(!settingsOpen && selectedGoalTab === "overview")} results={goalResults(!settingsOpen && selectedGoalTab === "overview")}
-                    historyRefreshRevision={historyRefreshRevision} readSourceUrl={sourceGoal?.sourceAccess ? `/status.json?source_namespace=${sourceGoal.sourceAccess.namespace}` : statusSourceControl?.activeSource.kind === "runtime" && statusSourceControl.connectionState !== "loading" && statusSourceControl.connectionState !== "error" ? statusSourceControl.activeSource.statusUrl : undefined} proposals={proposals} onPreview={createPreview} />,
+                    board={taskBoard(!settingsOpen && selectedGoalTab === "overview")}
+                    historyRefreshRevision={historyRefreshRevision} proposals={proposals} onPreview={createPreview} />,
                   tasks: taskBoard(!settingsOpen && selectedGoalTab === "tasks"),
+                  research: !readOnly || researchReadSourceUrl
+                    ? <GoalResearchWorkbench goalId={selectedGoal.goalId} active={!settingsOpen && selectedGoalTab === "research"} zh={locale === "zh-CN"} refreshRevision={historyRefreshRevision} readSourceUrl={researchReadSourceUrl} />
+                    : <p role="status">{locale === "zh-CN" ? "此来源尚未提供研究记录的读取入口。" : "This source does not provide a research history endpoint."}</p>,
                   files: goalResults(selectedGoalTab === "files" && !settingsOpen),
                   chat: agentWorkActive ? <GoalAgentWorkPage key={`${selectionScope}:${selectedWorkAgentId}`} goal={selectedGoal} agentId={selectedWorkAgentId!} readOnly={readOnly}
                     onSelect={id => callbacks.onSelectWorkAgent?.(id)} onClose={() => callbacks.onSelectWorkAgent?.(null)}/> : (<>
@@ -3009,7 +3067,7 @@ export function PersonalWorkspacePage({
                 onPaste={handleComposerPaste}
                 placeholder={locale === "zh-CN" ? "输入消息…" : "Write a message…"}
                 ref={composerRef}
-                autoFocus={overviewComposerOpen && selectedGoalTab === "overview"}
+                autoFocus={overviewComposerOpen && selectedGoalTab !== "chat"}
                 rows={1}
                 value={composer}
               />
@@ -3043,8 +3101,10 @@ export function PersonalWorkspacePage({
           onRetryGoalArchive={callbacks.onRetryGoalArchive || callbacks.onRefresh
             ? () => void (callbacks.onRetryGoalArchive ?? callbacks.onRefresh)?.()
             : undefined}
+          onOpenCommands={() => {setMobileSidebarOpen(false); setPaletteScope(paletteContext);}}
           onOpenSettings={readOnly ? undefined : () => openSettings({ kind: "settings" })}
-          onSelectGoal={selectGoal}
+          onSelectGoal={(goalId) => selectGoal(goalId,
+            goalId && selectedGoalId && selectedGoalTab === "research" ? "research" : "overview")}
           selectedGoalId={selectedGoalId}
           statusSourceControl={statusSourceControl}
         />

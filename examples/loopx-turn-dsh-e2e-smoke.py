@@ -135,6 +135,8 @@ def _write_fake_dsh_runner(root: Path, workspace: Path) -> Path:
         {
             "result_kind": "validated_progress",
             "classification": "dsh_e2e_marker_written",
+            "work_evidence": [f"artifact:{MARKER_NAME}"],
+            "validation_evidence": ["fixture:independent-marker-validator"],
             "summary": "Wrote the public e2e marker file.",
             "next_action": "Replay idempotently; no further work.",
         }
@@ -215,8 +217,6 @@ def _base_argv(
         json.dumps(_validator_command()),
         "--validation-failure-kind",
         "repair_required",
-        "--scan-root",
-        str(registry.parent.parent),
         "--no-global-sync",
         "--timeout-seconds",
         str(timeout_seconds),

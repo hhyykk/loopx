@@ -1,15 +1,11 @@
 /** Canonical provider IO and full-source summaries share one read transaction. */
 import type {JsonObject} from "../effect_program.ts";
 import {requireJsonObject} from "../runtime_decode.ts";
-import {stat} from "node:fs/promises";
-import {legacyCoordinationWriterFencePath} from "../coordination/legacy_writer_fence.ts";
-import {requireLocalAuthorityRuntimeRoot} from "../coordination/local_authority_provider.ts";
-import {requireAuthorityStoreId} from "../coordination/authority_store_codec.ts";
 import {readCanonicalSnapshot} from "../coordination/canonical_snapshot_page.ts";
 import {readLocalCoordinationTodoSource} from "../coordination/local_authority_read.ts";
 import {LOCAL_COORDINATION_TODO_SNAPSHOT_PAGE_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_LIST_RESULT_SCHEMA} from "../coordination/coordination_state_contract.generated.ts";
-import {projectCanonicalTodoFields, selectTodoReadFields, projectSourceTodoFields, projectTodoReadGroup, TODO_READ_RESULT} from "./read_projection.ts";
+import {projectCanonicalTodoFields, selectTodoReadFields, projectTodoReadGroup, TODO_READ_RESULT} from "./read_projection.ts";
 import {canonicalTodoReadItems, structureCanonicalTodo} from "./read_codec.ts";
 import {compactTodoReadSummary, compactThinTodoRead, todoReadProjectionContract} from "./read_presentation.ts";
 import {projectTodoContextPage} from "./context_projection.ts";
@@ -59,29 +55,9 @@ export async function readHistoricalTodoProjection(input: JsonObject): Promise<J
     goal_acceptance_work_guards: canonical.goal_acceptance_work_guards ?? null}), canonical};
 }
 
-export async function readTodoQuery(input: JsonObject): Promise<JsonObject> {
-  const source = requireJsonObject(input.source, "Todo read source");
-  const root = requireLocalAuthorityRuntimeRoot(source.runtime_root), goal = requireAuthorityStoreId(source.goal_id, "goal id");
-  let promoted = false;
-  try {
-    await stat(legacyCoordinationWriterFencePath(root, goal));
-    promoted = true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return {schema_version: TODO_READ_RESULT, canonical: {
-      status: "failed", reason_code: "local_authority_mode_read_failed", reason: "local coordination authority mode cannot be inspected",
-      source_authority: "unknown_fail_closed"}};
-  }
-  if (promoted) return readCanonicalTodoProjection(input);
-  if (input.legacy_source == null) return {schema_version: TODO_READ_RESULT, source_request: "legacy_todo_source"};
-  const legacy = requireJsonObject(input.legacy_source, "legacy Todo source");
-  const projected = await projectSourceTodoFields({...input, ...legacy});
-  if (projected.rejection) return projected;
-  return todoListPayload(input, originalRecords(legacy.full_bodies), projected, null);
-}
-
-async function todoListPayload(input: JsonObject, original: JsonObject[], fields: JsonObject, canonical: JsonObject | null): Promise<JsonObject> {
+async function todoListPayload(input: JsonObject, original: JsonObject[], fields: JsonObject, canonical: JsonObject): Promise<JsonObject> {
   const query = requireJsonObject(input.query, "Todo list query");
-  const sourceName = canonical === null ? "markdown_active_state" : "file_authority";
+  const sourceName = "file_authority";
   const roles: unknown[] = query.role == null ? ["user", "agent"] : [query.role];
   const select = async (source: JsonObject) => selectTodoReadFields({...input, fields: source.fields,
     field_evaluations: source.field_evaluations, roles, status: query.status ?? null,
@@ -90,16 +66,14 @@ async function todoListPayload(input: JsonObject, original: JsonObject[], fields
   if (selected.rejection) return selected;
   let projection = requireJsonObject(selected.projection, "Todo read projection");
   if (query.read_scope !== "completed_history" && query.todo_id && !(projection.todos as unknown[]).length) {
-    const legacy = requireJsonObject(input.legacy_source ?? {}, "legacy Todo source");
-    const archived = canonical === null ? originalRecords(legacy.archived_items_for_query) : canonicalTodoReadItems(original).filter(row => row.archive_state === "archive");
+    const archived = canonicalTodoReadItems(original).filter(row => row.archive_state === "archive");
     const target = archived.find(row => row.todo_id === query.todo_id);
     if (target && roles.includes(target.role)) {
       const section = target.source_section || "Completed Work Archive";
-      const item = canonical === null ? target : structureCanonicalTodo(target, target.role, section);
+      const item = structureCanonicalTodo(target, target.role, section);
       const grouped = await projectTodoReadGroup({...input, items: [item], role: item.role, source_section: section,
-        lineage: archived, resume_lineage: archived.map(row => canonical === null ? row : structureCanonicalTodo(row, row.role ?? null, row.source_section ?? section)),
-        evaluated: false, item_limit: null, full_selection: true,
-        ...(canonical === null && Array.isArray(legacy.archived_handoffs) ? {handoff_sources: [legacy.archived_handoffs[archived.indexOf(target)]]} : {})});
+        lineage: archived, resume_lineage: archived.map(row => structureCanonicalTodo(row, row.role ?? null, row.source_section ?? section)),
+        evaluated: false, item_limit: null, full_selection: true});
       if (grouped.rejection) return grouped;
       const key = `${String(target.role)}_todos`, exact = {fields: {[key]: grouped.summary}, field_evaluations: {[key]: grouped.visible_evaluations}};
       selected = await select(exact);
@@ -127,9 +101,9 @@ async function todoListPayload(input: JsonObject, original: JsonObject[], fields
   const payload: JsonObject = {ok: true, dry_run: true, read_only: true, command: "list", goal_id: query.goal_id,
     role: query.role ?? "all", status_filter: query.status ?? null, source: sourceName, todo_count: matchedCount,
     todos, state_file: query.state_file, project: query.project ?? null,
-    ...(canonical === null ? {} : {authority_read: {source_authority: canonical.source_authority, provider_revision: canonical.provider_revision,
+    authority_read: {source_authority: canonical.source_authority, provider_revision: canonical.provider_revision,
       cursor: canonical.cursor, todo_read_model: canonical.todo_read_model,
-      decision_read_from_provider: true, legacy_fallback_used: false}})};
+      decision_read_from_provider: true, legacy_fallback_used: false}};
   if (query.agent_id) Object.assign(payload, {agent_id_filter: query.agent_id, unfiltered_todo_count: projection.unfiltered_count,
     filter_semantics: "agent todos include unclaimed items plus claimed_by=<agent>; " +
       "User gates use global_gate, then blocks_agent, then legacy claimed_by scope; " +
@@ -159,12 +133,12 @@ async function todoListPayload(input: JsonObject, original: JsonObject[], fields
   result.projection_envelope = sealProjectionEnvelope({schema_version: PROJECTION_ENVELOPE_SEAL_REQUEST,
     projection: "goal_todo_read", observed_at: observed,
     sources: [{source_id: sourceName, read_status: "read", last_read_at: observed,
-      item_count: canonical === null ? Number(requireJsonObject(input.legacy_source, "legacy source").source_count) : original.length}],
+      item_count: original.length}],
     coverage: {scope: "goal_todo_query", expected_count: projection.uncapped_todo_count,
       included_count: projection.uncapped_todo_count, shown_count: shownCount,
       available_count: projection.uncapped_todo_count, omitted: []}});
   return {schema_version: TODO_READ_RESULT, payload: result,
-    ...(canonical?.goal_acceptance_oracle_observation_basis ? {canonical_acceptance: {
+    ...(canonical.goal_acceptance_oracle_observation_basis ? {canonical_acceptance: {
       goal_acceptance_contract: canonical.goal_acceptance_contract,
       goal_acceptance_oracle_observation_basis: canonical.goal_acceptance_oracle_observation_basis,
     }} : {})};

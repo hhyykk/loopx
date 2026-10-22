@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from loopx import cli as loopx_cli  # noqa: E402
+from loopx.control_plane.testing.canary_harness import import_fixture_authority  # noqa: E402
 
 
 GOAL_ID = "autonomous-replan-fixture"
@@ -26,12 +27,6 @@ USE_SUBPROCESS_CLI = False
 
 
 def _argv(args: tuple[str, ...], *, registry_path: Path, runtime: Path) -> list[str]:
-    project_root = registry_path.parent.parent
-    scan_path_args = (
-        ["--scan-path", str(project_root)]
-        if args and args[0] in {"status", "quota"}
-        else []
-    )
     return [
         "--registry",
         str(registry_path),
@@ -40,7 +35,6 @@ def _argv(args: tuple[str, ...], *, registry_path: Path, runtime: Path) -> list[
         "--format",
         "json",
         *args,
-        *scan_path_args,
     ]
 
 
@@ -263,6 +257,7 @@ def write_fixture(
                 "delivery_outcome": "outcome_progress",
             },
         )
+    import_fixture_authority(registry_path, GOAL_ID)
     return registry_path, runtime
 
 

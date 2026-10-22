@@ -13,11 +13,26 @@ import {
   createGoalLoop,
   createMemoryBindingStore,
   hasAbortedAssistantMessage,
+  piThreadId,
   runPiTaskLease,
   sanitizedKey,
   sessionKey,
   waitPlan,
 } from "../loopx/pi_goal_mode/pi-goal-loop-runtime.mjs"
+
+test("Pi thread identity is private, stable and distinguishes colliding basenames", () => {
+  const file = path.join(os.tmpdir(), "project-a", "session.jsonl")
+  const id = piThreadId(file)
+  assert.equal(id, piThreadId(file))
+  assert.notEqual(id, piThreadId(path.join(os.tmpdir(), "project-b", "session.jsonl")))
+  assert.notEqual(piThreadId("session?.jsonl"), piThreadId("session*.jsonl"))
+  assert.match(id, /^[A-Za-z0-9_-]+$/)
+  assert.ok(!id.includes(os.tmpdir()))
+  assert.equal(piThreadId(undefined), null)
+  assert.equal(piThreadId(""), null)
+  assert.equal(piThreadId("  "), null)
+  assert.equal(piThreadId(path.join(os.tmpdir(), "sessions") + path.sep), null)
+})
 
 
 function memoryBindingStore() {

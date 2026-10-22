@@ -7,7 +7,7 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
-use tauri::{AppHandle, Manager, Url};
+use tauri::{AppHandle, Manager, Runtime, Url};
 
 #[derive(Debug, Default, PartialEq)]
 struct LocalWorkspace {
@@ -167,7 +167,7 @@ pub(crate) fn launch_destination(app: &AppHandle, origin: &Url) -> Url {
     origin.clone()
 }
 
-pub(crate) fn remember_current(app: &AppHandle) {
+pub(crate) fn remember_current<R: Runtime>(app: &AppHandle<R>) {
     let Some(handoff) = app
         .try_state::<std::sync::Arc<std::sync::Mutex<crate::workspace_handoff::WorkspaceHandoff>>>(
         )

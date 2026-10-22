@@ -9,6 +9,7 @@ import {normalizeTodoCompletionValidationDeclaration} from "../todos/completion_
 import {readTurnSelectionRejection, turnSelectionRejectionState} from "../turn_driver/selection_rejection.ts";
 import { BARE_SHA256_PATTERN, ENVELOPED_SHA256_PATTERN } from "../content_digest.ts";
 import {PROJECTION_ENVELOPE_SEAL_REQUEST, sealProjectionEnvelope} from "../projection_envelope.ts";
+import {normalizeCollaborationBrief, planCollaborationRequestPublication} from "./semantic_request.ts";
 
 function requireThat(ok: unknown, message: string): asserts ok {
   if (!ok) throw new EffectRuntimeRequestError(message);
@@ -156,6 +157,39 @@ export function selectDelegationBinding(params: JsonObject): JsonObject {
     && binding.output_refs.length <= 20 && binding.output_refs.every(ref => text(ref)
       && !ref.startsWith("/") && !ref.includes("\\") && !ref.split("/").includes("..")), "bounded relative output refs required");
   return binding;
+}
+
+/** An operation locator is not proof that a new selection owns its result.
+ * Recover only the original source, peer work, binding and return conversation.
+ * The host observes these records through the existing exact-Goal Inbox owner.
+ */
+export function verifyDelegationSourceReplay(params: JsonObject): JsonObject {
+  const binding = selectDelegationBinding(params);
+  const record = requireJsonObject(params.record, "saved delegation");
+  const identity = requireJsonObject(record.identity, "saved delegation identity");
+  const source = requireJsonObject(params.source_request, "original source request");
+  const peer = requireJsonObject(params.peer_request, "original peer request");
+  const operation = requireJsonObject(params.peer_operation, "original peer operation");
+  planCollaborationRequestPublication({request: operation, entry: peer, operation});
+  const conversation = requireJsonObject(params.conversation, "original conversation");
+  const same = (a: unknown, b: unknown) => canonicalAuthoritySha256(a) === canonicalAuthoritySha256(b);
+  requireThat(typeof params.source_request_id === "string" && BARE_SHA256_PATTERN.test(params.source_request_id)
+    && source.request_id === params.source_request_id && source.execution_binding_id === binding.id
+    && peer.source_kind === "peer" && peer.source_agent_id === params.agent_id
+    && source.goal_id === params.goal_id && peer.goal_id === params.goal_id
+    && source.agent_id === binding.agent_id && peer.agent_id === binding.agent_id
+    && same(source.goal_ref ?? null, peer.goal_ref ?? null)
+    && same(source.goal_ref ?? null, params.goal_ref ?? null), "delegation replay source identity mismatch");
+  requireThat(text(params.operation_id) && typeof peer.request_id === "string"
+    && BARE_SHA256_PATTERN.test(peer.request_id)
+    && same(identity, {binding, request_id: peer.request_id,
+      operation_id: params.operation_id, source_request_id: params.source_request_id}),
+  "delegation replay operation identity mismatch");
+  const brief = normalizeCollaborationBrief(params.brief);
+  requireThat(same(source.brief, brief) && same(peer.brief, brief), "delegation replay brief changed");
+  requireThat(Object.keys(conversation).length === 2 && text(conversation.session_id) && text(conversation.turn_id)
+    && same(record.conversation, conversation), "delegation replay return conversation changed");
+  return {matched: true};
 }
 
 type Observation = "prepared" | "running" | "turn_returned" | "accepted" | "rejected" | "stopped";
@@ -332,7 +366,15 @@ export function delegationPreflight(params: JsonObject): JsonObject {
   const executor = requireJsonObject(preview.managed_executor, "selected executor");
   requireThat([true, false, null].includes(executor.available as boolean | null), "runtime availability required");
   requireThat(typeof route.would_invoke_host === "boolean", "Turn admission observation required");
-  const eligible = route.would_invoke_host === true && route.selected_todo_id === binding.todo_id;
+  // Reuse the file-lock owner's liveness facts. These describe only the native
+  // Turn lane, never the presence/availability of an App or CLI conversation.
+  // Omission preserves earlier callers; an explicit unknown fails closed.
+  const lane = params.lane === undefined ? null : requireJsonObject(params.lane, "Turn lane observation");
+  if (lane !== null) requireThat(typeof lane.state === "string"
+    && ["live", "released", "dead", "absent", "foreign_host", "unreadable"].includes(lane.state),
+  "invalid Turn lane observation");
+  const laneBlocked = lane !== null && !["released", "dead", "absent"].includes(String(lane.state));
+  const eligible = route.would_invoke_host === true && route.selected_todo_id === binding.todo_id && !laneBlocked;
   const acceptance = params.acceptance === null ? null : requireJsonObject(params.acceptance, "task acceptance");
   const acceptanceFacts = delegationAcceptanceFacts(binding.todo_id, acceptance, params.validation_files_current);
   const pinned = acceptanceFacts.acceptance_ready;
@@ -345,12 +387,15 @@ export function delegationPreflight(params: JsonObject): JsonObject {
     ...acceptanceFacts, authority_ready: true, authority_reason: null,
     authority_state: "promoted", authority_next_action: "none",
     promotion_from_surface_allowed: false,
+    ...(lane === null ? {} : {turn_lane: {scope: "native_turn_lane", state: lane.state}}),
+    ...(laneBlocked ? {reason: lane!.state === "live" ? "turn_lane_in_flight" : "turn_lane_state_unknown"} : {}),
     executor: {host: executor.executor, available: executor.available,
       reason: executor.unavailable_reason, profile: executor.execution_profile,
       ...(executor.operation_transport ? {operation_transport: executor.operation_transport} : {}),
       ...delegationRuntimeFacts(executor)},
     effects,
-    note: "Point-in-time preflight, not an execution permit or evidence of running work. "
+    note: (laneBlocked ? "Native Turn lane is busy or unknown; retain the request and inspect again after its holder settles or observation is restored. " : "")
+      + "Point-in-time preflight, not an execution permit or evidence of running work. "
       + "Start rechecks admission; inspect original operations before dispatching replacements. "
       + "Runtime probes have the selected executor's scope, not remote capacity guarantees.",
   };

@@ -47,6 +47,9 @@ def test_committed_progress_before_wait_recovers_only_original_spend(
     cycle: bool,
 ) -> None:
     isolate_sqlite_runtime(tmp_path, monkeypatch)
+    # The canonical evaluator owns its clock; Python clock patches cannot freeze
+    # it. Compare every persistent/derived fact except that observation timestamp.
+    from canonical_authority_fixture import without_resume_observation_time as stable
     project, runtime, registry = _write_fixture(tmp_path)
     state = _configure_read_only_todo(project)
     _configure_selectable_alternative(project)
@@ -145,8 +148,6 @@ def test_committed_progress_before_wait_recovers_only_original_spend(
         "--goal-id",
         GOAL_ID,
         *binding,
-        "--scan-path",
-        str(project),
     )
     rc, admitted = run(*guard_args)
     assert rc == 0 and admitted["normal_delivery_allowed"], admitted
@@ -271,7 +272,8 @@ def test_committed_progress_before_wait_recovers_only_original_spend(
     assert final is not None and final.settlement.failure is None
     assert final.writeback_run == original.writeback_run
     rc, after = run("todo", "list", "--goal-id", GOAL_ID)
-    assert rc == 0 and after["todos"] == before["todos"], after
+    assert rc == 0 and stable(after["todos"]) == stable(before["todos"]), after
+    assert after["authority_read"]["provider_revision"] == before["authority_read"]["provider_revision"]
     rc, next_turn = run(
         "quota",
         "should-run",
@@ -282,8 +284,6 @@ def test_committed_progress_before_wait_recovers_only_original_spend(
         AGENT_ID,
         "--turn-instance-id",
         "independent-next-turn",
-        "--scan-path",
-        str(project),
     )
     assert rc == 0 and next_turn["selected_todo"]["todo_id"] == ALTERNATIVE_TODO_ID, (
         next_turn

@@ -279,6 +279,10 @@ execution permissions.
 
 - 默认显示四列看板；可切换到分组列表，列表中空分组隐藏、已完成分组默认折叠。
 - 看板与列表共享已完成历史（包含归档，排除持续监控任务），按工作 Agent 筛选。列表的已完成组默认折叠；展开并滚动可按需加载，每页 40 条，使用五分钟快照保持翻页稳定。两种视图均只渲染可见区域附近的记录，切换视图保留历史和总数。快照过期可重试，读取失败保留当前记录。只读远端来源不调用本机历史接口。本机历史详情保留 Todo 读取层返回的文本、路径和证据，不额外截断或替换路径；Markdown 读取层原有的 500 字符规范化上限仍适用。
+- 在已完成列的「搜索完成历史」中输入标题片段或 Todo ID，按 Enter 或「搜索」。查询覆盖当前 Goal 与 Agent 筛选下的完整保留历史（含归档），不是仅搜索已加载的页面；总数是匹配数量。「清除」恢复未筛选的历史。搜索与重试只读，不完成任务或启动执行；远端只读来源不使用本机搜索。查询为不区分大小写的字面子串，最多 256 个字符，不搜索证据正文。
+
+Completed history supports a title fragment or Todo ID search from the Tasks board or expanded completed list. Submit with Enter or **Search** to search all retained history, including archives, within the selected Goal and Agent lane. The count shows matches; **Clear** restores unfiltered history. Search and retry are read-only. Remote read-only sources never use local history search. Matching is a case-insensitive literal substring of the title or ID, limited to 256 characters; evidence bodies are not searched. The Overview rail retains its separate “Search listed tasks” scope.
+
 - 初次连接先显示加载状态，不把示例任务当作实时数据。执行会话连接失败时显示重连提示并退避轮询，隐藏页面暂停新的会话查询。
 - Files 的“前往会话”进入 Goal 会话；“导出摘要”导出安全摘要 Markdown，不下载原始文件。
 
@@ -619,3 +623,50 @@ LoopX 控制台严格遵循 **Human-in-the-Loop（人类介入）安全模型**�
 1. **先预览，后确认**：任何会写入 Goal 状态、修改配置或执行外部变更的指令，都会先在界面弹出 **Typed Action 预览卡片**，明确展示影响范围与待填参数；
 2. **用户点击确认后才下发**：杜绝 Agent 自行执行未授权的高危操作；
 3. **操作回执（Receipt）**：每次操作执行完毕均会生成不可篡改的带时间戳回执，随时可溯源。
+
+
+### 键盘快速导航 / Keyboard quick navigation
+
+按 **⌘K / Ctrl-K**，或点击侧栏底部的「快速导航」，按名称或 ID 搜索目标，
+以及当前目标的已加载任务、成果与已有操作预览。使用 ↑ / ↓ 选择，Enter 打开，
+Esc 关闭并返回原焦点。中文输入法的确认键不会触发导航。
+
+Press **⌘K / Ctrl-K**, or choose **Quick navigation** at the bottom of the
+sidebar. Search Goals and the current Goal's loaded tasks, results and existing
+reviewable previews by name or ID. Use ↑ / ↓ to select, Enter to open, and Esc
+to close and restore focus. IME confirmation does not navigate.
+
+导航使用当前来源的投影，不创建预览、不发送 Agent 指令，也不执行操作。
+已有预览仍需在原详情中确认。只读来源只提供浏览；加载中或不可用的目标会明确标注。
+搜索不是完整历史索引；未加载的历史任务和其他结果仍通过现有任务、文件入口查看。
+
+Navigation uses the current source projection. It creates no preview, sends no
+Agent instruction and executes no action. Existing previews still require their
+normal confirmation. Read-only sources offer browsing only; loading or unavailable
+Goals are labelled. This is not a full history index: use the existing Tasks and
+Files views for history and additional results that are not currently loaded.
+
+浏览目标概览、任务或文件时不再提前准备聊天会话；打开 Chat 或主动发送消息后，
+仍由原有会话 owner 准备会话。
+
+Browsing Goal Overview, Tasks or Files no longer prepares a chat session in the
+background. Opening Chat or explicitly sending a message still prepares it
+through the existing session owner.
+
+![快速导航：中文窄屏](../assets/personal-workspace/command-palette-narrow.png)
+
+### 保存团队报告原文 / Save a team report source
+
+在成果、对话或证据视图打开团队报告后，点击 **下载原文 / Download source**，
+保存当前显示版本的 UTF-8 原文。文件名包含版本摘要；Markdown、JSON 和文本保留
+相应扩展名，其他类型按文本保存。下载不会重新运行 Agent、核验或采用报告，也不会
+修改 Goal。它是所读版本的本地副本，不代表后续版本仍获验收；报告读取失败或失效时，
+先通过原有刷新/重试恢复可读内容。
+
+Open a team report in Results, conversation or evidence, then choose **Download source**
+to save the displayed version's exact UTF-8 source. The filename includes a version
+prefix. Markdown, JSON and text retain their extensions; other types download as text.
+Saving reuses the existing readback without running an Agent, invoking validation,
+recording adoption or changing the Goal. The file is a local copy of that version,
+not a promise of continuing acceptance. If the reader becomes unavailable, use its
+existing refresh/retry before downloading again.

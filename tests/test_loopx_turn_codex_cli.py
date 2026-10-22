@@ -205,7 +205,9 @@ output_path.write_text(json.dumps({
     "delivery_batch_scale": "implementation",
     "delivery_outcome": "outcome_progress",
     "vision_unchanged_reason": "The fixture objective remains unchanged.",
-    "summary": "One public fixture advanced."
+    "summary": "One public fixture advanced.",
+    "work_evidence": ["artifact:fixture-change"],
+    "validation_evidence": ["check:fixture-validation"]
 }), encoding="utf-8")
 """
     executable = write_python_host_fixture(
@@ -258,7 +260,9 @@ def test_codex_cli_result_schema_requires_only_bounded_contract_fields() -> None
     schema = codex_cli_result_schema()
 
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == set(schema["properties"])
+    assert set(schema["required"]) == (
+        set(schema["properties"]) - {"work_evidence", "validation_evidence"}
+    )
     assert "raw_trajectory" not in schema["properties"]
     assert "stdout" not in schema["properties"]
     assert "child_execution_receipts" not in schema["properties"]
@@ -868,7 +872,7 @@ def test_default_turn_cli_blocks_native_launch_after_canonical_goal_stop(
         code = cli_main([
             "--registry", str(registry_path), "--runtime-root", str(runtime), "--format", "json",
             "turn", "run-once", "--goal-id", "loopx-turn-fixture", "--agent-id", "codex-fixture",
-            "--host", "codex-cli", "--project", str(project), "--scan-root", str(project),
+            "--host", "codex-cli", "--project", str(project),
             "--codex-bin", str(executable), "--codex-sandbox", "read-only", "--no-global-sync",
             "--iteration-context", "fresh", "--turn-instance-id", "cancel-before-native-launch",
             "--validation-command-json", json.dumps([sys.executable, "-c", "pass"]), "--execute",
@@ -1616,7 +1620,7 @@ def test_default_turn_cli_rejects_stopped_source_behind_stale_global_mirror(
         code = cli_main([
             "--registry", str(mirror), "--runtime-root", str(runtime), "--format", "json",
             "turn", "run-once", "--goal-id", "loopx-turn-fixture", "--agent-id", "codex-fixture",
-            "--host", "codex-cli", "--project", str(project), "--scan-root", str(project),
+            "--host", "codex-cli", "--project", str(project),
             "--codex-bin", str(executable), "--codex-sandbox", "read-only", "--no-global-sync",
             "--iteration-context", "fresh", "--turn-instance-id", "stale-mirror-stop-before-native",
             "--validation-command-json", json.dumps([sys.executable, "-c", "pass"]), "--execute",

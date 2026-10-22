@@ -196,8 +196,29 @@ export function validateSourceIngress(params: JsonObject): JsonObject {
   return {verified: true};
 }
 
+function executionBinding(raw: unknown): JsonObject {
+  const row = requireJsonObject(raw, "source execution binding");
+  const keys = ["goal_id", "agent_id", "requester_agent_id", "binding_id"];
+  if (Object.keys(row).some(key => !keys.includes(key)) || keys.some(key => !Object.hasOwn(row, key))) {
+    throw new EffectRuntimeRequestError("exact source execution binding fields required");
+  }
+  const binding: JsonObject = {};
+  for (const key of keys) {
+    const id = requireNonEmptyString(row[key], key);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(id)) {
+      throw new EffectRuntimeRequestError("invalid source execution binding identity");
+    }
+    binding[key] = id;
+  }
+  if (binding.requester_agent_id === binding.agent_id) {
+    throw new EffectRuntimeRequestError("execution requester must be an independent registered Agent");
+  }
+  return binding;
+}
+
 /** A separate, exact operator grant for existing governed work. Context delivery
  * alone never authorizes launch; neither models nor sources choose host profiles.
+ * required_binding lets an executing worker recheck its original exact grant.
  */
 export function sourceExecutionBindings(params: JsonObject): JsonObject {
   const source = requireJsonObject(params.source, "source policy");
@@ -207,32 +228,21 @@ export function sourceExecutionBindings(params: JsonObject): JsonObject {
   if (!Array.isArray(rows) || rows.length > 100) {
     throw new EffectRuntimeRequestError("bounded source execution bindings required");
   }
-  const bindings = rows.map(raw => {
-    const row = requireJsonObject(raw, "source execution binding");
-    const keys = ["goal_id", "agent_id", "requester_agent_id", "binding_id"];
-    if (Object.keys(row).some(key => !keys.includes(key)) || keys.some(key => !Object.hasOwn(row, key))) {
-      throw new EffectRuntimeRequestError("exact source execution binding fields required");
-    }
-    const binding: JsonObject = {};
-    for (const key of keys) {
-      const id = requireNonEmptyString(row[key], key);
-      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(id)) {
-        throw new EffectRuntimeRequestError("invalid source execution binding identity");
-      }
-      binding[key] = id;
-    }
-    if (binding.requester_agent_id === binding.agent_id) {
-      throw new EffectRuntimeRequestError("execution requester must be an independent registered Agent");
-    }
-    return binding;
-  });
+  const bindings = rows.map(executionBinding);
   const identities = bindings.map(row => JSON.stringify([row.goal_id, row.agent_id, row.binding_id]));
   if (new Set(identities).size !== identities.length) {
     throw new EffectRuntimeRequestError("ambiguous source execution binding");
   }
-  return {bindings: bindings.filter(row =>
+  const permitted = bindings.filter(row =>
     authorized.some(target => target.goal_id === row.goal_id && target.agent_id === row.agent_id)
-    && available.some(target => target.goal_id === row.goal_id && target.agent_id === row.requester_agent_id))};
+    && available.some(target => target.goal_id === row.goal_id && target.agent_id === row.requester_agent_id));
+  if (Object.hasOwn(params, "required_binding")) {
+    const required = executionBinding(params.required_binding);
+    if (!permitted.some(row => Object.keys(required).every(key => row[key] === required[key]))) {
+      throw new EffectRuntimeRequestError("original source execution binding is no longer authorized");
+    }
+  }
+  return {bindings: permitted};
 }
 
 /** Plan one trusted-local configuration change; the adapter owns locking and IO.

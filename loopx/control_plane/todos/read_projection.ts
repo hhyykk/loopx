@@ -7,7 +7,6 @@ import {EffectRuntimeRequestError} from "../effect_runtime_errors.ts";
 import {requireJsonObject, requireBoolean} from "../runtime_decode.ts";
 import {schedulerTimestampMilliseconds} from "../scheduler/state_store.ts";
 import {evaluateTodoResumeConditionsFromSource} from "./resume_condition.ts";
-import {normalizeTodoNoFollowup} from "./completion_state.ts";
 import {readTodoPriority, todoPriorityRank} from "./priority.ts";
 import {evaluateTodoSuccession, validateTodoSuccession, SUCCESSION_FACT_COLUMNS,
   SUCCESSION_EVALUATION_COLUMNS} from "./succession.ts";
@@ -219,7 +218,7 @@ export async function projectCanonicalTodoFields(input: JsonObject): Promise<Jso
     if (grouped.rejection) return grouped;
     const summary = requireJsonObject(grouped.summary, "canonical Todo summary");
     if (role === "agent" && input.retained !== true) {
-      if (checksConfigured || Object.keys(object(acceptance.outcome_requirements)).length) summary.goal_acceptance_contract = acceptance;
+      if (checksConfigured || Object.keys(object(acceptance.outcome_requirements)).length || acceptance.goal_objective) summary.goal_acceptance_contract = acceptance;
       const done = all.filter(row => archived.has(row.todo_id) && row.done === true && taskClass(row) === "advancement_task").length;
       if (done) {summary.archived_advancement_done_count = done; summary.advancement_done_count = Number(summary.advancement_done_count || 0) + done;}
     }
@@ -314,13 +313,9 @@ export async function readTodo(value: unknown, observedAt = new Date().toISOStri
   if (input.schema_version !== TODO_READ_REQUEST || !["group", "fields", "canonical_fields", "select", "source_fields", "query", "historical_fields"].includes(text(input.kind))) {
     throw new EffectRuntimeRequestError("Todo read request schema mismatch");
   }
-  if (input.kind === "canonical_fields") {
+  if (input.kind === "canonical_fields" || input.kind === "query") {
     const {readCanonicalTodoProjection} = await import("./read_transaction.ts");
     return readCanonicalTodoProjection({...input, read_observed_at: observedAt});
-  }
-  if (input.kind === "query") {
-    const {readTodoQuery} = await import("./read_transaction.ts");
-    return readTodoQuery({...input, read_observed_at: observedAt});
   }
   if (input.kind === "historical_fields") {
     const {readHistoricalTodoProjection} = await import("./read_transaction.ts");

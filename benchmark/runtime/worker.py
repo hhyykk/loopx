@@ -266,8 +266,8 @@ def native_goal_rounds(run_round, *, budget_seconds, continue_after_complete, cl
     """Drive one native Goal and, when opted in, continuation Goals until the budget ends.
 
     ``run_round(objective_suffix, timeout_sec)`` runs one Goal to a terminal status and
-    returns that status. Returns ``(rounds, outcome)`` where outcome is ``complete``,
-    ``budget_exhausted`` (a Goal was still active at the budget edge) or ``stopped``.
+    returns its typed outcome. Only ``complete`` may start an explicitly opted-in
+    continuation. Failure, blocking, cancellation and unknown outcomes stop.
     """
     from loopx.capabilities.benchmark_toolkit.native_codex_goal import NativeGoalDeadlineExceeded
 
@@ -284,16 +284,16 @@ def native_goal_rounds(run_round, *, budget_seconds, continue_after_complete, cl
             return rounds + 1, "budget_exhausted"
         rounds += 1
         if status != "complete" or not continue_after_complete:
-            return rounds, ("complete" if status == "complete" else "stopped")
+            return rounds, status
         remaining = None if deadline is None else deadline - clock()
         if remaining is not None and remaining <= reserve_seconds:
             return rounds, "complete"
         suffix = (
             f"\n\nContinuation {rounds}: the time budget is not exhausted "
             f"({int(remaining) if remaining is not None else 'unbounded'} seconds remain). "
-            "The previous Goal declared completion; continue researching and improving the "
-            "best validated candidate with the remaining budget: pick the next useful "
-            "experiment, validate it, and submit only if it improves on the accepted best."
+            "The previous Goal declared completion. Continue the original task under "
+            "its existing requirements and evaluation rules. Submission eligibility "
+            "is determined by those rules, not by a prior improvement claim."
         )
 
 
@@ -304,6 +304,7 @@ def run_native_goal(
         NativeGoalConfig,
         StdioNativeGoalTransport,
         compact_native_goal_receipt,
+        native_goal_outcome,
         refresh_native_goal_status,
         run_native_goal_until_terminal,
     )
@@ -339,7 +340,9 @@ def run_native_goal(
                 transport, NativeGoalConfig(objective=body + suffix, **base),
                 timeout_sec=timeout_sec, on_turn_started=observed.append,
             )
-            return turn.post_goal_status or refresh_native_goal_status(transport, turn)
+            if not turn.post_goal_status:
+                refresh_native_goal_status(transport, turn)
+            return native_goal_outcome(turn)
 
         try:
             rounds, outcome = native_goal_rounds(
@@ -352,10 +355,10 @@ def run_native_goal(
                 # Reaching the budget with an active Goal is normal exhaustion for
                 # a native-Goal worker, not a runner failure.
                 receipt["budget_exhausted"] = True
-            receipt["ok"] = True
+            receipt["ok"] = outcome in {"complete", "blocked", "paused", "budget_exhausted"}
         finally:
             if observed:
-                receipt["native_goal"] = compact_native_goal_receipt(observed[0])
+                receipt["native_goal"] = compact_native_goal_receipt(observed[-1])
 
 
 def native_command(env, execution, stage, wake, session_wake):
@@ -394,6 +397,15 @@ class _InertCheckpointWake:
 def _error_tail(exc: BaseException) -> dict[str, str]:
     """Private wake evidence: the class plus a bounded message, never a traceback."""
     return {"error_kind": type(exc).__name__, "error": " ".join(str(exc).split())[:500]}
+
+
+def _phase_timeout(timeout: float | None, deadline: float | None) -> tuple[float | None, bool]:
+    """Keep the phase clock absolute across preparation and launch admission."""
+    if deadline is not None:
+        remaining = max(0, deadline - time.time())
+        if timeout is None or remaining <= timeout:
+            return remaining, True
+    return timeout, False
 
 
 def run_once(env: dict[str, str]) -> dict:
@@ -439,6 +451,7 @@ def run_once(env: dict[str, str]) -> dict:
         "timed_out": False,
     }
     session_wake = None
+    phase_work_deadline = None
     checkpoint_context = ExitStack()
     pending_path = (
         Path(env.get("LOOPX_RUNTIME_ROOT", str(home))) / "benchmark-pending-turn.json"
@@ -451,6 +464,8 @@ def run_once(env: dict[str, str]) -> dict:
             if remaining <= PHASE_WORK_RESERVE_SECONDS:
                 receipt.update(ok=True, budget_exhausted=True, host_invoked=False)
                 return receipt
+            if execution.mode == "heartbeat":
+                phase_work_deadline = float(env["LOOPX_PHASE_DEADLINE_EPOCH"]) - PHASE_WORK_RESERVE_SECONDS
             execution = replace(
                 execution, timeout_seconds=(remaining - PHASE_WORK_RESERVE_SECONDS if execution.timeout_seconds is None
                                              else min(execution.timeout_seconds, remaining - PHASE_WORK_RESERVE_SECONDS))
@@ -516,6 +531,9 @@ def run_once(env: dict[str, str]) -> dict:
             from benchmark.runtime.checkpoint import capture_before_replan
 
             body = capture_before_replan(env, receipt, body)
+        if phase_work_deadline is not None and time.time() >= phase_work_deadline:
+            receipt.update(ok=True, budget_exhausted=True, host_invoked=False)
+            return receipt
         with (wake / "stderr.log").open("w") as stderr:
             if execution.native_goal and stage == "execute":
                 run_native_goal(env, execution, body, receipt, stderr)
@@ -547,8 +565,10 @@ def run_once(env: dict[str, str]) -> dict:
                         timeout = (None if execution.timeout_seconds is None
                                    else execution.timeout_seconds + allowance)
                     if checkpoint_wake.listener is not None:
+                        timeout, phase_limited = _phase_timeout(timeout, phase_work_deadline)
                         receipt["return_code"] = checkpoint_wake.run(
-                            execution, body, wake, session_wake, stdout, stderr, timeout)
+                            execution, body, wake, session_wake, stdout, stderr, timeout,
+                            phase_limited=phase_limited)
                         receipt["ok"] = receipt["return_code"] == 0
                     else:
                         with child_process(command, env=env, stdout=stdout, stderr=stderr,
@@ -556,7 +576,15 @@ def run_once(env: dict[str, str]) -> dict:
                                 check_current_launch=heartbeat_launch_check(env, session_wake)) as process:
                             if session_wake is not None:
                                 receipt["host_invoked"] = True
-                            process.communicate(input=body, timeout=timeout)
+                            timeout, phase_limited = _phase_timeout(timeout, phase_work_deadline)
+                            try:
+                                process.communicate(input=body, timeout=timeout)
+                            except subprocess.TimeoutExpired:
+                                # This specific wait selected the phase cap. A
+                                # renderer/provider/independent timeout is not it.
+                                if phase_limited:
+                                    receipt["budget_exhausted"] = True
+                                raise
                             receipt["return_code"] = process.returncode
                             receipt["ok"] = process.returncode == 0
                 if stage == "plan" and receipt["ok"]:
@@ -608,7 +636,8 @@ def run_once(env: dict[str, str]) -> dict:
                 shutil.copytree(
                     home / "sessions", log_root.parent / "sessions", dirs_exist_ok=True
                 )
-            if execution.mode == "heartbeat" and stage == "execute" and not receipt["ok"]:
+            if (execution.mode == "heartbeat" and stage == "execute"
+                    and not receipt["ok"] and not receipt.get("budget_exhausted")):
                 receipt["host_failure"] = heartbeat_host_failure(wake, receipt)
             (wake / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt
@@ -630,6 +659,8 @@ def main() -> int:
         resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
     receipt = run_once(dict(os.environ))
     print(json.dumps(receipt))
+    if receipt.get("native_goal_outcome") == "cancelled":
+        return 130
     if receipt.get("budget_exhausted") and receipt["mode"] in {"heartbeat", "turn"}:
         from benchmark.runtime.scheduler import BUDGET_EXHAUSTED_EXIT_CODE
 

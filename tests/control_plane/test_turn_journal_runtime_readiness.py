@@ -298,6 +298,8 @@ def test_current_node_standard_probe_does_not_execute_rule(
         "restart_policy": "automatic_on_next_control_plane_request",
         "idle_shutdown": True,
         "diagnostic_code": None,
+        "locator_state": "missing",
+        "recorded_pid_alive": None,
     }
 
 
@@ -380,6 +382,8 @@ def test_doctor_markdown_projects_runtime_lifecycle_for_app_health() -> None:
                 "runtime_lifecycle": {
                     "state": "unavailable",
                     "diagnostic_code": "runtime_exited_before_ready",
+                    "locator_state": "missing",
+                    "recorded_pid_alive": None,
                 },
             },
             "checks": [],
@@ -387,6 +391,8 @@ def test_doctor_markdown_projects_runtime_lifecycle_for_app_health() -> None:
     )
 
     assert "typescript_runtime_state: `unavailable`" in rendered
+    assert "typescript_runtime_locator_state: `missing`" in rendered
+    assert "typescript_runtime_recorded_pid_alive: `None`" in rendered
     assert (
         "typescript_runtime_diagnostic: `runtime_exited_before_ready`" in rendered
     )

@@ -14,7 +14,7 @@ const capabilityCopy: Record<WorkspaceLocale, Record<string, LocalizedCopy>> = {
   en: {
     codex_chat: {displayName: "Codex Goal conversation defaults", description: "Choose the native Codex profile, model, speed tier and reasoning effort for new Goal conversations. Existing conversations keep their original history. This does not start or reconfigure an active Agent Loop, worker or steward."},
     decision_context: {displayName: "Find evidence", description: "Find advisory evidence with a temporary private profile. OpenViking and BM25 are retrieval implementations; this page does not save a binding or enable automatic memory."},
-    content_ops: {displayName: "Content production", description: "Prepare source-backed outlines and local videos. Review the result before sharing; rendering uses an optional local extension."},
+    content_ops: {displayName: "Content production", description: "Prepare source-backed outlines, compose local videos or generate cloud images and footage with the optional media provider. Review the result before sharing."},
     goal_storage: { displayName: "New Goal authority", description: "New Goals default to canonical SQLite with hard leases. Choose storage and execution policy for future Goals. Existing Goals require a separate backed-up migration." },
     manager_runtime: {
       displayName: "Runtime",
@@ -83,7 +83,7 @@ const capabilityCopy: Record<WorkspaceLocale, Record<string, LocalizedCopy>> = {
   "zh-CN": {
     codex_chat: {displayName: "Codex Goal 对话默认值", description: "分别选择 Codex 配置来源、模型、速度档和推理强度，作用于本机的新 Goal 对话。已有对话保留原历史；不会启动或重配正在运行的 Agent Loop、工作 Agent 或管家。"},
     decision_context: {displayName: "资料召回", description: "通过临时私有配置查找参考证据。OpenViking、BM25 是检索实现；本页不保存绑定，也不启用自动记忆。"},
-    content_ops: {displayName: "内容制作", description: "准备有来源的提纲与本机视频，检查作品后再分享；视频制作使用可选本机扩展。"},
+    content_ops: {displayName: "内容制作", description: "准备有来源的提纲，使用可选媒体扩展制作本机视频、生成云端图像与镜头，检查作品后再分享。"},
     goal_storage: { displayName: "新 Goal 的权威存储", description: "新 Goal 默认使用 canonical SQLite 与 hard lease；可选择之后新 Goal 的存储与执行策略。已有 Goal 仍需单独备份、迁移。" },
     manager_runtime: {
       displayName: "运行环境",
@@ -163,7 +163,7 @@ const fieldCopy: Record<WorkspaceLocale, FieldCopy> = {
     executor_model: { label: "Model", description: "Optional model for the selected executor. Leave blank to keep the executor's own default." },
     executor_reasoning_effort: { label: "Reasoning effort", description: "Optional reasoning effort for the selected executor. Leave blank to keep the executor's own default." },
     count_unit: { label: "Review after", description: "Work Turns require accepted settlement; polls and retries do not count.", options: { completed_todos: "Completed Todos", effective_turns: "Settled work Turns" } },
-    planning_horizon_goal: { label: "Show Goal in planning horizon", description: "Default off. Read the full original Goal and acceptance before choosing work. Does not change replan, stride or execution authority." },
+    planning_horizon_goal: { label: "Show Goal in planning horizon", description: "Default on. Keep the original Goal and acceptance visible before choosing work. Turn off for rollback or comparisons; replan, stride and execution authority are unchanged." },
     stride_strategy: { label: "Stride strategy", description: "Structured work scope, route and validation proposals are required for enabled fresh Vision reviews. Does not grant execution authority.", options: { off: "Off", evidence_conditioned_v1: "Evidence-conditioned · v1" } },
     count: { label: "Number between reviews", description: "Settled work Turns: 1–6; completed Todos: 1–5. Goal overrides take precedence over device defaults." },
     allowed_domains: { label: "Allowed responsibility domains", description: "Enter one bounded, public-safe domain per line." },
@@ -199,7 +199,7 @@ const fieldCopy: Record<WorkspaceLocale, FieldCopy> = {
     executor_model: { label: "模型", description: "所选执行器使用的模型，可留空；留空表示沿用执行器自身的默认模型。" },
     executor_reasoning_effort: { label: "推理档位", description: "所选执行器使用的推理档位，可留空；留空表示沿用执行器自身的默认档位。" },
     count_unit: { label: "复核计数依据", description: "有效工作 Turn 须完成结算；轮询和重复重试不计数。", options: { completed_todos: "已完成 Todo", effective_turns: "已结算工作 Turn" } },
-    planning_horizon_goal: { label: "在规划视野中显示 Goal", description: "默认关闭。选择工作前读取完整原目标与验收要求，不改变复盘、步幅策略或执行权限。" },
+    planning_horizon_goal: { label: "在规划视野中显示 Goal", description: "默认开启，选择工作前可见原目标与验收要求。可为回滚或对照实验关闭；不改变复盘、步幅策略或执行权限。" },
     stride_strategy: { label: "步幅策略", description: "启用后，新的 Vision 路线复盘须提交工作大小、路线及验证范围的结构化提案，不授予执行权限。", options: { off: "关闭", evidence_conditioned_v1: "依据证据调整 · v1" } },
     count: { label: "两次复核间的数量", description: "已结算工作 Turn 为 1–6，已完成 Todo 为 1–5；Goal 显式设置优先于设备默认值。" },
     allowed_domains: { label: "允许的职责域", description: "每行填写一个有边界、可公开的职责域。" },

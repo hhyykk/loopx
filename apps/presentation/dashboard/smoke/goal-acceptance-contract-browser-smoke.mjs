@@ -21,11 +21,34 @@ if (writeAuthorityOnly && packaged) throw new Error("--write-authority-only requ
 const payload = writeAuthorityOnly ? null : JSON.parse(execFileSync(python, ["-c", `
 import runpy, tempfile, json
 from pathlib import Path
+from pytest import MonkeyPatch
+from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+from loopx.control_plane.effect_runtime import restart_effect_runtime
+from loopx.control_plane.todos.active_state_todo_parser import parse_todo_source
+from loopx.control_plane.todos.todo_summary import canonical_todo_read_record, structured_todo_item
 from loopx.status import collect_status
+from tests.control_plane.canonical_authority_fixture import initialize_canonical_authority, isolate_sqlite_runtime
 fixture = runpy.run_path('tests/test_delivery_review.py')
+refresh = fixture['make_project'].__globals__['refresh_state_run']
+def initialize_and_refresh(**kwargs):
+    # The standalone caller has no pytest setup: initialize the same real
+    # canonical provider before the shared fixture's first operational read.
+    groups, _, _ = parse_todo_source(kwargs['state_file'].read_text())
+    records = [canonical_todo_read_record(structured_todo_item(item, role=role,
+        source_section=item['source_section'])) for role, rows in groups.items() for item in rows]
+    initialize_canonical_authority(Path(kwargs['runtime_root_override']), kwargs['goal_id'],
+        build_todo_runtime_shadow_projection(goal_id=kwargs['goal_id'], todos=records,
+            handoff_mode='soft_claim'), state_path=kwargs['state_file'], provider='sqlite')
+    return refresh(**kwargs)
+fixture['make_project'].__globals__['refresh_state_run'] = initialize_and_refresh
 with tempfile.TemporaryDirectory() as directory:
-    registry, runtime = fixture['make_project'](Path(directory))
-    print(json.dumps(collect_status(registry_path=registry, runtime_root_override=str(runtime), scan_roots=[], limit=20, goal_id='release-demo', include_public_boundary_scan=False)))
+    with MonkeyPatch.context() as patch:
+        isolate_sqlite_runtime(Path(directory), patch)
+        try:
+            registry, runtime = fixture['make_project'](Path(directory))
+            print(json.dumps(collect_status(registry_path=registry, runtime_root_override=str(runtime), limit=20, goal_id='release-demo')))
+        finally:
+            restart_effect_runtime(wait_for_exit=True)
 `], { cwd: root, encoding: "utf8" }));
 if (payload) payload.run_history.goals[0].acceptance_observation = acceptance;
 const server = packaged
@@ -34,7 +57,8 @@ const server = packaged
 async function checkLiveWriteAuthority(browser, origin) {
   const page = await browser.newPage({viewport: {width: 1024, height: 768}});
   const writes = [], errors = [];
-  let readsFail = false;
+  let readsFail = false, nativeReads = 0;
+  await page.clock.install();
   const native = {ok: true, goal_id: "release-demo", provider_revision: "fixture:current",
     goal_acceptance_contract: {...contract, lifecycle_state: "active",
       goal_ref: {goal_id: "release-demo", goal_instance_id: "write-authority-instance"}}};
@@ -43,10 +67,13 @@ async function checkLiveWriteAuthority(browser, origin) {
   await page.route("**/api/**", route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     if (request.method() !== "GET") writes.push({path, body: request.postDataJSON()});
-    if (path === "/api/chat/goal-acceptance") return route.fulfill(
+    if (path === "/api/chat/goal-acceptance") {
+      if (request.method() === "GET") nativeReads++;
+      return route.fulfill(
       request.method() === "GET" && readsFail
         ? {status: 503, json: {error: "Synthetic native read failure"}}
         : {json: native});
+    }
     if (path === "/api/actions") return route.fulfill({json: {
       ok: true, schema_version: "loopx_chat_action_list_v1", proposals: [],
     }});
@@ -70,6 +97,28 @@ async function checkLiveWriteAuthority(browser, origin) {
     await page.getByRole("button", {name: "Release query cancellation", exact: true}).click();
     await phase("released"); await idle();
     assert.deepEqual(writes, [], "Native read failure during cancellation must prevent the stale effect POST");
+
+    const failedReads = nativeReads;
+    await page.clock.fastForward(15_001);
+    assert.equal(nativeReads, failedReads, "Failed reads back off instead of repeating the healthy poll cadence");
+    const retry = page.waitForResponse(response => response.url().includes("/api/chat/goal-acceptance?"));
+    await page.clock.fastForward(45_000);
+    await retry;
+    assert.equal(nativeReads, failedReads + 1, "The bounded automatic retry only reads");
+    assert.deepEqual(writes, []);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {configurable: true, value: "hidden"});
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.clock.fastForward(60_000);
+    assert.equal(nativeReads, failedReads + 1, "A hidden workspace does not poll its acceptance reader");
+    readsFail = false;
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {configurable: true, value: "visible"});
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    await check.waitFor();
+    assert.deepEqual(writes, [], "Returning to the workspace recovers the read without running checks");
 
     // A fresh retry remains usable; the negative case must not pass by blocking every write.
     readsFail = false;
@@ -159,8 +208,66 @@ try {
     payload.run_history.goals[0].acceptance_observation = acceptance;
     await page.reload({waitUntil: "networkidle"});
     const review = page.locator(".delivery-review");
+    const openEvidence = async () => {
+      const evidence = page.locator(".goal-overview-evidence");
+      if (await evidence.count() && await evidence.getAttribute("open") === null) {
+        await evidence.locator(":scope > summary").focus();
+        await page.keyboard.press("Enter");
+      }
+    };
+    await openEvidence();
     const refresh = review.getByRole("button", { name: locale === "en" ? "Refresh snapshot" : "刷新快照", exact: true });
     const exportButton = review.getByRole("button", { name: locale === "en" ? "Export delivery snapshot" : "导出交付快照", exact: true });
+    if (locale === "en") {
+      const requirement = (id, description, status) => ({
+        id, description, status, planning_satisfied: status === "accepted",
+      });
+      const collision = {
+        schema_version: "loopx_goal_outcomes_v0", revision: 1, current_lifetime: true,
+        execution_authority_granted: false, goal_completion_assessed: false,
+        outcomes: [
+          {
+            id: "plan", owner_agent_id: "author", objective: "First colliding outcome", revision: 1,
+            requirements: [
+              requirement("section:opening", "Colon in the requirement id", "failed"),
+              requirement("detail", "Second unmet requirement", "failed"),
+              requirement("closing", "Third unmet requirement", "failed"),
+            ],
+            todo_ids: [], sources: [], work: [],
+          },
+          {
+            id: "plan:section", owner_agent_id: "author", objective: "Second colliding outcome", revision: 1,
+            requirements: [requirement("opening", "Unrelated met requirement", "accepted")],
+            todo_ids: [], sources: [], work: [],
+          },
+        ],
+      };
+      const projected = {...acceptance, goal_acceptance_contract: {outcome_requirements: collision}};
+      response = {...snapshot, acceptance: projected};
+      payload.run_history.goals[0].acceptance_observation = projected;
+      await page.reload({waitUntil: "networkidle"});
+      const outcomes = page.locator(".goal-outcomes");
+      await outcomes.waitFor();
+      assert.equal(await outcomes.locator(".goal-outcome-disclosure[open]").count(), 0, "Whole outcomes start collapsed");
+      const first = outcomes.locator(".goal-outcome").filter({has: page.getByRole("heading", {name: "First colliding outcome", exact: true})});
+      const second = outcomes.locator(".goal-outcome").filter({has: page.getByRole("heading", {name: "Second colliding outcome", exact: true})});
+      await first.locator(".goal-outcome-disclosure > summary").focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await first.locator(".goal-outcome-criteria > li").count(), 3);
+      assert.equal(await second.locator(".goal-outcome-disclosure").getAttribute("open"), null,
+        "Colon-bearing identities do not open another outcome's requirements");
+      await second.locator(".goal-outcome-disclosure > summary").click();
+      await second.getByText("Unrelated met requirement", {exact: true}).waitFor();
+      assert.equal(await outcomes.locator(".goal-outcome-criteria > li:visible").count(), 4,
+        "Each selected outcome exposes every requirement without identity collisions");
+      response = structuredClone(snapshot);
+      payload.run_history.goals[0].acceptance_observation = acceptance;
+      await page.reload({waitUntil: "networkidle"});
+      if (await navigation.isVisible()) await navigation.click();
+      await page.locator(".personal-goal-link").first().click();
+      await page.getByRole("button", {name: "Overview", exact: true}).click();
+      await openEvidence();
+    }
     const openAdvanced = async () => {
       await openInspection();
       const advanced = section.locator(".delivery-check-advanced");
@@ -181,6 +288,7 @@ try {
       // real SQLite/HTTP/CLI journey.
       if (responseStatus === 200) {
         await page.reload({waitUntil: "networkidle"});
+        await openEvidence();
         // Goal activation can finish after the page's network-idle boundary.
         // Compare the completed delivery view, never its loading placeholder.
         await review.locator(".delivery-chain").waitFor();

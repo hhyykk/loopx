@@ -1,4 +1,8 @@
-"""Launch one native EdgeBench trial; run the judge with native `sforge serve`."""
+"""Launch a native trial; start its judge with benchmark.edgebench.serve.
+
+CLI source options: --sforge-repository, --sforge-ref, --sforge-revision.
+Defaults and the experiment-local source lock are owned by edgebench.source.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +17,11 @@ import signal
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from benchmark.edgebench.source import active_source_receipt, bootstrap
+
+if __name__ == "__main__":
+    bootstrap()  # Select SForge before any provider or adapter imports.
 
 from sforge.harness.benchmark import load_benchmark
 from sforge.harness.config import SForgeConfig
@@ -62,28 +71,37 @@ def _observe_run(call):
 
 
 def _result_status(*, interrupted, started, runtime_seconds, exit_code, timed_out=False,
-                   execution_started=True):
+                   execution_started=True, native_goal_outcome=None):
     if interrupted:
         return "cancelled"
     if not started:
         return "launch_failed"
+    if native_goal_outcome == "cancelled":
+        return "cancelled"
+    if native_goal_outcome in {"failed", "usage_limited", "unknown"}:
+        return "runner_failed"
     if not execution_started or runtime_seconds <= 0 or (not timed_out and exit_code != 0):
         return "runner_failed"
     return "terminal"
 
 
-def _write_native_final_result(trial, result, *, status, agent, task, run_id, model, effort, feedback="native"):
-    """Match the native CLI's visualizer handoff after a completed run only."""
-    if status != "terminal":
+def _write_native_final_result(trial, result, *, status, agent, task, run_id, model, effort,
+                               feedback="native", native_goal_outcome=None):
+    """Retain partial native scores without publishing a completion marker."""
+    if status != "terminal" and not (native_goal_outcome and result.runtime_seconds > 0):
         return
     final = dict(agent=agent, task=task, run_id=run_id, model=model, effort=effort,
                  **result.to_dict())
+    if native_goal_outcome is not None:
+        final.update(runtime_status=status, native_goal_outcome=native_goal_outcome)
     if feedback == "best-only":
         final["evaluation_coverage"] = "online_only"
         final["offline_scoring_complete"] = False
-    pending = trial / "final_result.json.tmp"
+    # SForge consumers treat final_result.json itself as a completed run.
+    destination = trial / ("final_result.json" if status == "terminal" else "partial_result.json")
+    pending = destination.with_suffix(".json.tmp")
     pending.write_text(json.dumps(final, indent=2, ensure_ascii=False))
-    pending.replace(trial / "final_result.json")
+    pending.replace(destination)
 
 
 def _task_default(task_id: str, key: str, explicit: int | None, fallback: int) -> int:
@@ -123,7 +141,7 @@ def main(argv=None):
     cadence.add_argument("--replan-after-todos", type=int, choices=range(1, 6),
                          help="Explicit completed-Todo cadence ablation for heartbeat profiles")
     parser.add_argument("--planning-horizon-goal", action=argparse.BooleanOptionalAction, default=None,
-                        help="Opt-in full Goal in preselection horizon; --no-planning-horizon-goal explicitly disables it")
+                        help="Heartbeat workers include the original Goal before selection by default; --no-planning-horizon-goal opts out")
     parser.add_argument("--stride-strategy", choices=stride_strategy_options(),
                         help="Explicit heartbeat Goal-review strategy; omitted keeps the ordinary off treatment")
     parser.add_argument("--checkpoint-controller-file", type=Path,
@@ -238,7 +256,8 @@ def main(argv=None):
         if args.feedback == "best-only":
             validate_best_only(task, args.eval_interval)
         render_prompt = best_only_task_prompt if args.feedback == "best-only" else blind_task_prompt
-        feedback_prompt = render_prompt(task.work.agent_query, task.submit_paths)
+        feedback_prompt = render_prompt(task.work.agent_query, task.submit_paths,
+                                       eval_interval=args.eval_interval)
     elif not task.game_mode:
         native_policy = dict(submission_cooldown=args.submission_cooldown,
             eval_interval=args.eval_interval, internet=task.internet,
@@ -351,6 +370,7 @@ def main(argv=None):
            if agent.task_entry == "loopx-planned" else {}),
         "model": args.model, "effort": args.effort, "timeout_seconds": args.timeout,
         "loopx_commit": pins[0], "runner_commit": pins[1],
+        "sforge_source": active_source_receipt(),
         **turn_envelope_receipt(explicit=args.turn_envelope),
         **({"native_goal_continue": True} if args.native_goal_continue else {}),
         "task_sha256": hashlib.sha256(task_file.read_bytes()).hexdigest(),
@@ -372,8 +392,8 @@ def main(argv=None):
            if agent.replan_after_turns is not None else {}),
         **({"replan_after_completed_todos": agent.replan_after_todos}
            if agent.replan_after_todos is not None else {}),
-        **({"planning_horizon_goal": args.planning_horizon_goal}
-           if args.planning_horizon_goal is not None else {}),
+        **({"planning_horizon_goal": agent.planning_horizon_goal}
+           if agent.planning_horizon_goal is not None else {}),
         **({"stride_strategy": args.stride_strategy}
            if args.stride_strategy is not None else {}),
         **({"checkpoint_request_sha256": hashlib.sha256(checkpoint_request).hexdigest()}
@@ -402,19 +422,26 @@ def main(argv=None):
     # Native cancellation and swallowed Docker failures return runtime=0.
     # Observe the signal independently; never infer cancellation from output prose.
     execution = backend.execution_receipt or {}
+    native = backend.native_goal_receipt or {}
+    if args.worker == "native-goal" and not native.get("native_goal_outcome"):
+        native["native_goal_outcome"] = "unknown"
     status = _result_status(interrupted=was_interrupted,
                             started=(trial / "started_at").is_file(),
                             runtime_seconds=result.runtime_seconds,
                             execution_started=execution.get("execution_started", False),
                             exit_code=execution.get("exit_code"),
+                            native_goal_outcome=native.get("native_goal_outcome"),
                             timed_out=result.timed_out or execution.get("timed_out", False))
     receipt.update(status=status, controller_elapsed_seconds=elapsed,
                    timed_out=result.timed_out, runtime_seconds=result.runtime_seconds,
                    best_score=result.best_score, total_rounds=result.total_rounds)
     receipt["execution"] = execution
+    if native:
+        receipt.update(native)
     _write_native_final_result(trial, result, status=status, agent=agent.name,
                                task=task.task_id, run_id=args.run_id,
-                               model=args.model, effort=args.effort, feedback=args.feedback)
+                               model=args.model, effort=args.effort, feedback=args.feedback,
+                               native_goal_outcome=native.get("native_goal_outcome"))
     receipt_path.write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt))
     return 0 if status == "terminal" else 130 if status == "cancelled" else 1

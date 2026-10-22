@@ -24,11 +24,11 @@ _POLICY = """
 
 ## LoopX: continuing an authorized browser task
 
-This section overrides only a blanket requirement above or in API references
-to ask again before reclaiming a user-owned or inactive TaskSpace, including
-an entry-time user-control message caused by your own normal handback. It also
-overrides the one-space-per-goal rule only when your own successful finish
-closed that space and the same authorized task later needs browser work.
+This section overrides a blanket requirement above or in API references to
+ask again for qualified continuation of the same authorized task: reclaiming
+after your own normal handback, or replacing its confirmed-missing TaskSpace.
+The replacement becomes that task's single active space. These exceptions do
+not override a current user-control stop or authorize a different task.
 
 For the same already-authorized task, reuse its known numeric TaskSpace and
 Page without another ownership-confirmation question when your previous normal
@@ -48,15 +48,31 @@ initial handle lookup already returned the generic user-control/ended message,
 the same known handback permits that one claim; the message alone is not a new
 live takeover. Do not loop claims. A refused claim never permits replacement.
 
-If the known space is absent, create one replacement without asking only when
-the recorded successful `finish({ keep: [] })` closed your Agent-created Pages,
-`listTaskSpaces()` confirms that numeric id is absent, and the same task still
-authorizes this browser work. Absence alone does not prove normal closure.
-Record the replacement space id and task identity, then navigate its initial
-`p1`; it becomes the single space for subsequent rounds. This is continuation
-after completed cleanup, never recovery from a stuck, blocked, timed-out,
-failed or unexpectedly missing space. Do not create replacements in a retry
-loop. The reuse example below applies only when the known space still exists.
+For a known Agent-created TaskSpace, a successful, complete
+`listTaskSpaces()` result confirming its numeric id is absent permits one
+replacement without another question, while the same task remains authorized
+and no user pause, control reservation or unresolved handoff step applies.
+Keep its recorded id, task identity and Page URL. This includes unexpected
+loss: a successful `finish({ keep: [] })` receipt or proof of normal closure is
+not required. Record an unknown cause honestly; do not turn that uncertainty
+into a repeated authorization question. A failed, unreadable or incomplete
+inventory does not establish absence. If the space exists, recover within it;
+a missing Page label, timeout, blocked Page or generic error is not a reason
+to create a second space. The reuse example below is for an existing space.
+
+Before creation, record one recovery attempt and a unique recovery name tied
+to the original task/id in durable task context. Call `taskSpace(recoveryName)`
+once, record its returned numeric id and task identity, and navigate its initial
+`p1` to the known URL. Reuse this replacement in later rounds. If creation's
+receipt is lost, inspect the inventory once for that exact recovery name; reuse
+only a unique Agent-created, Agent-owned match. Otherwise retain the uncertain
+attempt and diagnose it without another creation or claim. Never reset the
+attempt merely because a new shell process or heartbeat started. If the
+replacement also disappears before verified continuation, stop the recovery
+loop and diagnose the recurring failure; do not create another replacement.
+After any loss, inspect the destination before retrying an external write or
+other side effect whose result is unknown. Reopening a URL is not evidence
+that an earlier operation failed or authority to replay it.
 
 After normal finish, kept tabs can be unmanaged and old Page labels can be
 absent. Read `task.tabs()`, match the known Page URL, and `task.adopt(tab.page)`
@@ -83,7 +99,8 @@ device chooser, login or verification still belongs to its existing owner.
 If this is an unrelated space, its task identity is unverified, or a current
 user-control reservation remains unresolved, ask about that specific choice.
 
-This continuation guidance grants no new operation, account, publishing,
+This is Agent guidance, not a change to Ego's native ownership checks. It
+grants no new operation, account, publishing,
 installation, paid-execution or permission authority. Keep the upstream
 single-active-space, Page protection, handoff and error rules. Finish exactly
 once per space lifetime; do not finish early while browser work remains.

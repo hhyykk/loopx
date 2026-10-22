@@ -15,6 +15,10 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 #[path = "maintenance_transfer_tests.rs"]
 mod transfer_tests;
 
+#[cfg(test)]
+#[path = "maintenance_check_tests.rs"]
+mod check_tests;
+
 #[derive(Default)]
 pub struct Maintenance {
     busy: AtomicBool,
@@ -64,19 +68,27 @@ impl RuntimeRetry {
     }
 }
 impl Maintenance {
-    fn status_snapshot(&self) -> Value {
+    fn startup_snapshot(&self) -> Value {
         if self.incomplete_app_installation.load(Ordering::Acquire) {
             json!({"phase":"error", "details":{"code":"app_install_incomplete"}})
         } else {
-            let snapshot = self.snapshot.lock().unwrap().clone();
-            if snapshot["phase"] == "ready" && !self.busy.load(Ordering::Acquire) {
-                let background = self.background_update.lock().unwrap();
-                if !background.snapshot.is_null() {
-                    return background.snapshot.clone();
-                }
-            }
-            snapshot
+            self.snapshot.lock().unwrap().clone()
         }
+    }
+
+    fn status_snapshot(&self) -> Value {
+        let snapshot = self.startup_snapshot();
+        if !self.incomplete_app_installation.load(Ordering::Acquire)
+            && !self.busy.load(Ordering::Acquire)
+            && !self.manual_failure_pending.load(Ordering::Acquire)
+            && snapshot["phase"] != "restart_required"
+        {
+            let background = self.background_update.lock().unwrap();
+            if !background.snapshot.is_null() {
+                return background.snapshot.clone();
+            }
+        }
+        snapshot
     }
 
     fn admit_background_update(&self) -> Option<u64> {
@@ -94,6 +106,10 @@ impl Maintenance {
 
     fn cancel_background_update(&self) {
         self.automatic_update_checked.store(true, Ordering::Release);
+        self.supersede_update_observation();
+    }
+
+    fn supersede_update_observation(&self) {
         let mut background = self.background_update.lock().unwrap();
         background.generation += 1;
         background.snapshot = Value::Null;
@@ -150,6 +166,79 @@ impl Maintenance {
             self.publish_background(generation, "error", json!({"code":error,"channel":channel}));
         }
         result
+    }
+
+    async fn run_manual_check<T>(
+        &self,
+        channel: &str,
+        check: impl std::future::Future<Output = Result<Option<T>, String>>,
+        accept: impl FnOnce(Option<T>) -> Value,
+    ) -> Result<Value, String> {
+        let generation = {
+            // Reserve only admission. A read of the feed must not own service
+            // supervision or keep a qualified local workspace from starting.
+            // Wait for an existing install/start without reserving busy; the
+            // cancellation fence is changed only after that owner releases.
+            let _supervision = self.supervision.lock().await;
+            let _reservation = self.acquire()?;
+            allow_action(
+                self.snapshot.lock().unwrap()["phase"]
+                    .as_str()
+                    .unwrap_or("idle"),
+                "check",
+            )?;
+            self.cancel_background_update();
+            self.manual_failure_pending.store(false, Ordering::Release);
+            *self.pending.lock().unwrap() = None;
+            let mut background = self.background_update.lock().unwrap();
+            background.snapshot = json!({"phase":"checking","details":{
+                "channel":channel,"background":true
+            }});
+            background.generation
+        };
+        let result = check.await;
+        let mut background = self.background_update.lock().unwrap();
+        if background.generation != generation {
+            // A newer check or mutation owns the result. In particular a late
+            // feed must not replace the candidate selected by a newer action.
+            drop(background);
+            return Ok(self.status_snapshot());
+        }
+        match result {
+            Ok(update) => {
+                let phase = if update.is_some() {
+                    "available"
+                } else {
+                    "up_to_date"
+                };
+                // Candidate admission and its visible result share the same
+                // cancellation fence. This callback does no IO.
+                let mut details = accept(update);
+                details["background"] = true.into();
+                let value = json!({"phase":phase,"details":details});
+                background.snapshot = value.clone();
+                Ok(value)
+            }
+            Err(error) => {
+                let value = json!({"phase":"error","details":{
+                    "code":error,"channel":channel,"background":true
+                }});
+                *self.last_failure.lock().unwrap() = value.clone();
+                background.snapshot = value;
+                Err(error)
+            }
+        }
+    }
+
+    fn accept_checked_update(
+        &self,
+        channel: &str,
+        current_version: &str,
+        update: Option<Update>,
+    ) -> Value {
+        let details = json!({"channel":channel,"version":update.as_ref().map(|v| &v.version),"current_version":current_version});
+        *self.pending.lock().unwrap() = update.map(|update| (channel.to_owned(), update));
+        details
     }
 
     // Only a completed native replacement/verified restore can retire this
@@ -366,6 +455,28 @@ impl Maintenance {
         }
         Some(recover())
     }
+
+    // The App-update handoff reclaimed this window's services before the
+    // pinned Windows installer could be launched, but the launch failed and
+    // this process survived. The failure snapshot the operator is retrying
+    // from is the state this restore has to preserve, so the transaction
+    // fences that guard ordinary reconciliation do not apply; an admitted
+    // explicit action still owns the next attempt and defers this one.
+    fn restore_services<T>(
+        &self,
+        start: impl FnOnce() -> Result<T, String>,
+    ) -> Result<Option<T>, String> {
+        if self.busy.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let Ok(_guard) = self.supervision.try_lock() else {
+            return Ok(None);
+        };
+        if self.busy.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        Ok(Some(start()?))
+    }
 }
 struct BusyGuard<'a>(&'a AtomicBool);
 impl Drop for BusyGuard<'_> {
@@ -400,6 +511,21 @@ fn check_error(error: tauri_plugin_updater::Error) -> &'static str {
         Error::Reqwest(error) if error.is_decode() => "update_feed_invalid",
         Error::Reqwest(_) => "update_network_failed",
         _ => "update_check_failed",
+    }
+}
+
+fn download_error(error: tauri_plugin_updater::Error) -> &'static str {
+    use tauri_plugin_updater::Error;
+    match error {
+        Error::Reqwest(error) if error.is_timeout() => "update_download_timeout",
+        Error::Reqwest(_) => "update_network_failed",
+        // The pinned updater uses Network for a non-success archive response.
+        // Do not expose its URL/status message or mislabel it as a bad signature.
+        Error::Network(_) => "update_download_failed",
+        Error::Minisign(_) | Error::Base64(_) | Error::SignatureUtf8(_) => {
+            "update_signature_invalid"
+        }
+        _ => "update_download_or_signature_failed",
     }
 }
 // Environment telemetry for the recovery diagnostics: coarse, non-PII facts
@@ -470,26 +596,60 @@ pub fn desktop_update_status(app: AppHandle, state: State<'_, Maintenance>) -> V
     let runtime_selection = json!({
         "explicit": selection.as_ref().is_some_and(|selected| selected.environment_override),
         "remembered": selection.as_ref().is_some_and(|selected| selected.explicit),
-        "bundled_repair_available": selection.is_some()
+        // The App-owned bundled runtime repair is declared unavailable on
+        // Windows in this release by product decision, not because the
+        // platform lacks the mechanism; the Windows desktop keeps using the
+        // separately installed CLI.
+        "bundled_repair_available": cfg!(target_os = "macos")
+            && selection.is_some()
             && bundled_runtime::repair_resources_available(&app)
             && !state.separately_managed_runtime.load(Ordering::Acquire),
     });
     let rollback_available = crate::update_backup::available(&app);
     let app_version = app.package_info().version.to_string();
+    // The panel keeps its channel copy truthful from this projection: Windows
+    // NSIS updates ship on the main preview channel, while the stable channel
+    // and MSI installs keep the manual installer path.
+    let platform = std::env::consts::OS;
     let startup = state.startup_timing();
     // Read mutable transaction state after the potentially blocking
     // diagnostics so this response cannot revive a superseded phase.
     let snapshot = state.status_snapshot();
+    let startup_state = state.startup_snapshot();
     let last_failure = state.last_failure.lock().unwrap().clone();
-    json!({"state": snapshot, "startup": startup, "last_failure": last_failure, "app_version": app_version, "runtime": runtime, "runtime_selection": runtime_selection, "rollback_available": rollback_available, "environment": environment})
+    json!({"state": snapshot, "startup_state": startup_state, "startup": startup, "last_failure": last_failure, "app_version": app_version, "platform": platform, "runtime": runtime, "runtime_selection": runtime_selection, "rollback_available": rollback_available, "environment": environment})
 }
+// The signed App-update journey ships on macOS and Windows; other platforms
+// keep the explicit unsupported error.
+fn app_update_platform_supported() -> bool {
+    cfg!(target_os = "macos") || cfg!(target_os = "windows")
+}
+
+// Action availability on a supported platform: Windows ships the signed
+// App-update journey (check/install/restart and its recovery), while the
+// macOS bundled-runtime repair and verified-backup rollback stay macOS-only.
+// Windows rollback and repair report an explicit unavailable state instead
+// of a half-built install path. The rule is a pure platform/action table so
+// every column stays testable from any host OS.
+fn app_update_action_supported_on(platform: &str, action: &str) -> bool {
+    platform != "windows"
+        || matches!(
+            action,
+            "check" | "apply" | "forget_runtime_selection" | "restart"
+        )
+}
+
+fn app_update_action_supported(action: &str) -> bool {
+    app_update_action_supported_on(std::env::consts::OS, action)
+}
+
 #[tauri::command]
 pub async fn desktop_update(
     app: AppHandle,
     action: String,
     channel: String,
 ) -> Result<Value, String> {
-    if cfg!(dev) || !cfg!(target_os = "macos") {
+    if cfg!(dev) || !app_update_platform_supported() {
         return Err("platform_update_not_supported".into());
     }
     let url = endpoint(&channel)?;
@@ -505,7 +665,27 @@ pub async fn desktop_update(
     ) {
         return Err("invalid_update_action".into());
     }
+    if !app_update_action_supported(&action) {
+        return Err("update_action_platform_unavailable".into());
+    }
     let state = app.state::<Maintenance>();
+    if action == "check" {
+        // Keep the manual feed's existing deadline, independently of local
+        // service startup and the background archive transfer policy.
+        return state
+            .run_manual_check(
+                &channel,
+                find_update(&app, &channel, url, Duration::from_secs(45)),
+                |update| {
+                    state.accept_checked_update(
+                        &channel,
+                        &app.package_info().version.to_string(),
+                        update,
+                    )
+                },
+            )
+            .await;
+    }
     let _guard = state.acquire()?;
     state.cancel_background_update();
     // An explicit action takes priority over the next retry, while awaiting
@@ -524,8 +704,6 @@ pub async fn desktop_update(
         app.restart();
     }
     state.manual_failure_pending.store(false, Ordering::Release);
-    // A user-requested check may cross a slow release-feed redirect. It is
-    // asynchronous and should not inherit the optional startup check's budget.
     let outcome = perform(&app, &action, &channel, url, Duration::from_secs(45)).await;
     if let Err(error) = &outcome {
         state.publish_manual_failure(error, &channel);
@@ -533,8 +711,8 @@ pub async fn desktop_update(
     outcome
 }
 impl Maintenance {
-    // Keep a failed user operation and its retry controls until the next
-    // explicit action. An automatic feed failure still permits startup.
+    // Keep a failed install/recovery operation until the next explicit action.
+    // Feed reads use the independent nonblocking observation instead.
     fn publish_manual_failure(&self, code: &str, channel: &str) -> Value {
         self.manual_failure_pending.store(true, Ordering::Release);
         self.publish_failure(code, channel)
@@ -599,16 +777,21 @@ async fn perform(
         return Ok(state.publish("connecting", json!({})));
     }
     if action == "check" {
+        // The explicit CLI upgrade still checks and replaces the App in its
+        // existing exclusive transaction, before any service can be started.
         state.publish("checking", json!({"channel":channel}));
         *state.pending.lock().unwrap() = None;
         let update = find_update(app, channel, url, check_timeout).await?;
-        let details = json!({"channel":channel,"version":update.as_ref().map(|v| &v.version),"current_version":app.package_info().version.to_string()});
+        // This is the exclusive CLI-upgrade path. Freeze its candidate before
+        // an older nonblocking manual read can overwrite the pending Update.
+        state.supersede_update_observation();
         let phase = if update.is_some() {
             "available"
         } else {
             "up_to_date"
         };
-        *state.pending.lock().unwrap() = update.map(|update| (channel.to_string(), update));
+        let details =
+            state.accept_checked_update(channel, &app.package_info().version.to_string(), update);
         return Ok(state.publish(phase, details));
     }
     if action == "rollback" {
@@ -704,7 +887,7 @@ async fn download_update(
     update
         .download(on_chunk, || {})
         .await
-        .map_err(|_| "update_download_or_signature_failed".into())
+        .map_err(|error| download_error(error).into())
 }
 
 async fn find_update<R: tauri::Runtime>(
@@ -722,6 +905,12 @@ async fn find_update<R: tauri::Runtime>(
     let configure_archive = archive_client.clone();
     let update = app
         .updater_builder()
+        // The pinned Windows installer launches the replacement right after
+        // the pre-exit hook and exits the process when that launch succeeds,
+        // so this is the only chance to reclaim this App's own services; its
+        // owner documents why Tauri's `cleanup_before_exit` deliberately
+        // stays out of the hook.
+        .on_before_exit(crate::service_lifecycle::app_update_pre_exit_hook(app))
         .version_comparator(move |current, remote| {
             crate::prepared_update::is_newer(
                 &current.to_string(),
@@ -772,16 +961,26 @@ async fn install_verified_app(
         .map_err(|_| "app_install_failed".to_string())
         .and_then(|result| result);
     if installed.is_err() {
-        // The pinned macOS installer renames the old App away before moving
-        // the new one in, so a failed install does not by itself prove the
-        // previously installed App is still in place. Only a verified
-        // previous App (bundle intact, a qualified runtime available) may
-        // discard the journal and promise a safe restart; anything else keeps
-        // the journal and surfaces the distinct recovery state so the
-        // verified backup remains the rollback path.
+        // A failed install does not by itself prove the previously installed
+        // App is still in place: the App-owned macOS installer swaps bundles
+        // atomically, but its administrator-owned fallback follows the plugin
+        // installer, which renames the old App away before moving the new one
+        // in. Only a verified previous App (bundle intact, a qualified
+        // runtime available) may discard the journal and promise a safe
+        // restart; anything else keeps the journal and surfaces the distinct
+        // recovery state so the verified backup remains the rollback path.
+        // Windows verifies the running executable instead -- see
+        // failed_install_left_previous_app_usable.
+        // The pinned plugin's Windows hook already reclaimed this window's own
+        // services before it tried to launch the installer; an error here
+        // means the launch failed and this process continues, so the handoff
+        // is released. A reclaimed runtime is then owed back to the live
+        // window by the supervisor, and the failure below stays on screen.
+        crate::service_lifecycle::release_app_update_handoff(app);
         return Err(finalize_install_failure(
             &state,
             failed_install_left_previous_app_usable(app),
+            platform_uses_install_journal(),
             || bundled_runtime::discard_journal(app),
         )
         .into());
@@ -794,6 +993,7 @@ async fn install_verified_app(
     *state.pending.lock().unwrap() = None;
     Ok(state.complete_app_replacement(json!({"version":target})))
 }
+#[cfg(not(target_os = "windows"))]
 // A safe-restart promise after a failed app replacement requires the running
 // App's bundle to still be present -- the pinned macOS updater's install_inner
 // performs rename(old App -> temporary) before rename(new App -> original), so
@@ -824,11 +1024,22 @@ fn failed_install_left_previous_app_usable(app: &AppHandle) -> bool {
     )
 }
 
+#[cfg(target_os = "windows")]
+// The Windows installer only runs after the plugin's ShellExecuteW launch
+// succeeds, and the plugin exits the process at that point; an install error
+// therefore means the installer never launched and the previously installed
+// App was never touched. The running executable still being present is the
+// layout-level guard for the safe-restart promise.
+fn failed_install_left_previous_app_usable(_app: &AppHandle) -> bool {
+    std::env::current_exe().is_ok_and(|executable| executable.is_file())
+}
+
 // Path-level safe-restart predicate shared by the release failure path and
 // tests: the actual installed target (located from the executable, never a
 // caller path) must verify layout AND codesign integrity, and the installed
 // runtime must have a qualified identity. Unverified keeps the
 // journal and the `app_install_incomplete` recovery state.
+#[cfg(not(target_os = "windows"))]
 fn previous_installation_is_usable(
     executable: &std::path::Path,
     bundled: Option<&Value>,
@@ -858,10 +1069,11 @@ fn install_failure_recovery(previous_app_usable: bool) -> (&'static str, bool) {
 // recovery state applies instead.
 fn install_failure_state(
     previous_app_usable: bool,
+    journal_applies: bool,
     journal_discarded: Result<bool, String>,
 ) -> &'static str {
     let (code, may_discard_journal) = install_failure_recovery(previous_app_usable);
-    if !may_discard_journal {
+    if !may_discard_journal || !journal_applies {
         return code;
     }
     match journal_discarded {
@@ -870,12 +1082,22 @@ fn install_failure_state(
     }
 }
 
+// The continuation journal exists only where a staged App replacement can
+// leave one behind (macOS). The Windows installer never starts unless the
+// pinned plugin's launch succeeded, so a journal filesystem error there
+// cannot describe the installed App and must not reclassify a verified safe
+// restart.
+fn platform_uses_install_journal() -> bool {
+    cfg!(target_os = "macos")
+}
+
 // Own the complete install-failure decision at one testable boundary. The
 // public diagnostic reports whether this call removed a file; safe restart is
 // a separate invariant and also accepts an already-absent journal.
 fn finalize_install_failure(
     state: &Maintenance,
     previous_app_usable: bool,
+    journal_applies: bool,
     discard_journal: impl FnOnce() -> Result<bool, String>,
 ) -> &'static str {
     let (code, may_discard_journal) = install_failure_recovery(previous_app_usable);
@@ -885,12 +1107,18 @@ fn finalize_install_failure(
             .store(true, Ordering::Release);
         return code;
     }
-    let journal_result = discard_journal();
+    // A platform without the staged-replacement journal must not attempt the
+    // effect at all; the classification below already ignores it.
+    let journal_result = if journal_applies {
+        discard_journal()
+    } else {
+        Ok(false)
+    };
     let journal_removed = journal_result.as_ref().is_ok_and(|removed| *removed);
     state
         .install_journal_discarded
         .store(journal_removed, Ordering::Release);
-    let code = install_failure_state(previous_app_usable, journal_result);
+    let code = install_failure_state(previous_app_usable, journal_applies, journal_result);
     state
         .incomplete_app_installation
         .store(code == "app_install_incomplete", Ordering::Release);
@@ -1044,7 +1272,7 @@ fn resume_runtime(app: &AppHandle) -> Result<crate::services::SelectedRuntime, S
 fn automatic_app_update(app: &AppHandle) {
     let state = app.state::<Maintenance>();
     if cfg!(dev)
-        || !cfg!(target_os = "macos")
+        || !app_update_platform_supported()
         || app.config().identifier != "io.loopx.control-plane"
     {
         return;
@@ -1066,6 +1294,7 @@ fn automatic_app_update(app: &AppHandle) {
         // happens before any App-owned service exists, never during a Turn.
         #[cfg(target_os = "macos")]
         {
+            let state = &*state;
             let result = tauri::async_runtime::block_on(state.run_automatic_update(
                 channel,
                 async {
@@ -1077,6 +1306,7 @@ fn automatic_app_update(app: &AppHandle) {
                     )
                 },
                 |prepared| async move {
+                    state.supersede_update_observation();
                     let target = prepared.version;
                     let version = target.clone();
                     install_verified_app(app, target, move || {
@@ -1089,6 +1319,33 @@ fn automatic_app_update(app: &AppHandle) {
             ));
             if let Err(error) = result {
                 eprintln!("LoopX prepared App update deferred: {error}");
+            }
+        }
+        // Windows has no staged-replacement archive to consume: the pinned
+        // plugin installs only from a checked feed, so an ordinary launch
+        // performs the bounded check and applies the verified installer
+        // before any App-owned service exists. A failed check or launch
+        // leaves the installed App usable and keeps its diagnostics.
+        #[cfg(target_os = "windows")]
+        {
+            let result: Result<Option<()>, String> =
+                tauri::async_runtime::block_on(state.run_automatic_update(
+                    channel,
+                    async {
+                        let url = endpoint(channel)?;
+                        let checked =
+                            perform(app, "check", channel, url.clone(), Duration::from_secs(3))
+                                .await?;
+                        Ok((checked["phase"] == "available").then_some(url))
+                    },
+                    |url| async move {
+                        perform(app, "apply", channel, url, Duration::from_secs(3)).await?;
+                        Ok(())
+                    },
+                    || app.restart(),
+                ));
+            if let Err(error) = result {
+                eprintln!("LoopX automatic App update deferred: {error}");
             }
         }
         return;
@@ -1245,6 +1502,24 @@ pub fn start_services(
     result
 }
 
+// Restore the runtime a released App-update handoff owes back. The pinned
+// Windows installer returns an error only when its launch never happened, so
+// the same runtime is started again in place: no phase is re-announced, and
+// the failure snapshot keeps its place on screen.
+pub fn restore_services_after_update_failure(
+    app: &AppHandle,
+    endpoints: &crate::service_endpoints::ServiceEndpoints,
+) -> Result<Option<crate::services::ServiceSet>, String> {
+    let state = app.state::<Maintenance>();
+    state.restore_services(|| {
+        // Progress would replace the failure snapshot with "connecting"; this
+        // start exists only to hand the live window its runtime back.
+        let runtime = resume_runtime(app)?;
+        crate::services::ServiceSet::start(&runtime, endpoints, |_pending| {})
+            .map_err(|error| error.to_string())
+    })
+}
+
 pub fn reconnect_requested(app: &AppHandle) -> bool {
     app.state::<Maintenance>().snapshot.lock().unwrap()["phase"] == "connecting"
 }
@@ -1265,7 +1540,6 @@ pub fn recover_services(
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn completed_manual_choice_prevents_a_delayed_background_start() {
         let state = std::sync::Arc::new(Maintenance::default());
@@ -1633,13 +1907,14 @@ mod tests {
             state
                 .prepared_update_checked
                 .store(prepared, Ordering::Release);
-            let code = finalize_install_failure(&state, usable, || {
-                if discard_ok {
-                    Ok(true)
-                } else {
-                    Err("update_state_unavailable".into())
-                }
-            });
+            let code =
+                finalize_install_failure(&state, usable, platform_uses_install_journal(), || {
+                    if discard_ok {
+                        Ok(true)
+                    } else {
+                        Err("update_state_unavailable".into())
+                    }
+                });
             let result = tauri::async_runtime::block_on(state.run_automatic_update(
                 "stable",
                 async { Err::<Option<()>, String>(code.into()) },
@@ -1648,11 +1923,11 @@ mod tests {
             ));
             assert_eq!(result.unwrap_err(), code);
             assert_eq!(state.last_failure.lock().unwrap()["details"]["code"], code);
-            if usable && discard_ok && prepared {
+            if usable && prepared && (discard_ok || !platform_uses_install_journal()) {
                 assert_eq!(state.status_snapshot()["phase"], "connecting");
                 assert_eq!(
                     state.last_failure.lock().unwrap()["details"]["journal_discarded"],
-                    true
+                    platform_uses_install_journal()
                 );
                 assert_eq!(state.reconcile_services(|| Ok(())).unwrap(), Some(()));
             } else {
@@ -1918,6 +2193,29 @@ mod tests {
         }
         assert!(allow_action("restart_required", "restart").is_ok());
     }
+
+    #[test]
+    fn windows_keeps_the_signed_app_update_journey_without_macos_recovery_actions() {
+        for platform in ["macos", "windows"] {
+            for action in ["check", "apply", "forget_runtime_selection", "restart"] {
+                assert!(
+                    app_update_action_supported_on(platform, action),
+                    "{platform} {action}"
+                );
+            }
+        }
+        for action in ["repair", "align_runtime", "rollback"] {
+            assert!(
+                app_update_action_supported_on("macos", action),
+                "macos keeps {action}"
+            );
+            assert!(
+                !app_update_action_supported_on("windows", action),
+                "windows reports {action} as explicitly unavailable"
+            );
+        }
+        assert!(app_update_action_supported("check"));
+    }
     #[test]
     fn endpoints_are_closed_and_https() {
         assert_eq!(endpoint("main").unwrap().scheme(), "https");
@@ -2126,7 +2424,9 @@ mod tests {
     #[test]
     fn completed_restore_retires_incomplete_installation_and_exposes_restart() {
         let state = Maintenance::default();
-        finalize_install_failure(&state, false, || panic!("unverified journal retained"));
+        finalize_install_failure(&state, false, platform_uses_install_journal(), || {
+            panic!("unverified journal retained")
+        });
         assert_eq!(
             state.status_snapshot()["details"]["code"],
             "app_install_incomplete"
@@ -2216,6 +2516,47 @@ mod tests {
             install_failure_recovery(false),
             ("app_install_incomplete", false)
         );
+    }
+
+    #[test]
+    fn a_released_handoff_restores_the_runtime_without_overwriting_the_failure() {
+        // The pinned Windows installer only exits this process after a
+        // successful launch, so an install error returns in-process with the
+        // handoff already released. The reclaimed runtime comes back while the
+        // failure the operator is acting on stays the visible state.
+        let state = Maintenance::default();
+        state.publish_failure("app_install_failed", "main");
+        let started = std::cell::Cell::new(false);
+        let restored = state.restore_services(|| {
+            started.set(true);
+            Ok("owned services")
+        });
+        assert_eq!(restored.unwrap(), Some("owned services"));
+        assert!(started.get());
+        assert_eq!(
+            state.status_snapshot()["phase"],
+            "error",
+            "the restore must not replace the failure snapshot"
+        );
+        assert_eq!(
+            state.status_snapshot()["details"]["code"],
+            "app_install_failed"
+        );
+    }
+
+    #[test]
+    fn a_restore_yields_to_an_admitted_explicit_action() {
+        let state = Maintenance::default();
+        let guard = state.acquire().unwrap();
+        let started = std::cell::Cell::new(false);
+        let deferred = state.restore_services(|| {
+            started.set(true);
+            Ok(())
+        });
+        assert_eq!(deferred.unwrap(), None);
+        assert!(!started.get(), "a running transaction owns the runtime");
+        drop(guard);
+        assert_eq!(state.restore_services(|| Ok(())).unwrap(), Some(()));
     }
 
     #[test]
@@ -2316,7 +2657,41 @@ mod tests {
 
 #[cfg(test)]
 mod install_failure_state_tests {
-    use super::{finalize_install_failure, Maintenance};
+    use super::{
+        finalize_install_failure, install_failure_state, platform_uses_install_journal, Maintenance,
+    };
+
+    #[test]
+    fn a_journal_error_only_reclassifies_where_the_journal_exists() {
+        assert_eq!(
+            install_failure_state(true, true, Err("journal_unavailable".into())),
+            "app_install_incomplete"
+        );
+        assert_eq!(
+            install_failure_state(true, false, Err("journal_unavailable".into())),
+            "app_install_failed"
+        );
+        assert_eq!(
+            install_failure_state(true, true, Ok(true)),
+            "app_install_failed"
+        );
+        assert_eq!(
+            install_failure_state(false, true, Ok(true)),
+            "app_install_incomplete"
+        );
+    }
+
+    #[test]
+    fn a_journal_that_does_not_apply_is_neither_touched_nor_reclassified() {
+        let state = Maintenance::default();
+        let code = finalize_install_failure(&state, true, false, || {
+            panic!("a platform without the staged-replacement journal must not touch it")
+        });
+        assert_eq!(code, "app_install_failed");
+        assert!(!state
+            .incomplete_app_installation
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
 
     #[test]
     fn existing_journal_is_removed_before_safe_restart_is_reported() {
@@ -2325,7 +2700,7 @@ mod install_failure_state_tests {
         let journal = dir.path().join("desktop-update.json");
         std::fs::write(&journal, "{\"version\":\"1.2.3\"}").unwrap();
 
-        let code = finalize_install_failure(&state, true, || {
+        let code = finalize_install_failure(&state, true, true, || {
             crate::bundled_runtime::discard_journal_at(&journal)
         });
 
@@ -2341,7 +2716,7 @@ mod install_failure_state_tests {
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("desktop-update.json");
 
-        let code = finalize_install_failure(&state, true, || {
+        let code = finalize_install_failure(&state, true, true, || {
             crate::bundled_runtime::discard_journal_at(&journal)
         });
 
@@ -2358,7 +2733,7 @@ mod install_failure_state_tests {
         let journal = dir.path().join("desktop-update.json");
         std::fs::create_dir(&journal).unwrap();
 
-        let code = finalize_install_failure(&state, true, || {
+        let code = finalize_install_failure(&state, true, true, || {
             crate::bundled_runtime::discard_journal_at(&journal)
         });
 
@@ -2384,7 +2759,7 @@ mod install_failure_state_tests {
     #[test]
     fn unusable_app_keeps_recovery_state_without_touching_the_journal() {
         let state = Maintenance::default();
-        let code = finalize_install_failure(&state, false, || {
+        let code = finalize_install_failure(&state, false, platform_uses_install_journal(), || {
             panic!("an unusable App must not discard recovery state")
         });
         assert_eq!(code, "app_install_incomplete");

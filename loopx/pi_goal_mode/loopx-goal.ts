@@ -41,6 +41,7 @@ import {
   createEphemeralSessionIdentity,
   createGoalLoop,
   hasAbortedAssistantMessage,
+  piThreadId,
   sessionKey,
 } from "./pi-goal-loop-runtime.mjs";
 
@@ -352,6 +353,7 @@ export default function (pi: ExtensionAPI) {
     // floating while the guided start packet renders its own summary.
     ctx.ui.setWidget("loopx", undefined);
     try {
+      const threadId = piThreadId(ctx.sessionManager.getSessionFile());
       const stdout = await runLoopxCli(
         [
           "--format",
@@ -364,6 +366,7 @@ export default function (pi: ExtensionAPI) {
           trimmed,
           "--host-surface",
           "pi",
+          ...(threadId ? ["--thread-id", threadId] : []),
           "--available-capability",
           TASK_LEASE_CAPABILITY,
         ],

@@ -36,7 +36,8 @@ def _owner(operation: str, request: dict) -> dict:
 
 
 def _safe_path(root: Path, relative: str) -> Path:
-    if root.is_symlink(): raise ValueError("Composition directory must not be a symlink")
+    if root.is_symlink():
+        raise ValueError("Composition directory must not be a symlink")
     parts = Path(relative).parts
     if not parts or Path(relative).is_absolute() or any(p in {"..", "."} for p in parts):
         raise ValueError("File is outside the selected composition scope")
@@ -81,9 +82,9 @@ class MediaWorkspace:
         self.root = _safe_path(self.project, f".local/content-media/{scope}")
         self.runtime_root = runtime_root
 
-    def binding(self):
+    def binding(self, *, permission: str = "content_media_write"):
         return resolve_optional_capability_binding(state_file=default_extension_state_file(self.runtime_root),
-            capability_id="content-ops", protocol=PROTOCOL, permission="content_media_write", extension_id="loopx-media")
+            capability_id="content-ops", protocol=PROTOCOL, permission=permission, extension_id="loopx-media")
 
     def _bundle(self, composition_id: str) -> Path:
         if not isinstance(composition_id, str) or not re.fullmatch(r"media_[a-f0-9]{24}", composition_id):
@@ -92,6 +93,36 @@ class MediaWorkspace:
 
     def _record(self, composition_id: str) -> dict:
         return _read(_safe_path(self._bundle(composition_id), "record.json"))
+
+    def snapshot_sources(self, bundle: Path, assets: list[dict], source_directory: Path, *, key: str = "id", max_each: int = MAX_ASSET_BYTES) -> dict:
+        """Immutable bytes shared by local composition and explicit cloud frames."""
+        source_root = source_directory.expanduser().resolve(strict=True)
+        if not source_root.is_dir():
+            raise ValueError("Choose an explicit source directory")
+        snapshots, total = {}, 0
+        inputs = _safe_path(bundle, "sources")
+        inputs.mkdir(mode=0o700, exist_ok=True)
+        for asset in assets:
+            original = _safe_path(source_root, asset["path"])
+            descriptor = os.open(original, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as source:
+                info = os.fstat(source.fileno())
+                total += info.st_size
+                if not stat.S_ISREG(info.st_mode) or info.st_size > max_each or total > 128 * 1024 * 1024:
+                    raise ValueError("Sources exceed the local composition budget")
+                content = source.read(max_each + 1)
+                if len(content) != info.st_size or hashlib.sha256(content).hexdigest() != asset["sha256"]:
+                    raise ValueError("Source bytes changed; check the source digest before preparing")
+            path = _safe_path(inputs, asset["sha256"])
+            if path.exists():
+                if _sha(path) != asset["sha256"]:
+                    raise ValueError("Source snapshot is damaged")
+            else:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as output:
+                    output.write(content)
+            snapshots[asset[key]] = str(path)
+        return snapshots
 
     def prepare(self, plan: dict, *, source_directory: Path, composition_id: str | None = None, expected_revision: int | None = None) -> dict:
         validated = _owner("plan", {"plan": plan})
@@ -104,30 +135,7 @@ class MediaWorkspace:
                 raise ValueError("Inspect the current revision before changing this composition")
             if previous and previous["plan_digest"] == validated["plan_digest"]:
                 return self.inspect(composition_id)
-            source_root = source_directory.expanduser().resolve(strict=True)
-            if not source_root.is_dir():
-                raise ValueError("Choose an explicit source directory")
-            snapshots, total = {}, 0
-            inputs = _safe_path(bundle, "sources")
-            inputs.mkdir(mode=0o700, exist_ok=True)
-            for asset in validated["plan"]["assets"]:
-                original = _safe_path(source_root, asset["path"])
-                descriptor = os.open(original, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-                with os.fdopen(descriptor, "rb") as source:
-                    info = os.fstat(source.fileno())
-                    total += info.st_size
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ASSET_BYTES or total > 128 * 1024 * 1024:
-                        raise ValueError("Sources exceed the local composition budget")
-                    content = source.read(MAX_ASSET_BYTES + 1)
-                    if len(content) != info.st_size or hashlib.sha256(content).hexdigest() != asset["sha256"]:
-                        raise ValueError("Source bytes changed; check the source digest before preparing")
-                path = _safe_path(inputs, asset["sha256"])
-                if path.exists():
-                    if _sha(path) != asset["sha256"]: raise ValueError("Source snapshot is damaged")
-                else:
-                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                    with os.fdopen(fd, "wb") as output: output.write(content)
-                snapshots[asset["id"]] = str(path)
+            snapshots = self.snapshot_sources(bundle, validated["plan"]["assets"], source_directory)
             item = previous["item"] if previous else build_content_ops_item(
                 item_id=composition_id, item_kind="post", channel="local-media", content_digest=validated["plan_digest"],
                 content_ref=f"content-media:{composition_id}", source_refs=[f"source:{a['sha256']}" for a in validated["plan"]["assets"]], created_at=now())
@@ -148,23 +156,26 @@ class MediaWorkspace:
         status = record["status"]
         if status == "rendering":
             age = (datetime.now(timezone.utc) - datetime.fromisoformat(record["updated_at"])).total_seconds()
-            if age > 150: status = "interrupted"
+            if age > 150:
+                status = "interrupted"
         result = record.get("result")
         if result:
             for name, entry in result["files"].items():
                 path = _safe_path(self._bundle(composition_id), f"{record['attempt']}/{name}")
                 if not path.is_file() or _sha(path) != entry["sha256"]:
-                    status = "damaged"; break
+                    status = "damaged"
+                    break
         return {"ok": True, "composition_id": composition_id, "revision": record["revision"], "status": status,
                 "title": record["plan"]["title"], "duration_seconds": record["duration_seconds"],
-                "plan_digest": record["plan_digest"], "shots": [{k: shot[k] for k in ("title", "seconds", "kind", "boundary", "source_ref")} for shot in record["plan"]["shots"]],
+                "plan_digest": record["plan_digest"], "shots": [{k: shot[k] for k in ("title", "seconds", "kind", "boundary", "source_ref", "framing") if k in shot} for shot in record["plan"]["shots"]],
                 "updated_at": record["updated_at"], "result": result, "item_state": record["item"]["state"],
                 "error_code": record.get("error_code"), "provider": self.binding().public_readiness(),
                 "visibility": "local_private", "publish_authorized": False}
 
     def list(self) -> dict:
         paths = sorted(self.root.glob("media_*/record.json"), key=lambda path: path.stat().st_mtime, reverse=True) if self.root.exists() else []
-        if len(paths) > 100: paths = paths[:100]
+        if len(paths) > 100:
+            paths = paths[:100]
         return {"ok": True, "compositions": [self.inspect(path.parent.name) for path in paths],
                 "provider": self.binding().public_readiness(), "visibility": "local_private"}
 
@@ -207,11 +218,13 @@ class MediaWorkspace:
         bundle = self._bundle(composition_id)
         with exclusive_file_lock(bundle / "render", operation="content-media-render", timeout_seconds=1):
             record = self._record(composition_id)
-            if record["attempt"] != attempt or record["status"] != "rendering": return
+            if record["attempt"] != attempt or record["status"] != "rendering":
+                return
             cancel = _safe_path(bundle, f"{attempt}.cancel")
             try:
                 binding = self.binding()
-                if binding.binding is None: raise ValueError("Provider unavailable")
+                if binding.binding is None:
+                    raise ValueError("Provider unavailable")
                 checked = _owner("plan", {"plan": record["plan"]})
                 result = execute_extension_runtime_binding(binding.binding, request={"protocol": PROTOCOL,
                     "plan": record["plan"], "layout_style": checked["layout_style"],
@@ -219,9 +232,11 @@ class MediaWorkspace:
                     "sources": record["sources"], "attempt_directory": str(_safe_path(bundle, attempt)), "cancel_file": str(cancel)})
                 spatial = [{"id": shot["id"], "frames": round(shot["seconds"] * record["plan"]["fps"])}
                            for shot in record["plan"]["shots"] if shot["kind"] == "blender"]
+                full_frame = [shot["id"] for shot in record["plan"]["shots"] if shot.get("framing") == "full_frame"]
                 result = _owner("result", {"result": result, "plan_digest": record["plan_digest"],
                     "frame_count": record["frame_count"], "narration_mode": record["plan"]["narration"]["mode"],
                     **({"blender_shots": spatial} if spatial else {}),
+                    **({"full_frame_shots": full_frame} if full_frame else {}),
                     **{k: record["plan"][k] for k in ("width", "height", "fps")}})
                 required = {"video.mp4", "poster.png", "captions.vtt", "captions.srt", "transcript.txt"}
                 if not required <= set(result["files"]) or set(result["files"]) - RESULT_FILES:
@@ -260,11 +275,18 @@ class MediaWorkspace:
         path.touch(mode=0o600, exist_ok=True)
         return {"ok": True, "status": "cancellation_requested", "composition_id": composition_id}
 
-    def file(self, composition_id: str, name: str) -> Path:
-        if name not in RESULT_FILES: raise ValueError("Unsupported result file")
+    def file(self, composition_id: str, name: str, *, expected_revision: int | None = None) -> Path:
+        if name not in RESULT_FILES:
+            raise ValueError("Unsupported result file")
         record = self._record(composition_id)
-        if record["status"] != "ready" or self.inspect(composition_id)["status"] != "ready":
+        observed = self.inspect(composition_id)
+        if expected_revision is not None and (type(expected_revision) is not int
+                or expected_revision != record["revision"] or expected_revision != observed["revision"]):
+            raise ValueError("Artifact revision changed")
+        if record["status"] != "ready" or observed["status"] != "ready":
             raise ValueError("A verified result is not available")
-        if name == "manifest.json": raise ValueError("Use the path-free result projection")
-        if name not in record["result"]["files"]: raise ValueError("Result file is not available")
+        if name == "manifest.json":
+            raise ValueError("Use the path-free result projection")
+        if name not in record["result"]["files"]:
+            raise ValueError("Result file is not available")
         return _safe_path(self._bundle(composition_id), f"{record['attempt']}/{name}")

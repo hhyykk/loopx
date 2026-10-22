@@ -25,7 +25,7 @@ const directorySchema = z.object({
   contract: directoryContractSchema.optional(),
 });
 export type WorkspaceDirectory = z.infer<typeof directorySchema>;
-export type WorkspaceLoadError = "timeout" | "network" | "service" | "source" | "access" | "revision" | "scope" | "invalid";
+export type WorkspaceLoadError = "timeout" | "network" | "service" | "source" | "access" | "authority" | "revision" | "scope" | "invalid";
 export type WorkspaceReadScope = "all" | "missing";
 export type WorkspaceProgress = {
   directory: WorkspaceDirectory;
@@ -124,7 +124,7 @@ export function directoryStatusPayload(directory: WorkspaceDirectory): StatusPay
   });
 }
 
-async function statusFailure(response: Response, signal: AbortSignal): Promise<"access" | "source" | "service"> {
+async function statusFailure(response: Response, signal: AbortSignal): Promise<"access" | "source" | "authority" | "service"> {
   if (!response.body) return "service";
   const reader = response.body.getReader();
   const cancel = () => { void reader.cancel().catch(() => {}); };
@@ -147,6 +147,7 @@ async function statusFailure(response: Response, signal: AbortSignal): Promise<"
       && "error_code" in payload) {
       if (payload.error_code === "workspace_status_access_denied") return "access";
       if (payload.error_code === "goal_source_unavailable") return "source";
+      if (payload.error_code === "canonical_authority_required") return "authority";
     }
     return "service";
   } catch {

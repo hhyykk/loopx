@@ -62,6 +62,35 @@ def test_startup_permission_denial_is_not_retried(tmp_path: Path, monkeypatch) -
     assert calls == ["startup"]
 
 
+def test_recovery_permission_denial_does_not_cold_start(tmp_path: Path, monkeypatch) -> None:
+    locator = tmp_path / "locator.json"
+    fingerprint = "fixture"
+    locator.write_text(json.dumps({
+        "schema_version": "loopx_effect_runtime_info_v1",
+        "fingerprint": fingerprint,
+        "host": "127.0.0.1",
+        "port": 1,
+        "token": "private-token",
+        "pid": os.getpid(),
+    }))
+    monkeypatch.setattr(
+        effect_runtime, "_runtime_fingerprint_for_request", lambda: fingerprint,
+    )
+    monkeypatch.setattr(effect_runtime, "_runtime_info_path", lambda _: locator)
+    monkeypatch.setattr(
+        effect_runtime, "_start_runtime", lambda **_: pytest.fail("must not cold start"),
+    )
+    denial = effect_runtime.EffectRuntimeHostPermissionError()
+
+    def denied(*_args, **_kwargs):
+        raise denial
+
+    monkeypatch.setattr(effect_runtime, "_request_with_info", denied)
+    with pytest.raises(effect_runtime.EffectRuntimeHostPermissionError) as raised:
+        effect_runtime.effect_runtime_request("runtime.ping", {})
+    assert raised.value is denial
+
+
 def test_process_launch_permission_denial_preserves_type_and_releases_lock(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -253,6 +282,8 @@ def test_readiness_preserves_locator_permission_diagnostic_and_recovery(
     monkeypatch.setattr(Path, "read_text", read)
     result = effect_runtime.collect_effect_runtime_readiness(deep=deep)
     assert result["ready"] is False
+    assert result["runtime_lifecycle"]["locator_state"] == "invalid"
+    assert result["runtime_lifecycle"]["recorded_pid_alive"] is None
     assert result["runtime_lifecycle"]["diagnostic_code"] == "runtime_host_permission_denied"
     assert "host-approved" in result["recommended_action"]
     assert "private locator details" not in json.dumps(result)

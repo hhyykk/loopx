@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -38,10 +40,25 @@ def shell_arg(value: str) -> str:
     return shlex.quote(value)
 
 
+_SHELL_SAFE_ARGUMENT = re.compile(r"^[A-Za-z0-9_./-]+$")
+
+
+def _is_windows_host() -> bool:
+    return os.name == "nt"
+
+
+def shell_arg_for_host(value: str) -> str:
+    """Quote one argument for the shell that will run the generated command."""
+
+    if _is_windows_host() and not _SHELL_SAFE_ARGUMENT.fullmatch(value):
+        return "'" + value.replace("'", "''") + "'"
+    return shell_arg(value)
+
+
 def render_optional_cli_arg(flag: str, value: str | None) -> str:
     if not value:
         return ""
-    return f" {flag} {shell_arg(value)}"
+    return f" {flag} {shell_arg_for_host(value)}"
 
 
 def render_cli_command_prefix(
@@ -50,11 +67,11 @@ def render_cli_command_prefix(
     runtime_root: str | Path | None = None,
     registry_path: str | Path | None = None,
 ) -> str:
-    prefix = shell_arg(cli_bin)
+    prefix = shell_arg_for_host(cli_bin)
     if runtime_root is not None:
-        prefix += f" --runtime-root {shell_arg(str(runtime_root))}"
+        prefix += f" --runtime-root {shell_arg_for_host(str(runtime_root))}"
     if registry_path is not None:
-        prefix += f" --registry {shell_arg(str(registry_path))}"
+        prefix += f" --registry {shell_arg_for_host(str(registry_path))}"
     return prefix
 
 
@@ -75,21 +92,22 @@ def render_goal_start_bootstrap_command(
     display_name: str | None = None,
 ) -> str:
     objective = goal_text or "<exact /loopx goal text>"
-    lines = [
-        f"cd {shell_arg(project)}",
-        f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=runtime_root)} bootstrap \\",
-        "  --project . \\",
-        f"  --goal-id {shell_arg(goal_id)} \\",
-        f"  --objective {shell_arg(objective)} \\",
-        f"  --adapter-kind {shell_arg(DEFAULT_HANDOFF_ADAPTER_KIND)} \\",
-        f"  --adapter-status {shell_arg(DEFAULT_HANDOFF_ADAPTER_STATUS)}",
-    ]
+    command = (
+        f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=runtime_root)}"
+        " bootstrap"
+        " --project ."
+        f" --goal-id {shell_arg_for_host(goal_id)}"
+        f" --objective {shell_arg_for_host(objective)}"
+        f" --adapter-kind {shell_arg_for_host(DEFAULT_HANDOFF_ADAPTER_KIND)}"
+    )
     if display_name:
-        lines.insert(-1, f"  --display-name {shell_arg(display_name)} \\")
+        command += f" --display-name {shell_arg_for_host(display_name)}"
+    command += (
+        f" --adapter-status {shell_arg_for_host(DEFAULT_HANDOFF_ADAPTER_STATUS)}"
+    )
     if fine_grained:
-        lines[-1] += " \\"
-        lines.append("  --fine-grained")
-    return "\n".join(lines)
+        command += " --fine-grained"
+    return "\n".join([f"cd {shell_arg_for_host(project)}", command])
 
 
 def render_register_agent_command(
@@ -101,8 +119,8 @@ def render_register_agent_command(
 ) -> str:
     return (
         f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=runtime_root)} "
-        f"register-agent --goal-id {shell_arg(goal_id)} "
-        f"--agent-id {shell_arg(agent_id)} --require-new"
+        f"register-agent --goal-id {shell_arg_for_host(goal_id)} "
+        f"--agent-id {shell_arg_for_host(agent_id)} --require-new"
     )
 
 
@@ -115,7 +133,7 @@ def shell_arg_or_placeholder(value: str) -> str:
 
 def render_available_capability_args(values: Any) -> str:
     return "".join(
-        f" --available-capability {shell_arg(capability)}"
+        f" --available-capability {shell_arg_for_host(capability)}"
         for capability in normalize_required_capabilities(values)
     )
 

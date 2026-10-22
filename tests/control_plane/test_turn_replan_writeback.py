@@ -58,6 +58,10 @@ def _fixture(tmp_path, monkeypatch, provider):
 
 
 def _runner(root, candidate, *, follow=False):
+    # Exercise semantic writeback after the existing execution-profile evidence
+    # gate; the independent command below checks these actual Host artifacts.
+    candidate = {**candidate, "work_evidence": ["artifact:answer.txt" if follow else "artifact:plan.json"],
+                 "validation_evidence": ["check:independent-command"]}
     runner = root / ("follow.py" if follow else "host.py")
     runner.write_text(
         "import json\nfrom pathlib import Path\n"
@@ -90,7 +94,7 @@ def _run_turn(project, runtime, registry, runner, *, turn=None, resume=None, fol
         "--project", str(project), "--dsh-runner", str(runner),
         "--dsh-home", str(project.parent / "dsh-home"),
         "--validation-command-json", json.dumps([sys.executable, "-c", validator]),
-        "--scan-root", str(project), "--no-global-sync", "--execute",
+         "--no-global-sync", "--execute",
         *(["--turn-instance-id", turn] if turn else []),
         *(["--resume-turn-key", resume] if resume else []), cwd=project)
 

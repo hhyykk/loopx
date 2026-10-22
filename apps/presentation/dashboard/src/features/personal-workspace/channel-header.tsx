@@ -6,6 +6,7 @@ import type { ManagerChannelBinding, ManagerRuntimeSessionReadback } from "../..
 import type { WorkspaceAgentOption, WorkspaceGoal, WorkspaceGoalTab } from "./personal-workspace-model";
 import { WorkspaceSelect } from "./workspace-select";
 import { ChatModelMenu } from "./chat-model-menu";
+import type {ReactNode} from "react";
 
 export function ChannelHeader({
   agents,
@@ -44,6 +45,9 @@ export function ChannelHeader({
   scopeUnavailable = false,
   workspaceGrantLabel,
   originalConversationTitle,
+  requestInventory,
+  researchControl,
+  composerVisible = true,
 }: {
   agents: WorkspaceAgentOption[];
   agentWorkActive?: boolean;
@@ -53,6 +57,9 @@ export function ChannelHeader({
   /** Set while the steward conversation is scoped to a workspace. */
   workspaceGrantLabel?: string | null;
   originalConversationTitle?: string;
+  requestInventory?: ReactNode;
+  researchControl?: ReactNode;
+  composerVisible?: boolean;
   managerChannelBinding?: ManagerChannelBinding | null;
   managerChatOpen?: boolean;
   managerRuntime?: ManagerRuntimeSessionReadback | null;
@@ -161,7 +168,7 @@ export function ChannelHeader({
 
   const runtimeControl = scopeUnavailable || agentWorkActive ? null : readOnlySourceLabel ? (
     <span className="personal-read-only-source" title={t("header.readOnlySourceDescription", { source: readOnlySourceLabel })}><Eye size={15} />{selectedGoal?.title === readOnlySourceLabel ? null : readOnlySourceLabel}<small>{t("common.readOnly")}</small></span>
-  ) : <>
+  ) : selectedGoal && !composerVisible ? null : <>
     {ordinaryConversation ? <WorkspaceSelect
             ariaLabel={t("header.selectChatRuntime")}
             className="personal-agent-select"
@@ -279,9 +286,11 @@ export function ChannelHeader({
         <nav aria-label={t("header.goalView")} className="personal-goal-tabs">
           <button aria-current={selectedGoalTab === "overview" ? "page" : undefined} onClick={() => onSelectGoalTab("overview")} type="button">{t("header.overview")}</button>
           <button aria-current={selectedGoalTab === "tasks" ? "page" : undefined} onClick={() => onSelectGoalTab("tasks")} type="button">{t("header.tasks")}</button>
+          <button aria-current={selectedGoalTab === "research" ? "page" : undefined} onClick={() => onSelectGoalTab("research")} type="button">{t("header.research")}</button>
           <button aria-current={selectedGoalTab === "chat" ? "page" : undefined} onClick={() => onSelectGoalTab("chat")} type="button">{t("header.chat")}</button>
           <button aria-current={selectedGoalTab === "files" ? "page" : undefined} onClick={() => onSelectGoalTab("files")} type="button">{t("header.files")}</button>
         </nav>
+        {researchControl}
         {runtimeControl}
         </div>
       ) : !scopeUnavailable ? (
@@ -291,6 +300,7 @@ export function ChannelHeader({
         </nav>
       ) : null}
       <div className="personal-channel-actions">
+        {requestInventory}
         {selectedGoal && onOpenAllWork ? <button type="button" className="personal-icon-button goal-all-work-trigger" aria-label={locale === "zh-CN" ? "打开全部工作" : "Open all work"} aria-expanded={allWorkOpen} aria-haspopup="dialog" onClick={onOpenAllWork}><List size={17} aria-hidden/></button> : null}
         {selectedGoal && !selectedGoal.loadState && onRequestGoalLifecycle ? (
           <GoalLifecycleControl busy={goalLifecycleBusy ?? false} goal={selectedGoal} onRequest={onRequestGoalLifecycle} resumeReviewed={resumeReviewed ?? true} />

@@ -7,7 +7,7 @@ import {
 import {TeamArtifactReport, managedReportArtifact} from "./team-artifact-content";
 
 /** Goal-scoped local reports; an inventory row never stands in for exact acceptance readback. */
-export function GoalManagedResults({goalId, zh}: {goalId: string; zh: boolean}) {
+export function GoalManagedResults({goalId, zh, hideEmpty = false}: {goalId: string; zh: boolean; hideEmpty?: boolean}) {
   const [page, setPage] = useState<ManagedGoalResultPage | null>(null);
   const [selected, setSelected] = useState<{row: ManagedGoalResultRow; read: ManagedGoalResultRead} | null>(null);
   const [busy, setBusy] = useState(false);
@@ -80,6 +80,7 @@ export function GoalManagedResults({goalId, zh}: {goalId: string; zh: boolean}) 
 
   const artifact = selected ? managedReportArtifact(
     selected.row.content_type, selected.row.sha256, selected.read.text) : null;
+  if (hideEmpty && page && !busy && !error && !page.items.length && !page.unavailable_count && !page.next_cursor) return null;
   return <section className="goal-team-results goal-managed-results" aria-label={zh ? "已验收的团队报告" : "Accepted team reports"} aria-busy={busy}>
     <header><div><h3>{zh ? "团队报告" : "Team reports"}</h3>
       <p>{zh ? "只有仍能通过当前验收的报告会出现在这里。" : "Only reports that still pass current acceptance appear here."}</p></div>

@@ -26,6 +26,7 @@ from .control_plane.effect_runtime import (
     EffectRuntimeStartupError,
     effect_runtime_request_scope,
 )
+from .control_plane.coordination.local_authority import LocalCoordinationAuthorityUnavailable
 from .control_plane.runtime.public_safety import (
     public_safe_compact_text,
     validate_public_safe_value,
@@ -249,10 +250,8 @@ class ChatStatusRequestMixin(ExtensionPresentationRequestMixin):
                 # fact as a warning, so a fresh install is not a failed source.
                 allow_missing_registry=True,
                 runtime_root_override=self.server.runtime_root_override,
-                scan_roots=self.server.scan_roots,
                 limit=self.server.limit,
                 goal_id=goal_id,
-                include_public_boundary_scan=False,
                 include_zcode_goal_eligibility=not delivery_review,
                 include_task_graph=delivery_review,
                 activation_state_filter=activation_state_filter,
@@ -282,7 +281,9 @@ class ChatStatusRequestMixin(ExtensionPresentationRequestMixin):
                 }
                 if linked is None:
                     attach_host_thread_activity(
-                        projection, observers=codex_thread_observers()
+                        projection, observers=codex_thread_observers(
+                            cache_root=self.server.runtime_root / "observation-cache" / "codex-activity",
+                        )
                     )
                     attach_host_delivery_windows(
                         projection,
@@ -336,6 +337,15 @@ class ChatStatusRequestMixin(ExtensionPresentationRequestMixin):
                 )
             )
         except Exception as exc:  # noqa: BLE001 - do not expose local projection failures.
+            # The storage owner already exposes inspection and reviewed import.
+            # Preserve its typed refusal, not private paths or migration payloads.
+            if isinstance(exc, LocalCoordinationAuthorityUnavailable) and exc.code == "canonical_authority_required":
+                self._send_error(
+                    "This Goal needs a storage upgrade. Open its storage settings to review recovery.",
+                    status=503,
+                    error_code=exc.code,
+                )
+                return
             self._send_error(
                 "LoopX status could not be projected for the workspace.",
                 status=500,

@@ -691,6 +691,43 @@ def test_workspace_access_code_does_not_change_other_status_routes(monkeypatch, 
         server.server_close()
 
 
+def test_workspace_legacy_storage_refusal_exposes_recovery_without_mutation(tmp_path) -> None:
+    state = tmp_path / "GOAL.md"
+    source = "# Original Goal\n\n## Agent Todo\n\n- [ ] Original private task\n  <!-- loopx:todo todo_id=todo_original role=agent status=open -->\n"
+    state.write_text(source)
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({
+        "schema_version": 1,
+        "common_runtime_root": str(tmp_path / "runtime"),
+        "goals": [{"id": "alpha", "repo": str(tmp_path), "state_file": state.name}],
+    }))
+    server, thread = _start_server()
+    server.registry_path = registry
+    server.runtime_root = tmp_path / "runtime"
+    server.runtime_root.mkdir()
+    server.runtime_root_override = str(server.runtime_root)
+    try:
+        response = _request(server.server_port, method="GET", origin=None, path="/status.json?goal_id=alpha")
+        assert response.status == 503
+        assert json.loads(response.read()) == {
+            "ok": False,
+            "error": "This Goal needs a storage upgrade. Open its storage settings to review recovery.",
+            "error_code": "canonical_authority_required",
+        }
+        response = _request(server.server_port, method="GET", origin=None,
+                            path="/api/chat/goal-storage?goal_id=alpha")
+        observed = json.loads(response.read())
+        assert response.status == 200, observed
+        assert observed["current"]["canonical"] is False
+        assert observed["cold_source"]["active_todo_count"] == 1
+        assert observed["pending_preview"] is None
+        assert state.read_text() == source
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_workspace_directory_states_no_warning_for_a_present_registry(tmp_path) -> None:
     registry_path = tmp_path / ".loopx" / "registry.json"
     registry_path.parent.mkdir(parents=True)

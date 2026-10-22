@@ -51,7 +51,7 @@ from .project_prompt import (
     render_optional_cli_arg,
     render_quota_guard_command,
     render_refresh_state_command,
-    shell_arg,
+    shell_arg_for_host,
 )
 from .paths import resolve_runtime_root
 from .registry import registry_goals, resolve_state_file
@@ -234,20 +234,20 @@ def _start_goal_command(
     return (
         f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=runtime_root)} "
         f"--format json start-goal --guided "
-        f"--project {shell_arg(project)}"
-        + (f" --goal-id {shell_arg(goal_id)}" if goal_id else "")
-        + (f" --agent-id {shell_arg(agent_id)}" if agent_id else "")
-        + (f" --thread-id {shell_arg(thread_id)}" if thread_id else "")
+        f"--project {shell_arg_for_host(project)}"
+        + (f" --goal-id {shell_arg_for_host(goal_id)}" if goal_id else "")
+        + (f" --agent-id {shell_arg_for_host(agent_id)}" if agent_id else "")
+        + (f" --thread-id {shell_arg_for_host(thread_id)}" if thread_id else "")
         + (" --new-peer" if new_peer else "")
-        + f" --host-surface {shell_arg(host_surface)}"
+        + f" --host-surface {shell_arg_for_host(host_surface)}"
         + render_available_capability_args(available_capabilities)
         + (" --fine-grained" if fine_grained else "")
         + (
-            f" --capability-route {shell_arg(capability_route)}"
+            f" --capability-route {shell_arg_for_host(capability_route)}"
             if capability_route
             else ""
         )
-        + f" --goal-text {shell_arg(goal_text)}"
+        + f" --goal-text {shell_arg_for_host(goal_text)}"
         + render_optional_cli_arg("--display-name", display_name)
         + (" --include-command-pack-detail" if include_command_pack_detail else "")
     )
@@ -385,20 +385,20 @@ def build_start_goal_host_surface_selection_packet(
         rerun_command = (
             f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=command_runtime_root)} "
             f"start-goal --guided "
-            f"--project {shell_arg(resolved_project)}"
-            + (f" --goal-id {shell_arg(goal_id)}" if goal_id else "")
-            + (f" --agent-id {shell_arg(agent_id)}" if agent_id else "")
-            + (f" --thread-id {shell_arg(thread_id)}" if thread_id else "")
+            f"--project {shell_arg_for_host(resolved_project)}"
+            + (f" --goal-id {shell_arg_for_host(goal_id)}" if goal_id else "")
+            + (f" --agent-id {shell_arg_for_host(agent_id)}" if agent_id else "")
+            + (f" --thread-id {shell_arg_for_host(thread_id)}" if thread_id else "")
             + (" --new-peer" if new_peer else "")
-            + f" --host-surface {shell_arg(host_surface)}"
+            + f" --host-surface {shell_arg_for_host(host_surface)}"
             + render_available_capability_args(available_capabilities)
             + (" --fine-grained" if fine_grained else "")
             + (
-                f" --capability-route {shell_arg(capability_route)}"
+                f" --capability-route {shell_arg_for_host(capability_route)}"
                 if capability_route
                 else ""
             )
-            + f" --goal-text {shell_arg(normalized_goal_text)}"
+            + f" --goal-text {shell_arg_for_host(normalized_goal_text)}"
             + render_optional_cli_arg("--display-name", display_name)
             + (" --include-command-pack-detail" if include_command_pack_detail else "")
         )
@@ -667,25 +667,23 @@ def _bootstrap_command(
     dry_run: bool,
     fine_grained: bool = False,
 ) -> str:
-    lines = [
-        f"cd {shell_arg(project)}",
-        f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=runtime_root)} bootstrap \\",
-        "  --project . \\",
-        f"  --goal-id {shell_arg(goal_id)} \\",
-        f"  --adapter-kind {shell_arg(DEFAULT_HANDOFF_ADAPTER_KIND)} \\",
-        f"  --adapter-status {shell_arg(DEFAULT_HANDOFF_ADAPTER_STATUS)}",
-    ]
+    command = (
+        f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=runtime_root)}"
+        " bootstrap"
+        " --project ."
+        f" --goal-id {shell_arg_for_host(goal_id)}"
+        f" --adapter-kind {shell_arg_for_host(DEFAULT_HANDOFF_ADAPTER_KIND)}"
+        f" --adapter-status {shell_arg_for_host(DEFAULT_HANDOFF_ADAPTER_STATUS)}"
+    )
     if fine_grained:
-        lines[-1] += " \\"
-        lines.append("  --fine-grained")
+        command += " --fine-grained"
     if dry_run:
-        lines[-1] += " \\"
-        lines.append("  --dry-run")
-    return "\n".join(lines)
+        command += " --dry-run"
+    return "\n".join([f"cd {shell_arg_for_host(project)}", command])
 
 
 def _project_command(project: str, command: str) -> str:
-    return "\n".join([f"cd {shell_arg(project)}", command])
+    return "\n".join([f"cd {shell_arg_for_host(project)}", command])
 
 
 def _selected_goal_capability_route(
@@ -794,6 +792,7 @@ def build_loopx_bootstrap_command_pack(
     )
     has_registered_agents = bool(registered_agents)
     binding_missing = thread_binding.get("status") == "missing"
+    stable_unbound_thread = bool(normalized_thread_id and binding_missing)
     thread_binding["selection_required"] = bool(
         explicit_goal_start
         and not new_peer
@@ -806,7 +805,7 @@ def build_loopx_bootstrap_command_pack(
 
     fresh_agent_default = bool(
         explicit_goal_start
-        and (new_peer or not has_registered_agents)
+        and (new_peer or not has_registered_agents or stable_unbound_thread)
     )
 
     bootstrap_preview_command = _bootstrap_command(
@@ -940,29 +939,29 @@ def build_loopx_bootstrap_command_pack(
             {"form": "/loopx <goal text>", "mode": "goal_plan_write_and_activate"},
         ],
         "canonical_cli_command": (
-            f"{command_prefix} bootstrap-command-pack --project {shell_arg(resolved_project)} "
-            f"--goal-id {shell_arg(resolved_goal_id)}"
+            f"{command_prefix} bootstrap-command-pack --project {shell_arg_for_host(resolved_project)} "
+            f"--goal-id {shell_arg_for_host(resolved_goal_id)}"
             + (
-                f" --agent-id {shell_arg(str(selected_agent_id))}"
+                f" --agent-id {shell_arg_for_host(str(selected_agent_id))}"
                 if selected_agent_id
                 else ""
             )
             + (
-                f" --thread-id {shell_arg(normalized_thread_id)}"
+                f" --thread-id {shell_arg_for_host(normalized_thread_id)}"
                 if normalized_thread_id
                 else ""
             )
             + (" --new-peer" if new_peer else "")
-            + f" --host-surface {shell_arg(host_surface)}"
+            + f" --host-surface {shell_arg_for_host(host_surface)}"
             + render_available_capability_args(available_capabilities)
             + (" --fine-grained" if fine_grained else "")
             + (
-                f" --capability-route {shell_arg(capability_route)}"
+                f" --capability-route {shell_arg_for_host(capability_route)}"
                 if capability_route
                 else ""
             )
             + (
-                f" --goal-text {shell_arg(normalized_goal_text)}"
+                f" --goal-text {shell_arg_for_host(normalized_goal_text)}"
                 if normalized_goal_text
                 else ""
             )
@@ -1007,7 +1006,7 @@ def build_loopx_bootstrap_command_pack(
                     "goal_start_configure_turn_granularity": _project_command(
                         resolved_project,
                         f"{command_prefix} configure-goal --goal-id "
-                        f"{shell_arg(resolved_goal_id)} "
+                        f"{shell_arg_for_host(resolved_goal_id)} "
                         "--execution-turn-granularity fine --execute",
                     )
                 }
@@ -1017,9 +1016,9 @@ def build_loopx_bootstrap_command_pack(
             "goal_start_plan_prompt": goal_start_plan_prompt,
             "goal_start_bind_thread": (
                 f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=identity_runtime_root)} "
-                f"bind-agent-thread --goal-id {shell_arg(resolved_goal_id)} "
-                f"--thread-id {shell_arg(normalized_thread_id)} --host-surface {shell_arg(host_surface)} "
-                f"--agent-id {shell_arg(str(selected_agent_id))} --execute"
+                f"bind-agent-thread --goal-id {shell_arg_for_host(resolved_goal_id)} "
+                f"--thread-id {shell_arg_for_host(normalized_thread_id)} --host-surface {shell_arg_for_host(host_surface)} "
+                f"--agent-id {shell_arg_for_host(str(selected_agent_id))} --execute"
                 if (
                     normalized_thread_id
                     and selected_agent_id
@@ -1038,11 +1037,11 @@ def build_loopx_bootstrap_command_pack(
             "goal_start_host_loop_activation": host_loop_activation.get("activation_input_command"),
             "goal_start_agent_onboard_recheck": (
                 f"{command_prefix} agent-onboard "
-                f"--agent-type {shell_arg(agent_type)} "
-                f"--project {shell_arg(resolved_project)} "
-                f"--goal-id {shell_arg(resolved_goal_id)}"
+                f"--agent-type {shell_arg_for_host(agent_type)} "
+                f"--project {shell_arg_for_host(resolved_project)} "
+                f"--goal-id {shell_arg_for_host(resolved_goal_id)}"
                 + (
-                    f" --agent-id {shell_arg(str(selected_agent_id))}"
+                    f" --agent-id {shell_arg_for_host(str(selected_agent_id))}"
                     if selected_agent_id
                     else ""
                 )
@@ -1145,24 +1144,24 @@ def _build_multi_goal_start_selection_packet(
         rerun_command = (
             f"{render_cli_command_prefix(cli_bin=cli_bin, runtime_root=command_runtime_root)} "
             f"start-goal --guided "
-            f"--project {shell_arg(resolved_project)} "
-            f"--goal-id {shell_arg(candidate_goal_id)}"
-            + (f" --agent-id {shell_arg(agent_id)}" if agent_id else "")
+            f"--project {shell_arg_for_host(resolved_project)} "
+            f"--goal-id {shell_arg_for_host(candidate_goal_id)}"
+            + (f" --agent-id {shell_arg_for_host(agent_id)}" if agent_id else "")
             + (
-                f" --thread-id {shell_arg(normalized_thread_id)}"
+                f" --thread-id {shell_arg_for_host(normalized_thread_id)}"
                 if normalized_thread_id
                 else ""
             )
             + (" --new-peer" if new_peer else "")
-            + f" --host-surface {shell_arg(host_surface)}"
+            + f" --host-surface {shell_arg_for_host(host_surface)}"
             + render_available_capability_args(available_capabilities)
             + (" --fine-grained" if fine_grained else "")
             + (
-                f" --capability-route {shell_arg(capability_route)}"
+                f" --capability-route {shell_arg_for_host(capability_route)}"
                 if capability_route
                 else ""
             )
-            + f" --goal-text {shell_arg(normalized_goal_text)}"
+            + f" --goal-text {shell_arg_for_host(normalized_goal_text)}"
         )
         choices.append(
             {
@@ -1243,8 +1242,8 @@ def _build_multi_goal_start_selection_packet(
             fine_grained=fine_grained,
         ),
         "commands": {
-            "doctor": f"{shell_arg(cli_bin)} doctor",
-            "status": _project_command(resolved_project, f"{shell_arg(cli_bin)} status"),
+            "doctor": f"{shell_arg_for_host(cli_bin)} doctor",
+            "status": _project_command(resolved_project, f"{shell_arg_for_host(cli_bin)} status"),
             "goal_selection_choices": choices,
         },
         "safety_contract": {

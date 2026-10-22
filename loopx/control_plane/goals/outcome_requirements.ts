@@ -22,7 +22,7 @@ interface OutcomeState extends JsonObject {
   schema_version: typeof GOAL_OUTCOMES_SCHEMA; goal_id: string;
   goal_ref: WireExactGoalRef | null; revision: number; outcomes: Outcome[];
 }
-/** Only fixed rule text and validator-owned labels belong in public detail.
+/** Only fixed rule text, validator-owned labels and measured byte counts belong in public detail.
  * Caller values and arbitrary provider/IO errors must never use this marker. */
 export class GoalOutcomeValidationError extends AuthorityStoreProtocolError {}
 
@@ -113,6 +113,13 @@ export function bindGoalOutcomesStateOwner(head: JsonObject, goalId: string, goa
   return previous === null ? null : {...previous, goal_ref: exact};
 }
 
+/** Same stored snapshot, two independently bounded envelopes. */
+function outcomeBytes(state: OutcomeState): {declaration: number; review: number} {
+  const declaration = {...state, outcomes: state.outcomes.map(({review: _review, ...outcome}) => outcome)};
+  const declarationBytes = Buffer.byteLength(JSON.stringify(declaration), "utf8");
+  return {declaration: declarationBytes, review: Buffer.byteLength(JSON.stringify(state), "utf8") - declarationBytes};
+}
+
 export function refineGoalOutcome(head: JsonObject, goalId: string, goalRef: WireExactGoalRef | null,
   actor: string | null, value: unknown): OutcomeState {
   let previous = readState(head, goalId);
@@ -131,7 +138,7 @@ export function refineGoalOutcome(head: JsonObject, goalId: string, goalRef: Wir
     }
   }
   const patch = canonicalAuthorityObject(value, "outcome refinement");
-  keys(patch, ["outcome_id", "source"], ["owner_agent_id", "objective", "requirements", "todo_ids", "review"]);
+  keys(patch, ["outcome_id"], ["source", "owner_agent_id", "objective", "requirements", "todo_ids", "review"]);
   const outcomeId = id(patch.outcome_id, "outcome id");
   const old = previous?.outcomes.find(o => o.id === outcomeId);
   const owner = id(patch.owner_agent_id === undefined ? old?.owner_agent_id : patch.owner_agent_id, "outcome Agent");
@@ -146,13 +153,23 @@ export function refineGoalOutcome(head: JsonObject, goalId: string, goalRef: Wir
     requireValue(actor === null || !todo.claimed_by || todo.claimed_by === actor, "an Agent cannot attach another Agent's claimed work");
   }
   const reqs = new Map((old?.requirements ?? []).map(row => [row.id, row]));
-  for (const row of requirements(patch.requirements === undefined ? [] : patch.requirements)) {
+  const additions = requirements(patch.requirements === undefined ? [] : patch.requirements);
+  const declaresRequirements = !old || additions.some(row => !reqs.has(row.id));
+  for (const row of additions) {
     requireValue(!reqs.has(row.id) || reqs.get(row.id)!.description === row.description, "an existing requirement cannot be overwritten; reconcile conflicting intent explicitly");
     reqs.set(row.id, row);
   }
-  const origin = source(patch.source), sources = new Map((old?.sources ?? []).map(row => [row.ref, row]));
-  requireValue(!sources.has(origin.ref) || sources.get(origin.ref)!.summary === origin.summary, "source reference already identifies another refinement");
-  sources.set(origin.ref, origin);
+  const sources = new Map((old?.sources ?? []).map(row => [row.ref, row]));
+  // Declaration origins survive progress reviews. Operation receipts and the
+  // review's evidence references retain the new observation, not another origin.
+  const origin = Object.hasOwn(patch, "source") ? source(patch.source) : null;
+  requireValue(origin !== null || !declaresRequirements, "new outcomes or requirements require source provenance; review evidence belongs in review.evidence_refs");
+  if (origin !== null) {
+    requireValue(!sources.has(origin.ref) || sources.get(origin.ref)!.summary === origin.summary, "source reference already identifies another refinement");
+    requireValue(sources.has(origin.ref) || sources.size < 64,
+      "outcome source capacity reached; review/work updates may omit source and retain evidence in review.evidence_refs; new declarations still require provenance");
+    sources.set(origin.ref, origin);
+  }
   const outcome: Outcome = {id: outcomeId, owner_agent_id: owner, objective, revision: (old?.revision ?? 0) + 1,
     requirements: [...reqs.values()], todo_ids: [...new Set([...(old?.todo_ids ?? []), ...links])], sources: [...sources.values()],
     ...(old?.review ? {review: old.review} : {})};
@@ -163,7 +180,20 @@ export function refineGoalOutcome(head: JsonObject, goalId: string, goalRef: Wir
   }
   const state: OutcomeState = {schema_version: GOAL_OUTCOMES_SCHEMA, goal_id: goalId, goal_ref: goalRef, revision: (previous?.revision ?? 0) + 1,
     outcomes: [...(previous?.outcomes.filter(o => o.id !== outcomeId) ?? []), outcome]};
-  requireValue(Buffer.byteLength(JSON.stringify(state), "utf8") <= 131072, "outcome declaration capacity exceeded; retain source detail in its owning material");
+  // Preserve declaration/review limits; diagnostics count the failing
+  // envelope, not the combined snapshot or an individual outcome/source list.
+  const candidate = outcomeBytes(state);
+  if (candidate.declaration > 131072 || candidate.review > 131072) {
+    const retained = previous === null ? {declaration: 0, review: 0} : outcomeBytes(previous);
+    const budget = candidate.declaration > 131072 ? "declaration" : "review";
+    const recovery = budget === "review"
+      ? "Compact only proposed review notes/evidence references without losing conclusions or provenance; keep full evidence in its owning material. "
+      : "Preserve retained requirements/origins; keep supporting detail in its owning material. Shortening reviews cannot reduce this declaration budget. ";
+    throw new GoalOutcomeValidationError(
+      `outcome ${budget} capacity exceeded: candidate ${candidate[budget]} UTF-8 bytes, retained ${retained[budget]}, limit 131072; ` +
+      "this budget covers all outcomes in the Goal, not the source count; declaration and review budgets are independent. " + recovery +
+      "Do not remove requirements/origins or create a replacement outcome to bypass the limit. If no lossless update fits, report the capacity blocker.");
+  }
   return readState({...head, goal_outcomes: state}, goalId)!;
 }
 

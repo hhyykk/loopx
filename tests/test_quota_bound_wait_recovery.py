@@ -145,8 +145,6 @@ def test_bound_wait_recovers_original_turn_before_selecting_successor(
         "--goal-id",
         GOAL_ID,
         *binding,
-        "--scan-path",
-        str(project),
         cwd=project,
     )
     assert rc == 0 and guard["should_run"] is True, guard
@@ -178,8 +176,6 @@ def test_bound_wait_recovers_original_turn_before_selecting_successor(
         AGENT_ID,
         "--turn-instance-id",
         f"causal-blocked-{kind}-{provider}",
-        "--scan-path",
-        str(project),
     )
     assert replay["effective_action"] == "unsettled_host_turn_recovery", replay
     assert replay["unsettled_host_turn_recovery"]["binding_id"] == TODO_ID
@@ -215,8 +211,6 @@ def test_bound_wait_recovers_original_turn_before_selecting_successor(
         f"causal-blocked-{kind}-{provider}",
         "--todo-id",
         ALTERNATIVE_TODO_ID,
-        "--scan-path",
-        str(project),
     )
     assert rc != 0
     assert rejected["error_code"] == "heartbeat_receipt_identity_conflict"
@@ -253,7 +247,8 @@ def test_bound_wait_recovers_original_turn_before_selecting_successor(
     rc, replay = cli(*refresh_args, cwd=project)
     assert rc == 0 and replay["idempotent_replay"] is True, replay
     assert replay["blocked_retry"] == refresh["blocked_retry"]
-    assert _classification_count(runtime, "blocked_dependency") == 1
+    assert refresh["classification"] == "blocked_attempt"
+    assert _classification_count(runtime, refresh["classification"]) == 1
     rc, spend = cli(
         "quota",
         "spend-slot",
@@ -265,8 +260,6 @@ def test_bound_wait_recovers_original_turn_before_selecting_successor(
         "heartbeat",
         "--execute",
         *binding,
-        "--scan-path",
-        str(project),
         cwd=project,
     )
     assert rc == 0 and spend["appended"] is False, spend
@@ -287,8 +280,6 @@ def test_bound_wait_recovers_original_turn_before_selecting_successor(
         AGENT_ID,
         "--turn-instance-id",
         f"after-causal-{provider}",
-        "--scan-path",
-        str(project),
         cwd=project,
     )
     assert rc == 0, next_turn

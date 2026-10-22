@@ -218,7 +218,7 @@ def test_real_cli_inline_validation_precedes_primary_commit(tmp_path, case):
     binding = ("--goal-id", GOAL_ID, "--agent-id", AGENT_ID, "--todo-id", TODO_ID,
                "--turn-instance-id", TURN_ID)
     rc, guard = _run_cli(path, runtime, "quota", "should-run", "--codex-app",
-                        *binding, "--scan-path", str(project), cwd=project)
+                        *binding,  cwd=project)
     assert rc == 0, guard
     packet = {"schema_version": "goal_vision_replan_contract_v0",
               "state": "vision_patch_proposed",
@@ -372,8 +372,6 @@ def test_real_cli_normal_writeback_persists_attachment_and_rejects_conflicting_r
         "should-run",
         "--codex-app",
         *binding,
-        "--scan-path",
-        str(project),
         cwd=project,
     )
     assert rc == 0, guard
@@ -832,7 +830,7 @@ def test_real_cli_open_capture_release_order_and_readback_replay(tmp_path, provi
     binding = ["--goal-id", GOAL_ID, "--agent-id", AGENT_ID,
                "--todo-id", TODO_ID, "--turn-instance-id", TURN_ID]
     guard_command = ["quota", "should-run", "--codex-app", *binding,
-                     "--scan-path", str(project)]
+                     ]
     guard = run(*guard_command)
     hint = guard["interaction_contract"]["cli_channel"]["settlement_plan"]["ordered_steps"][1]["optional_attachments"][0]
     assert "release only after explore_result_delivery.ok=true" in hint["guidance"]

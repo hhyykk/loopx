@@ -119,3 +119,76 @@ def test_outcome_observations_never_replace_or_emit_member_deliveries(conversati
         assert handler(TOOL["name"], arguments)["ok"]
         assert controller.store.load_session(sid)["loopx_deliveries"] == deliveries
     assert not any(kind == "collaboration.execution" for kind, _ in adapter.events)
+
+
+def test_native_review_omits_declaration_source_and_recovers_lost_reply(conversation_check, monkeypatch):
+    _, cli, _, _, _, _, adapter = conversation_check
+    handler = adapter.session.read_tool_handler
+    created = handler(TOOL["name"], outcome_request(adapter))
+    assert created["ok"], created
+    origins = created["goal_acceptance_contract"]["outcome_requirements"]["outcomes"][0]["sources"]
+    request = {"action": "refine_outcome", "operation_id": "review-tour",
+        "expected_provider_revision": created["provider_revision"], "document": {"outcome_id": "tour",
+            "review": [{"id": "opening", "conclusion": "met", "evidence_refs": ["artifact:tour-v2"],
+                "note": "Read the artifact and retained opening"}]}}
+    original = acceptance.refine_goal_outcome
+
+    def lose_reply(**arguments):
+        original(**arguments)
+        raise OSError("response lost after review commit")
+
+    monkeypatch.setattr(acceptance, "refine_goal_outcome", lose_reply)
+    assert handler(TOOL["name"], request)["ok"] is False
+    monkeypatch.setattr(acceptance, "refine_goal_outcome", original)
+    replay = handler(TOOL["name"], request)
+    assert replay["ok"] and replay["status"] == "replayed", replay
+    outcome = cli("inspect")[1]["goal_acceptance_contract"]["outcome_requirements"]["outcomes"][0]
+    assert outcome["revision"] == 2 and outcome["sources"] == origins
+    assert outcome["requirements"][0]["agent_review"]["evidence_refs"] == ["artifact:tour-v2"]
+    assert outcome["requirements"][0]["status"] == "unverified"
+    before = cli("inspect")[1]
+    for document in [
+        {"outcome_id": "tour", "requirements": [{"id": "extra", "description": "New obligation"}]},
+        {"outcome_id": "new", "objective": "New outcome", "requirements": [{"id": "extra", "description": "New obligation"}]},
+    ]:
+        rejected = handler(TOOL["name"], {**request, "operation_id": "missing-origin-" + document["outcome_id"],
+            "expected_provider_revision": before["provider_revision"], "document": document})
+        assert rejected["ok"] is False
+        assert cli("inspect")[1] == before
+
+
+def test_native_capacity_detail_guides_new_intent_without_rewriting_envelope(conversation_check):
+    _, cli, _, _, _, _, adapter = conversation_check
+    handler = adapter.session.read_tool_handler
+    request = outcome_request(adapter)
+    request["document"]["requirements"] = [
+        {"id": f"r{i}", "description": "保留证据😀" * 60} for i in range(32)
+    ]
+    created = handler(TOOL["name"], request)
+    assert created["ok"], created
+    original = cli("inspect")[1]
+    review = {"action": "refine_outcome", "operation_id": "oversized-review",
+        "expected_provider_revision": original["provider_revision"],
+        "document": {"outcome_id": "tour", "review": [
+            {"id": f"r{i}", "conclusion": "uncertain", "note": "n" * 512,
+                "evidence_refs": ["e" * 500] * 8} for i in range(32)]}}
+    rejected = handler(TOOL["name"], review)
+    assert rejected["ok"] is False and rejected["error"] == "goal_acceptance_invalid_request", rejected
+    assert "all outcomes in the Goal, not the source count" in rejected["error_detail"]
+    assert "outcome review capacity exceeded" in rejected["error_detail"]
+    assert "new operation id for changed intent" in rejected["next_action"]
+    assert "保留证据" not in str(rejected)
+    assert handler(TOOL["name"], review) == rejected
+    assert cli("inspect")[1] == original
+    compact = {**review, "document": {"outcome_id": "tour", "review": [
+        {**item, "note": "Further validation needed", "evidence_refs": ["artifact:full-report"]}
+        for item in review["document"]["review"]]}}
+    assert handler(TOOL["name"], compact)["error"] == "collaboration_request_rejected"
+    assert cli("inspect")[1] == original, "reserved native intent cannot be silently replaced"
+    compact["operation_id"] = "compact-review"
+    applied = handler(TOOL["name"], compact)
+    assert applied["ok"] and applied["status"] == "applied", applied
+    assert handler(TOOL["name"], compact)["status"] == "replayed"
+    outcome = cli("inspect")[1]["goal_acceptance_contract"]["outcome_requirements"]["outcomes"][0]
+    assert outcome["sources"] == original["goal_acceptance_contract"]["outcome_requirements"]["outcomes"][0]["sources"]
+    assert [{"id": r["id"], "description": r["description"]} for r in outcome["requirements"]] == request["document"]["requirements"]

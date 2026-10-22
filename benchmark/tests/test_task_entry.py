@@ -327,7 +327,7 @@ def test_prose_or_fabricated_todo_does_not_qualify_planning(planning_env):
 
 
 @pytest.mark.parametrize("producer", [None, "local_probe"])
-def test_planner_keeps_host_clock_out_of_model_input_and_preserves_task_identity(planning_env, producer):
+def test_planner_delivers_product_contract_and_only_opted_in_tool_context(planning_env, producer):
     from benchmark.runtime.planning import task_plan_packet
     from benchmark.runtime.research_probe import execution_observation_guidance
     from benchmark.runtime.worker import loopx_command
@@ -348,6 +348,8 @@ def test_planner_keeps_host_clock_out_of_model_input_and_preserves_task_identity
     assert "Research-loop execution evidence:" not in body
     packet = json.loads(body.split("Host-supplied planning checkpoint:\n", 1)[1])
     assert packet == before
+    prefix = body.split("Host-supplied planning checkpoint:\n", 1)[0]
+    assert prefix.replace(execution_observation_guidance(), "").strip() == "$loopx"
     assert receipt["planning"]["input_digest"] == before["input_digest"]
     assert env["LOOPX_PHASE_DEADLINE_EPOCH"] == deadline
     assert not list(Path(env["LOOPX_PROJECT"]).iterdir())
@@ -363,11 +365,7 @@ def test_planning_input_is_clock_independent_but_preserves_task_time_constraints
         assert render_planning_prompt(packet, env) == body
         assert env == {"LOOPX_PHASE_DEADLINE_EPOCH": deadline}
     assert json.loads(body.split("Host-supplied planning checkpoint:\n", 1)[1]) == packet
-    assert body.startswith("$loopx\n\nBenchmark research planning guidance:\n")
-    assert "declared interface, units, scale" in body
-    assert "preserve that reference while testing a replacement" in body
-    assert "negative experiment can complete its own Todo" in body
-    assert "neither creates a new acceptance document or permission requirement" in body
+    assert body.split("Host-supplied planning checkpoint:\n", 1)[0].strip() == "$loopx"
     assert "Host deadline" not in body and "remaining" not in body
     assert packet == {"input_digest": "unchanged", "text": "Task constraint: inference under 30 seconds."}
 
@@ -435,7 +433,14 @@ def test_planned_phase_preserves_waits_and_does_not_prewrite_a_todo(
 
     async def cli(environment, args, **kwargs):
         calls.append(args)
-        return {"after": {"execution_profile": {"replan_after_effective_turns": 6}}}
+        return {
+            "after": {
+                "execution_profile": {
+                    "replan_after_effective_turns": 6,
+                    "planning_horizon_goal": True,
+                }
+            }
+        }
 
     async def no_pending(**kwargs):
         return SimpleNamespace(return_code=1)
@@ -958,10 +963,10 @@ def test_runner_cadence_persists_through_real_configure_goal(
     assert other not in profile
     strategy = settings.get("stride_strategy")
     assert profile.get("stride_strategy", "off") == (strategy or "off")
-    horizon = settings.get("planning_horizon_goal")
-    assert profile.get("planning_horizon_goal", False) == (horizon or False)
+    horizon = settings.get("planning_horizon_goal", True)
+    assert profile["planning_horizon_goal"] is horizon
     assert agent._replan_receipt() == {field: value,
-        **({"planning_horizon_goal": horizon} if horizon is not None else {}), **({"stride_strategy": strategy}
+        "planning_horizon_goal": horizon, **({"stride_strategy": strategy}
                                                     if strategy is not None else {})}
 
 

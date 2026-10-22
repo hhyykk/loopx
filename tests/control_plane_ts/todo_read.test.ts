@@ -4,6 +4,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import test from "node:test";
 import {readTodo, TODO_READ_REQUEST} from "../../loopx/control_plane/todos/read_projection.ts";
+import {readAgent, readScope} from "../../loopx/control_plane/todos/read_codec.ts";
 import type {JsonObject} from "../../loopx/control_plane/effect_program.ts";
 import {openLocalAuthorityStore, selectLocalSqliteAuthority} from "../../loopx/control_plane/coordination/local_authority_provider.ts";
 import {engageLegacyCoordinationWriterFence} from "../../loopx/control_plane/coordination/legacy_writer_fence.ts";
@@ -18,6 +19,25 @@ const row = (todo_id: string, extra: JsonObject = {}): JsonObject => ({schema_ve
 const group = (items: JsonObject[], extra: JsonObject = {}) => readTodo({schema_version: TODO_READ_REQUEST,
   kind: "group", items, lineage: [], evaluated: false, role: "agent", source_section: "Agent Todo",
   item_limit: 1, observed_at: Date.parse(now) / 1000, evaluated_at: now, ...extra});
+
+test("optional read metadata preserves legacy booleans and validates supplied tokens", () => {
+  for (const [input, expected] of [[null, null], [undefined, null], ["", null], [false, null],
+    [true, "true"], [" Agent A ", "agent-a"], ["invalid/agent", null]] as const) {
+    assert.equal(readAgent(input), expected);
+  }
+  for (const input of [null, undefined, "", false, {}, "invalid-scope"]) assert.equal(readScope(input), null);
+  assert.deepEqual(readScope("direction:action:tree"), {
+    schema_version: "decision_scope_v0", kind: "direction", granularity: "action", scope_key: "tree",
+  });
+});
+
+test("an objective revision remains visible without acceptance checks", async () => {
+  const acceptance = {goal_objective: {objective: "Preserve the current user direction"}};
+  const result = await readTodo({schema_version: TODO_READ_REQUEST, kind: "fields",
+    todos: [], goal_acceptance_contract: acceptance,
+    observed_at: Date.parse(now) / 1000, evaluated_at: now});
+  assert.deepEqual(((result.fields as JsonObject).agent_todos as JsonObject).goal_acceptance_contract, acceptance);
+});
 
 test("current acceptance checks survive full-source reads and selection without an enable flag", async () => {
   const acceptance = {criteria: [], revision: 1, digest: "sha256:" + "a".repeat(64)};
@@ -140,10 +160,22 @@ test("query display limits preserve complete source coverage and report the fina
   t.after(() => rm(root, {recursive: true, force: true}));
   const items = Array.from({length: 30}, (_, i) => row(`todo_coverage_${i}`, {
     index: i + 1, role: i < 15 ? "user" : "agent", task_class: i < 15 ? "user_action" : "advancement_task",
-  }));
-  const legacy = {groups: ["user", "agent"].map(role => ({role, source_section: `${role} Todo`,
-    items: items.filter(item => item.role === role), include_empty_source: true})),
-    lineage: items, full_bodies: items, source_count: items.length};
+  })).sort((a, b) => String(a.todo_id).localeCompare(String(b.todo_id)));
+  const goal = "coverage", state = join(root, "state.md");
+  await writeFile(state, "# Synthetic Goal\n");
+  await selectLocalSqliteAuthority(root, goal, true);
+  const store = await openLocalAuthorityStore(root, goal);
+  const projection = {goal_id: goal, handoff_mode: "soft_claim", todos: items, leases: [],
+    todo_read_model: coordinationTodoReadModel(items, TODO_CANONICAL_READ_RECORD_SCHEMA)};
+  const committed = await store.commitAuthority({expected_provider_revision: null, operation_id: "coverage",
+    events: [], next_projection: projection, receipts: []});
+  assert.equal(committed.status, "applied");
+  if (committed.status !== "applied") return;
+  const fence = await engageLegacyCoordinationWriterFence({schema_version: "loopx_legacy_coordination_writer_fence_engage_request_v0",
+    runtime_root: root, goal_id: goal, state_path: state, fence: {schema_version: "loopx_legacy_coordination_writer_fence_v0",
+      state: "engaged", goal_id: goal, fence_id: "coverage", source_version: "coverage",
+      source_projection_sha256: canonicalAuthoritySha256(projection), expected_shadow_provider_revision: committed.provider_revision}});
+  assert.equal(fence.status, "applied", JSON.stringify(fence));
   const cases = [
     {name: "ordinary", query: {}, available: 30, shown: 30},
     {name: "hot", query: {agent_id: "agent-a"}, available: 30, shown: 24},
@@ -155,9 +187,10 @@ test("query display limits preserve complete source coverage and report the fina
   ];
   for (const scenario of cases) await t.test(scenario.name, async () => {
     const read = await readTodo({schema_version: TODO_READ_REQUEST, kind: "query",
-      source: {runtime_root: root, goal_id: "coverage"}, legacy_source: legacy,
+      source: {runtime_root: root, goal_id: "coverage"},
       observed_at: Date.parse(now) / 1000, evaluated_at: now,
       query: {goal_id: "coverage", read_scope: "active", state_file: join(root, "state.md"), ...scenario.query}}, now);
+    assert.ok(read.payload, JSON.stringify(read));
     const payload = read.payload as JsonObject, envelope = payload.projection_envelope as JsonObject;
     const coverage = envelope.coverage as JsonObject;
     assert.equal(envelope.alert, false);

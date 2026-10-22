@@ -17,6 +17,33 @@ WORKFLOW_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (WORKFLOW_ROOT / ".github/workflows/python-tests.yml").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("provider", ["loopx-ark-turn", "loopx-memt-turn"])
+def test_core_collection_keeps_optional_provider_tests_explicit(tmp_path: Path, provider: str) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        (WORKFLOW_ROOT / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8",
+    )
+    (tmp_path / "test_core.py").write_text("def test_core_contract(): pass\n", encoding="utf-8")
+    optional = tmp_path / "packages" / provider / "tests"
+    optional.mkdir(parents=True)
+    (optional / "test_provider.py").write_text("def test_optional_contract(): pass\n", encoding="utf-8")
+    (optional / "conftest.py").write_text(
+        "from pathlib import Path\nPath(__file__).with_name('dependency-imported').touch()\n", encoding="utf-8",
+    )
+    args = [sys.executable, "-m", "pytest", "--collect-only", "-q"]
+    options = {"cwd": tmp_path, "env": {**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+               "capture_output": True, "text": True, "timeout": 15, "check": False}
+    core = subprocess.run(args, **options)
+    assert core.returncode == 0, core.stdout + core.stderr
+    assert "test_core_contract" in core.stdout
+    assert "test_optional_contract" not in core.stdout, "Core discovery must not import optional provider dependencies"
+    assert not (optional / "dependency-imported").exists()
+    explicit = subprocess.run([*args, str(optional.relative_to(tmp_path))], **options)
+    assert explicit.returncode == 0, explicit.stdout + explicit.stderr
+    assert "test_optional_contract" in explicit.stdout, "The dedicated provider workflow must still collect its suite"
+    assert (optional / "dependency-imported").exists()
+    assert "test_core_contract" not in explicit.stdout
+
+
 def test_dashboard_acceptance_and_kernel_checks_run_independently() -> None:
     kernel = WORKFLOW.split("  kernel-static-checks:\n", 1)[1].split(
         "  dashboard-browser:\n", 1,

@@ -2,8 +2,7 @@ import {configuredGoalChecks} from "../goals/acceptance_contract.ts";
 /** Canonical Todo reads and projection confirmation share one provider snapshot. */
 import type {JsonObject} from "../effect_program.ts";
 import {requireJsonObject} from "../runtime_decode.ts";
-import {acceptanceWorkGuard, projectGoalAcceptance,
-  projectGoalAcceptanceWorkGuards, goalAcceptanceOracleObservationBasis} from "../goals/acceptance_contract.ts";
+import {acceptanceWorkGuard, GoalAcceptanceRead} from "../goals/acceptance_contract.ts";
 import {authorityStoreSourceAuthority as sourceAuthorityFor} from "./authority_store.ts";
 import {canonicalAuthoritySha256, hasExactAuthorityKeys, parseAuthorityCursor,
   requireAuthorityStoreId} from "./authority_store_codec.ts";
@@ -13,6 +12,7 @@ import {CoordinationProjectionRead, indexCoordinationProjectionTodos, validateCo
 import {LOCAL_COORDINATION_TODO_LIST_REQUEST_SCHEMA, LOCAL_COORDINATION_TODO_LIST_RESULT_SCHEMA,
   LOCAL_COORDINATION_TODO_READ_REQUEST_SCHEMA, LOCAL_COORDINATION_TODO_READ_RESULT_SCHEMA} from "./coordination_state_contract.generated.ts";
 import {decodeProjectionReadback, confirmProjectionReadback} from "../todos/projection_delivery.ts";
+import {canonicalAuthorityRouteFailure, requireCanonicalAuthority} from "./local_authority_write.ts";
 import {completionTurnOperationId,
   COORDINATION_TODO_TERMINAL_LIFECYCLE_RECEIPT_SCHEMA} from "./todo_terminal_lifecycle.ts";
 
@@ -21,14 +21,16 @@ import {completionTurnOperationId,
  * this same owner. */
 export function canonicalTodoCollection(head: JsonObject, goalId: string, includeLeases: boolean) {
   const read = new CoordinationProjectionRead(head, goalId);
-  const acceptance = projectGoalAcceptance(head, goalId);
+  const acceptanceRead = new GoalAcceptanceRead(head, goalId, read);
+  const acceptance = acceptanceRead.contract();
   return {
     projection: read.todoIndex,
-    todoReadModel: read.validateTodoReadModel(),
+    todoReadModel: acceptanceRead.validateTodoReadModel(),
     leaseIndex: includeLeases ? read.coordinationIndex : null,
     acceptance,
     oracleObservationBasis: acceptance.outcome_requirements
-      ? goalAcceptanceOracleObservationBasis(head, goalId) : null,
+      ? acceptanceRead.oracleBasis() : null,
+    projectWorkGuards: (todoIds: readonly string[]) => acceptanceRead.workGuards(todoIds),
   };
 }
 
@@ -149,7 +151,7 @@ export async function readLocalCoordinationTodoSource(
     if (after.status !== "available" || after.store_identity !== identity.store_identity) {
       return failure("todo_source_lineage_mismatch");
     }
-    const {projection, todoReadModel, acceptance} = canonicalTodoCollection(
+    const {projection, todoReadModel, acceptance, projectWorkGuards} = canonicalTodoCollection(
       transaction.projection, goalId, false,
     );
     let completion: JsonObject | null = null;
@@ -185,10 +187,9 @@ export async function readLocalCoordinationTodoSource(
       provider_revision: revision, cursor, store_identity: identity.store_identity,
       todos: projection.todo_ids.map((todoId) => projection.todos.get(todoId)!),
       todo_ids: projection.todo_ids, todo_read_model: todoReadModel,
-      ...(!configuredGoalChecks(acceptance) && !acceptance.outcome_requirements ? {} : {
+      ...(!configuredGoalChecks(acceptance) && !acceptance.outcome_requirements && !acceptance.goal_objective ? {} : {
         goal_acceptance_contract: acceptance,
-        goal_acceptance_work_guards: projectGoalAcceptanceWorkGuards(
-          transaction.projection, goalId, projection.todo_ids),
+        goal_acceptance_work_guards: projectWorkGuards(projection.todo_ids),
       }),
       source_authority: sourceAuthority, decision_read_from_provider: true,
       legacy_fallback_used: false,
@@ -242,6 +243,7 @@ export async function readLocalCoordinationTodo(
     const root = runtimeRoot(input.runtime_root);
     const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
     const todoId = requireAuthorityStoreId(input.todo_id, "todo id");
+    await requireCanonicalAuthority(root, goalId, "todo_read");
     const store = await openRuntimeStore(root, goalId, dependencies);
     sourceAuthority = sourceAuthorityFor(store);
     const head = await store.loadAuthority();
@@ -281,6 +283,7 @@ export async function readLocalCoordinationTodo(
       decision_read_from_provider: true,
       legacy_fallback_used: false,
       ...localAuthorityOpenFailure(error),
+      ...canonicalAuthorityRouteFailure(error),
     };
   }
 }
@@ -302,6 +305,7 @@ export async function listLocalCoordinationTodos(
     }
     const root = runtimeRoot(input.runtime_root);
     const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
+    await requireCanonicalAuthority(root, goalId, "todo_list");
     const store = await openRuntimeStore(root, goalId, dependencies);
     sourceAuthority = sourceAuthorityFor(store);
     const head = await store.loadAuthority();
@@ -314,7 +318,7 @@ export async function listLocalCoordinationTodos(
         legacy_fallback_used: false,
       };
     }
-    const {projection, todoReadModel, leaseIndex, acceptance, oracleObservationBasis} = canonicalTodoCollection(
+    const {projection, todoReadModel, leaseIndex, acceptance, oracleObservationBasis, projectWorkGuards} = canonicalTodoCollection(
       head.head, goalId, input.include_leases === true,
     );
     return {
@@ -324,8 +328,8 @@ export async function listLocalCoordinationTodos(
       todos: projection.todo_ids.map((todoId) => projection.todos.get(todoId)!),
       todo_ids: projection.todo_ids,
       todo_read_model: todoReadModel,
-      ...(!configuredGoalChecks(acceptance) && !acceptance.outcome_requirements ? {} : {goal_acceptance_contract: acceptance,
-        goal_acceptance_work_guards: projectGoalAcceptanceWorkGuards(head.head, goalId, projection.todo_ids)}),
+      ...(!configuredGoalChecks(acceptance) && !acceptance.outcome_requirements && !acceptance.goal_objective ? {} : {goal_acceptance_contract: acceptance,
+        goal_acceptance_work_guards: projectWorkGuards(projection.todo_ids)}),
       ...(oracleObservationBasis === null ? {} : {goal_acceptance_oracle_observation_basis: oracleObservationBasis}),
       ...(leaseIndex === null ? {} : {
         leases: leaseIndex.lease_todo_ids.map((id) => leaseIndex.leases.get(id)!),
@@ -347,6 +351,7 @@ export async function listLocalCoordinationTodos(
       decision_read_from_provider: true,
       legacy_fallback_used: false,
       ...localAuthorityOpenFailure(error),
+      ...canonicalAuthorityRouteFailure(error),
     };
   }
 }

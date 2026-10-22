@@ -6,6 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from canonical_authority_fixture import initialize_canonical_authority, isolate_sqlite_runtime
+from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+from loopx.control_plane.todos.active_state_todo_parser import parse_todo_source
+
 from loopx.control_plane.testing.cli_output_budget import (
     CLI_OUTPUT_MODE_VARIANT_BY_ID,
     assert_cli_output_mode_variant,
@@ -20,6 +25,22 @@ GOAL_ID = "todo-list-thin-goal"
 AGENT_ID = "codex-thin-output"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 THIN_ITEM_LIMIT_PER_ROLE = 2
+
+
+@pytest.fixture(autouse=True)
+def private_runtime(tmp_path, monkeypatch):
+    isolate_sqlite_runtime(tmp_path, monkeypatch)
+
+
+def _initialize_todos(runtime, state, rows=None):
+    if rows is None:
+        active, archived, _ = parse_todo_source(state.read_text())
+        rows = [*active["user"], *active["agent"], *archived]
+    projection = build_todo_runtime_shadow_projection(
+        goal_id=GOAL_ID, handoff_mode="legacy",
+        todos=[{"schema_version": "todo_item_v0", **row} for row in rows],
+    )
+    initialize_canonical_authority(runtime, GOAL_ID, projection, state_path=state, provider="sqlite")
 
 
 def _todo_line(*, text: str, metadata: str) -> list[str]:
@@ -92,6 +113,7 @@ def _write_fixture(tmp_path: Path) -> Path:
         + "\n",
         encoding="utf-8",
     )
+    _initialize_todos(runtime, state_file)
     return registry_path
 
 
@@ -170,6 +192,7 @@ def _write_crowded_fixture(tmp_path: Path, *, items_per_role: int = 20) -> Path:
         + "\n",
         encoding="utf-8",
     )
+    _initialize_todos(runtime, state_file)
     return registry_path
 
 
@@ -183,6 +206,9 @@ def _widest_retained_thin_item(*, role: str, index: int) -> dict[str, object]:
     }
     return {
         "todo_id": "todo_" + role[0] + str(index) + "i" * 62,
+        "done": False,
+        "archive_state": "active",
+        "source_section": f"{role.title()} Todo",
         "role": role,
         "status": "open",
         "priority": "P0",
@@ -496,14 +522,13 @@ def test_thin_intrinsically_bounds_high_cardinality_and_reports_overflow(
 
 def test_thin_widest_retained_shape_stays_inside_fixed_output_budget(tmp_path: Path) -> None:
     source = _widest_retained_thin_payload(items_per_role=5)
-    groups = [{"role": role, "source_section": f"{role.title()} Todo",
-               "items": source[f"{role}_todos"]["items"], "include_empty_source": True}
-              for role in ("user", "agent")]
+    state = tmp_path / "state.md"
+    state.write_text("# Synthetic Goal\n")
+    _initialize_todos(tmp_path, state,
+        [item for role in ("user", "agent") for item in source[f"{role}_todos"]["items"]])
     payload = project_todo_read({
         "kind": "query", "source": {"runtime_root": str(tmp_path), "goal_id": GOAL_ID},
         "observed_at": 1767225600, "evaluated_at": "2026-01-01T00:00:00Z",
-        "legacy_source": {"groups": groups, "lineage": [item for group in groups for item in group["items"]],
-                          "source_count": 10},
         "query": {"goal_id": GOAL_ID, "read_scope": "active", "thin": True,
                   "state_file": str(tmp_path / "state.md")},
     })["payload"]

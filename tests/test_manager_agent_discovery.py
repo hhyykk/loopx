@@ -183,7 +183,7 @@ def test_conversation_resolves_existing_peer_from_real_read_only_host_store(tmp_
     home = tmp_path / "host"
     home.mkdir()
     rollout = home / "current.jsonl"
-    rollout.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "event_msg",
+    rollout.write_text(json.dumps({"type": "session_meta", "payload": {"id": "current"}}) + "\n" + json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "event_msg",
         "payload": {"type": "task_complete"}}) + "\n")
     db = home / "state_5.sqlite"
     with sqlite3.connect(db) as connection:
@@ -256,9 +256,9 @@ def test_invalid_route_read_is_repairable_and_effect_free(tmp_path, arguments):
     assert not records
 
 
-def test_remote_route_read_does_not_silently_inspect_local_host(tmp_path):
+def test_unconfigured_remote_route_cannot_fall_back_to_local_host(tmp_path):
     _, reader, records = setup(tmp_path)
     result = reader.read(TOOL_NAME, {"view": "agent_route", "source_id": "ssh:remote",
         "goal_id": "research", "agent_id": "worker-34"})
-    assert result["error"] == "remote_agent_route_not_supported"
-    assert not records
+    assert result["error"] == "source_outside_available_scope"
+    assert records == [result]

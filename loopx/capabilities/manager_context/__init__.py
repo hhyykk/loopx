@@ -15,6 +15,7 @@ from ...control_plane.collaboration.source_grant_observation import (
     source_context_authority,
     source_context_target_authority,
 )
+from ...control_plane.collaboration.source_policy_fence import source_policy_fence
 from ...control_plane.collaboration.goal_instance_scope import (
     collaboration_goal_scope,
     decide_collaboration_lifecycle,
@@ -120,7 +121,7 @@ def deliver(
     # Order: source policy -> Goal lifetime -> request; local owner stays independent.
     scope = conversation_scope(session, origin=turn.get("origin", "unknown"))
     with (
-        exclusive_file_lock((_root(runtime_root) / "policy.json").with_suffix(".lock"))
+        source_policy_fence(_root(runtime_root) / "policy.json")
         if scope["kind"] == "external_audience" else nullcontext()
     ), collaboration_goal_scope(
         registry_path,
@@ -354,7 +355,7 @@ def revoke_conversation_sources(runtime_root: Path, binding_id: str) -> None:
         path.stat()
     except FileNotFoundError:
         return
-    with exclusive_file_lock(path.with_suffix(".lock")):
+    with source_policy_fence(path):
         try:
             policy = _read(path)
         except FileNotFoundError:
@@ -397,7 +398,7 @@ def configure_evidence_scope(runtime_root: Path, registry_path: Path, *, channel
 
     if execute:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with exclusive_file_lock(path.with_suffix(".lock")):
+        with source_policy_fence(path):
             result = update(True)
             if update(False)["would_change"]:
                 raise ValueError("read scope verification failed")
@@ -456,7 +457,7 @@ def configure_delivery_target(
 
     if not execute:
         return update(apply=False)
-    with exclusive_file_lock(path.with_suffix(".lock")):
+    with source_policy_fence(path):
         result = update(apply=True)
         if update(apply=False)["granted_before"] != grant:
             raise ValueError("delivery target verification failed")
@@ -495,7 +496,7 @@ def configure_delivery_scope(runtime_root: Path, *, channel: str,
         return planned
 
     if execute:
-        with exclusive_file_lock(path.with_suffix(".lock")):
+        with source_policy_fence(path):
             result = update(True)
             if update(False)["would_change"]:
                 raise ValueError("delivery scope verification failed")

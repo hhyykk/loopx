@@ -1,8 +1,10 @@
+import {sourceReadApiUrl} from "./local-status-query";
 import type {OracleEvidence} from "./goal-acceptance-observation";
 import { HANDOFF_MODES, EXECUTION_HANDOFF_MODES, type ExecutionHandoffMode } from "../../../../../loopx/control_plane/coordination/handoff_mode_vocabulary.js";
 import { normalizeGoalDraft } from "../../../../../loopx/control_plane/collaboration/goal_draft.js";
 import { parseTurnStep, type TurnStep } from "./turn-steps.js";
 import { z } from "zod";
+import {normalizeExploreMeasurements} from "../../../../../loopx/control_plane/capabilities/explore_measurements.js";
 import { actionSourceBasisSchema, todoUpdateSourceBasisSchema } from "./action-source-basis.js";
 
 import {
@@ -646,17 +648,19 @@ export async function requestJson<T>(url: string, init?: RequestInit): Promise<T
   return parsedPayload as T;
 }
 
-export async function readTodoRequest(goalId: string, todoId: string, signal: AbortSignal, sourceNamespace?: string) {
+export async function readTodoRequest(goalId: string, todoId: string, signal: AbortSignal, sourceNamespace?: string, readSourceUrl?: string) {
   const query = new URLSearchParams({goal_id: goalId, todo_id: todoId});
   if (sourceNamespace) query.set("source_namespace", sourceNamespace);
+  const url = sourceReadApiUrl(readSourceUrl, `/api/chat/todo/detail?${query}`);
+  const expectedNamespace = readSourceUrl ? new URL(url).searchParams.get("source_namespace") : sourceNamespace;
   const result = z.object({
     ok: z.literal(true), goal_id: z.string(), todo_id: z.string(), text: z.string(),
     status: z.string(), archive_state: z.string(), updated_at: z.string().nullable(),
     review_basis: todoUpdateSourceBasisSchema.optional(),
     source_access: z.object({namespace: z.string()}).optional(),
-  }).parse(await requestJson<unknown>(`/api/chat/todo/detail?${query}`, {signal}));
+  }).parse(await requestJson<unknown>(url, {signal}));
   if (result.goal_id !== goalId || result.todo_id !== todoId) throw new Error("Task source changed");
-  if (sourceNamespace && result.source_access?.namespace !== sourceNamespace) throw new Error("Task source changed");
+  if (expectedNamespace && result.source_access?.namespace !== expectedNamespace) throw new Error("Task source changed");
   return result;
 }
 
@@ -2665,15 +2669,17 @@ const exploreResultPageSchema = z.object({
     finding_id: z.string(), finding: z.string(), summary: z.string(), status: z.string(),
     node_id: z.string(), question: z.string(), scope: z.string(), agent_id: z.string(),
     evidence_refs: z.array(z.string()), last_updated_at: z.string(),
+    measurements: z.unknown().transform(normalizeExploreMeasurements).optional(),
+    linked_todos_available: z.boolean().optional(),
     linked_todos: z.array(z.object({
       todo_id: z.string(), text: z.string(), status: z.string(), claimed_by: z.string(),
     })),
   })),
 });
 export type ExploreResultPage = z.infer<typeof exploreResultPageSchema>;
-export async function fetchExploreResults(goalId: string, cursor?: string) {
-  const query = new URLSearchParams({goal_id: goalId, ...(cursor ? {cursor} : {})});
-  const page = exploreResultPageSchema.parse(await requestJson<unknown>(`/api/chat/explore-results?${query}`));
+export async function fetchExploreResults(goalId: string, cursor?: string, readSourceUrl?: string) {
+  const query = new URLSearchParams({goal_id: goalId, view: "findings", ...(cursor ? {cursor} : {})});
+  const page = exploreResultPageSchema.parse(await requestJson<unknown>(sourceReadApiUrl(readSourceUrl, `/api/chat/explore-results?${query}`)));
   if (page.goal_id !== goalId) throw new Error("Explore result Goal mismatch");
   return page;
 }

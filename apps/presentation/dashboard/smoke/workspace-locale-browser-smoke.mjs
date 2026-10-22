@@ -97,6 +97,7 @@ export async function verifyWorkspaceLocales({ browser, url, installApi, outputD
     await page.getByRole("radio", { name: /Simplified Chinese/ }).click();
     assert.equal(await page.evaluate(() => localStorage.getItem("loopx-pw-locale")), "zh-CN");
     await page.reload({ waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "返回工作区", exact: true }).click();
     await page.getByTestId("personal-goal-home").waitFor();
     assert.equal(await page.locator("html").getAttribute("lang"), "zh-CN");
     assert.match(await page.getByRole("region", { name: "控制面来源" }).innerText(), /本机/);
@@ -105,6 +106,7 @@ export async function verifyWorkspaceLocales({ browser, url, installApi, outputD
     await page.getByRole("button", { name: /语言/ }).click();
     await page.getByRole("radio", { name: /English/ }).click();
     await page.reload({ waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
     await page.getByTestId("personal-goal-home").waitFor();
     assert.equal(await page.locator("html").getAttribute("lang"), "en");
     assert.equal(await page.evaluate(() => localStorage.getItem("loopx-pw-locale")), "en");

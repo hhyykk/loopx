@@ -63,6 +63,16 @@ test("execution needs an independent exact grant, current sender and both regist
   assert.deepEqual(sourceExecutionBindings(params), {bindings: []});
   const granted = {...source, execution_bindings: [binding]};
   assert.deepEqual(sourceExecutionBindings({...params, source: granted}), {bindings: [binding]});
+  const required = {...params, source: granted, required_binding: binding};
+  assert.deepEqual(sourceExecutionBindings(required), {bindings: [binding]});
+  for (const field of ["goal_id", "agent_id", "requester_agent_id", "binding_id"]) {
+    assert.throws(() => sourceExecutionBindings({...required,
+      required_binding: {...binding, [field]: "different"}}));
+  }
+  for (const change of [{source}, {available: [worker]},
+    {source: {...granted, blocked_targets: [worker]}}, {required_binding: null}]) {
+    assert.throws(() => sourceExecutionBindings({...required, ...change}));
+  }
   assert.deepEqual(sourceExecutionBindings({...params, source: granted, available: [worker]}), {bindings: []});
   assert.deepEqual(sourceExecutionBindings({...params, source: {...granted, blocked_targets: [worker]}}), {bindings: []});
   assert.throws(() => sourceExecutionBindings({...params, source: granted, sender_id: "other"}));

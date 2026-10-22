@@ -87,21 +87,15 @@ export function GoalResearchTimeline({timeline, zh, selectedIds, selectedDay, da
   const swarm = timeline.singles.filter(id => !groupedIds.has(id)).map(id => timeline.nodes.get(id)!).filter(item => item.first !== null);
   const unknownTime = [...timeline.nodes.values()].filter(item => item.first === null).length;
   const phaseCard = (item: TimelinePhase) => {
-    const decision = item.lastDecision?.sections?.decision;
     const counts = Object.entries(item.decisions);
     return <button key={item.index} type="button" aria-pressed={phase === item.index} onClick={() => onPhase(phase === item.index ? null : item.index)}
-      className={`research-phase${item.index === 2 ? " is-late" : ""}${phase === item.index ? " is-active" : ""}`}>
+      className={`research-phase${phase === item.index ? " is-active" : ""}`}>
       <span className="research-phase-head"><strong>{[copy.early, copy.middle, copy.late][item.index]}</strong><time>{timeLabel(item.start)} — {timeLabel(item.end)}</time></span>
       <span className="research-phase-counts"><b>{item.nodes}</b> {copy.items}<b>{item.findings}</b> {copy.findings}</span>
       <span className="research-phase-bar" aria-label={LABELS.map(key => `${label(key)} ${item.labels[key] ?? 0}`).join(" · ")}>
         {LABELS.map(key => item.labels[key] ? <span key={key} className={tone(key)} style={{flexGrow: item.labels[key]}}>{item.labels[key]}</span> : null)}
       </span>
-      <span className="research-phase-legend">{LABELS.map(key => <span key={key}><i className={tone(key)} aria-hidden="true"/>{label(key)}</span>)}</span>
-      <span className="research-phase-decisions">{counts.length ? `${copy.decisions} · ${counts.map(([key, value]) => `${label(key)} ${value}`).join(" · ")}` : (timeline.structuredCount ? copy.none : copy.unstructured)}</span>
-      {decision ? <>
-        <span className="research-phase-line"><em>{copy.changed}</em>{decision.changed.join("；") || "—"}</span>
-        <span className="research-phase-line"><em>{copy.stopped}</em>{decision.stopped.join("；") || "—"}</span>
-      </> : null}
+      {timeline.decisions.length ? <span className="research-phase-decisions">{counts.length ? `${copy.decisions} · ${counts.map(([key, value]) => `${label(key)} ${value}`).join(" · ")}` : (timeline.structuredCount ? copy.none : copy.unstructured)}</span> : null}
     </button>;
   };
   return <div className="research-timeline">
@@ -111,6 +105,7 @@ export function GoalResearchTimeline({timeline, zh, selectedIds, selectedDay, da
       <p>{copy.routeHint}{zh ? "。" : ". "}{zh ? "相邻点合拢，数字为研究项数，一次展开原始时间与依据。" : "Nearby points group; the number counts research items. Select once for original times and sources."}</p>
       <p>{zh ? "未关联问题按首次记录 UTC 日期收纳，不推断路线或因果。决策轨迹保留各轮显式决策，最新记录在前。" : "Unlinked questions group by first-record UTC date, without inferring a route or cause. Decision history retains each explicit decision, newest record first."}</p>
     </ContextHelp>{phase !== null ? <button type="button" className="research-link" onClick={() => onPhase(null)}>{copy.all}</button> : null}</div>
+      <span className="research-phase-legend">{LABELS.map(key => <span key={key}><i className={tone(key)} aria-hidden="true"/>{label(key)}</span>)}</span>
     <div className="research-phases" role="group" aria-label={copy.phaseNote}>{timeline.phases.map(phaseCard)}</div>
     <div className="research-timeline-grid">
       <div className="research-row-label"><strong>{copy.density}</strong><small>
@@ -183,7 +178,7 @@ export function GoalResearchTimeline({timeline, zh, selectedIds, selectedDay, da
 }
 
 function TrailList({items, copy, label, timeLabel, selectedIds, onSelect}: {items: TimelineFinding[]; copy: Copy; label: (key: string) => string; timeLabel: (value: number) => string; selectedIds: readonly string[]; onSelect: (id: string) => void}) {
-  const [limit, setLimit] = useState(6);
+  const [limit, setLimit] = useState(3);
   return <>
     <ol className="research-trail-list">{items.slice(0, limit).map(item => {
       const decision = item.sections!.decision!;
@@ -192,10 +187,8 @@ function TrailList({items, copy, label, timeLabel, selectedIds, onSelect}: {item
           <span className="research-trail-meta"><b className={`research-outcome is-${decision.outcome}`}>{label(decision.outcome)}</b><time>{item.at !== null ? timeLabel(item.at) : ""}</time><span>{label(item.event.status)}</span></span>
           <strong>{item.event.title}</strong>
           <span><em>{copy.changed}</em>{decision.changed.join("；") || "—"}</span>
-          <span><em>{copy.stopped}</em>{decision.stopped.join("；") || "—"}</span>
-          <span className="is-muted"><em>{copy.retained}</em>{decision.retained.join("；") || "—"}</span>
         </button></li>;
     })}</ol>
-    {items.length > limit ? <button type="button" className="research-link" onClick={() => setLimit(items.length)}>{copy.more} · {items.length - limit}</button> : null}
+    {items.length > limit ? <button type="button" className="research-link" onClick={() => setLimit(value => value + 6)}>{copy.more} · {items.length - limit}</button> : null}
   </>;
 }

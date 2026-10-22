@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {ArrowUpRight, ChevronDown, LoaderCircle, RefreshCw, Sparkles, X} from "lucide-react";
 import type {AssessmentCitation, TrajectoryEpisode, TrajectoryOutputLanguage, TrajectoryContinuation} from "../../../../../../loopx/control_plane/capabilities/trajectory_assessment_types.js";
-import {ResearchProgress, metricCopy, verdictLabel, type ResearchProgressPack} from "./goal-research-progress";
+import {ResearchProgress, episodeQuestion, metricCopy, verdictLabel, type ResearchProgressPack} from "./goal-research-progress";
 import {requestJson} from "../../data/chat";
 import {sourceReadApiUrl} from "../../data/local-status-query";
 import {ContextHelp} from "./context-help";
@@ -37,10 +37,15 @@ export function useResearchAnalysis(goalId: string, active: boolean, zh: boolean
   const sourcePanel = useRef<HTMLElement>(null);
   const sourceTrigger = useRef<HTMLButtonElement | null>(null);
   const [location, setLocation] = useState(() => locationFor(goalId));
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const sourceScope = JSON.stringify([goalId, outputLanguage, readSourceUrl ?? ""]);
+  const [readState, setReadState] = useState<{scope: string; packId: string | null; snapshot: Snapshot | null; error: string; loading: boolean}>(
+    {scope: sourceScope, packId: location.packId, snapshot: null, error: "", loading: true});
+  // Scope changes hide old data synchronously, before effects start the next read.
+  const snapshot = readState.scope !== sourceScope ? null : readState.packId === location.packId
+    ? readState.snapshot : readState.snapshot ? {...readState.snapshot, pack: null} : null;
+  const readError = readState.scope === sourceScope && readState.packId === location.packId ? readState.error : "";
+  const loading = readState.scope !== sourceScope || readState.packId !== location.packId || readState.loading;
   const [error, setError] = useState("");
-  const [readError, setReadError] = useState("");
-  const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
   const panel = useRef<HTMLDivElement>(null);
@@ -48,60 +53,70 @@ export function useResearchAnalysis(goalId: string, active: boolean, zh: boolean
   const generation = useRef(0);
   const readSequence = useRef(0);
   const submitting = useRef(false);
-  const scope = useRef({goalId, packId: location.packId, outputLanguage});
-  scope.current = {goalId, packId: location.packId, outputLanguage};
+  const scope = useRef({goalId, packId: location.packId, outputLanguage, sourceScope});
+  scope.current = {goalId, packId: location.packId, outputLanguage, sourceScope};
   const read = useCallback(async (packId: string | null = location.packId, signal?: AbortSignal) => {
     const current = generation.current, sequence = ++readSequence.current;
+    const isCurrent = () => current === generation.current && sequence === readSequence.current
+      && scope.current.sourceScope === sourceScope && scope.current.packId === packId && !signal?.aborted;
+    setReadState(previous => ({scope: sourceScope, packId, snapshot: previous.scope === sourceScope
+      ? previous.packId === packId ? previous.snapshot : previous.snapshot ? {...previous.snapshot, pack: null} : null : null,
+      error: previous.scope === sourceScope && previous.packId === packId ? previous.error : "", loading: true}));
     const query = new URLSearchParams({goal_id: goalId, output_language: outputLanguage, ...(packId ? {pack_id: packId} : {})});
-    let value: Snapshot;
-    try {value = await requestJson<Snapshot>(sourceReadApiUrl(readSourceUrl, `${endpoint}?${query}`), {signal});}
-    catch (e) {if (current === generation.current && sequence === readSequence.current && !signal?.aborted) setReadError(errorText(e)); throw e;}
-    if (!value?.ok || !Array.isArray(value.catalog?.packs) || (value.pack && (value.pack.pack_id !== (packId ?? value.catalog.default_pack_id)
-        || value.pack.config.output_language !== outputLanguage || (value.pack.result && value.pack.result.output_language !== outputLanguage)))) {
-      const failure = new Error(zh ? "分析来源读回不一致。" : "Analysis source readback does not match.");
-      if (current === generation.current && sequence === readSequence.current && !signal?.aborted) setReadError(failure.message);
-      throw failure;
+    try {
+      const value = await requestJson<Snapshot>(sourceReadApiUrl(readSourceUrl, `${endpoint}?${query}`), {signal});
+      if (!value?.ok || !Array.isArray(value.catalog?.packs) || (value.pack && (value.pack.pack_id !== (packId ?? value.catalog.default_pack_id)
+          || value.pack.config.output_language !== outputLanguage || (value.pack.result && value.pack.result.output_language !== outputLanguage)))) {
+        throw new Error(zh ? "分析来源读回不一致。" : "Analysis source readback does not match.");
+      }
+      if (isCurrent()) {
+        setReadState({scope: sourceScope, packId, snapshot: value, error: "", loading: false});
+        if (value.pack?.job?.status === "succeeded" || value.pack?.job?.status === "cancelled") setError("");
+      }
+      return value;
+    } catch (e) {
+      if (isCurrent()) setReadState(previous => ({...previous, error: errorText(e), loading: false}));
+      throw e;
     }
-    if (current === generation.current && sequence === readSequence.current && scope.current.goalId === goalId && scope.current.packId === packId && scope.current.outputLanguage === outputLanguage && !signal?.aborted) {setSnapshot(value); setReadError(""); if (value.pack?.job?.status === "succeeded" || value.pack?.job?.status === "cancelled") setError("");}
-    return value;
-  }, [goalId, location.packId, zh, outputLanguage, readSourceUrl]);
+  }, [goalId, location.packId, zh, outputLanguage, readSourceUrl, sourceScope]);
   const applyLocation = useCallback((next: typeof location) => {
     // Selection and browser history share one source transition. Invalidate
     // pending reads/actions before a new scope can display the old snapshot.
     if (scope.current.packId !== next.packId) {
       generation.current++; readSequence.current++; submitting.current = false;
       citeGeneration.current++; setCitation(null); setCitationError(""); setCitationBusy(false);
-      setPending(false); setCancelPending(false); setError(""); setReadError("");
-      setSnapshot(previous => previous?.pack?.pack_id === next.packId ? previous : previous ? {...previous, pack: null} : null);
+      setPending(false); setCancelPending(false); setError("");
+      setReadState(previous => ({scope: sourceScope, packId: next.packId, snapshot: previous.scope === sourceScope && previous.snapshot
+        ? previous.snapshot.pack?.pack_id === next.packId ? previous.snapshot : {...previous.snapshot, pack: null} : null, error: "", loading: true}));
     }
-    scope.current = {goalId, packId: next.packId, outputLanguage};
+    scope.current = {goalId, packId: next.packId, outputLanguage, sourceScope};
     setLocation(next);
-  }, [goalId, outputLanguage]);
+  }, [goalId, outputLanguage, sourceScope]);
   useEffect(() => {
     generation.current++; submitting.current = false;
-    applyLocation(locationFor(goalId)); setSnapshot(null); setError(""); setReadError(""); setPending(false); setCancelPending(false);
+    applyLocation(locationFor(goalId));
+    setReadState({scope: sourceScope, packId: locationFor(goalId).packId, snapshot: null, error: "", loading: true});
+    setError(""); setPending(false); setCancelPending(false);
     const pop = () => applyLocation(locationFor(goalId));
     window.addEventListener("popstate", pop);
     return () => {generation.current++; citeGeneration.current++; window.removeEventListener("popstate", pop);};
-  }, [goalId, applyLocation, readSourceUrl]);
+  }, [goalId, applyLocation, readSourceUrl, sourceScope]);
   useEffect(() => {
     if (!active) return;
-    const controller = new AbortController(); setLoading(true);
-    void read(location.packId, controller.signal).catch(() => undefined).finally(() => {if (!controller.signal.aborted) setLoading(false);});
+    const controller = new AbortController();
+    void read(location.packId, controller.signal).catch(() => undefined);
     return () => controller.abort();
   }, [active, read, location.packId]);
-  // A language change is an analysis-scope change, not a model invocation.
-  // Hide the prior language synchronously, before the next effect/read finishes.
-  const currentSnapshot = snapshot?.pack && snapshot.pack.config.output_language !== outputLanguage ? null : snapshot;
+  const currentSnapshot = snapshot;
   const pack = currentSnapshot?.pack ?? null;
   useEffect(() => {citeGeneration.current++; setCitation(null); setCitationError(""); setCitationBusy(false);}, [goalId, readSourceUrl, snapshot?.pack?.pack_id, snapshot?.pack?.analysis_key]);
   useEffect(() => {
-    if ((!citation && !citationBusy && !citationError) || !location.open || !active) return;
+    if ((!citation && !citationBusy && !citationError) || !active) return;
     // A response can arrive before React mounts the source panel. Move only
     // after that commit, without competing with analysis-opening navigation.
     sourcePanel.current?.focus({preventScroll: true});
     sourcePanel.current?.scrollIntoView({block: "nearest"});
-  }, [citation, citationBusy, citationError, location.open, active]);
+  }, [citation, citationBusy, citationError, active]);
 
   // A pending request is observed here. A persisted running receipt alone is
   // not proof that the model is currently executing; old receipts stop polling.
@@ -127,9 +142,9 @@ export function useResearchAnalysis(goalId: string, active: boolean, zh: boolean
     window.history[push ? "pushState" : "replaceState"](window.history.state, "", url);
     applyLocation({open, packId});
   };
-  const show = (focusAnalysis = true) => {
+  const show = () => {
     navigate(true, pack?.pack_id ?? location.packId, !location.open);
-    if (focusAnalysis) requestAnimationFrame(() => {panel.current?.focus({preventScroll: true}); panel.current?.scrollIntoView({block: "start"});});
+    requestAnimationFrame(() => {panel.current?.focus({preventScroll: true}); panel.current?.scrollIntoView({block: "start"});});
   };
   const execute = async (retry = false) => {
     if (readSourceUrl && snapshot?.execution_enabled !== true) return;
@@ -157,7 +172,6 @@ export function useResearchAnalysis(goalId: string, active: boolean, zh: boolean
     const p = pack;
     if (!p) return;
     if (origin) sourceTrigger.current = origin;
-    show(false);
     const current = ++citeGeneration.current; setCitation(null); setCitationBusy(true); setCitationError("");
     const query = new URLSearchParams({goal_id: goalId, pack_id: p.pack_id, analysis_key: p.analysis_key, output_language: outputLanguage, source_id: c.source_id, first_line: String(c.first_line), last_line: String(c.last_line)});
     try {const value = await requestJson<Citation>(sourceReadApiUrl(readSourceUrl, `${endpoint}/citation?${query}`)); if (current === citeGeneration.current) setCitation(value);}
@@ -165,7 +179,7 @@ export function useResearchAnalysis(goalId: string, active: boolean, zh: boolean
     finally {if (current === citeGeneration.current) setCitationBusy(false);}
   };
   const closeCitation = () => {citeGeneration.current++; setCitation(null); setCitationError(""); setCitationBusy(false); requestAnimationFrame(() => sourceTrigger.current?.focus());};
-  return {readOnly: Boolean(readSourceUrl) && currentSnapshot?.execution_enabled !== true, citation, citationBusy, citationError, sourcePanel, readCitation, closeCitation, goalId, zh, location, snapshot: currentSnapshot, pack, readError, error: error || readError, loading, pending, cancelPending, recordedRunning, panel, trigger, read, show, execute, cancel,
+  return {readOnly: Boolean(readSourceUrl) && currentSnapshot?.execution_enabled !== true, citation, citationBusy, citationError, sourcePanel, readCitation, closeCitation, goalId, zh, location, snapshot: currentSnapshot, pack, readError, error, loading, pending, cancelPending, recordedRunning, panel, trigger, read, show, execute, cancel,
     close: () => {citeGeneration.current++; setCitation(null); setCitationError(""); setCitationBusy(false); navigate(false); requestAnimationFrame(() => trigger.current?.focus());}, select: (id: string) => navigate(location.open, id, true)};
 }
 type Controller = ReturnType<typeof useResearchAnalysis>;
@@ -186,7 +200,7 @@ export function ResearchAnalysisButton({analysis: a}: {analysis: Controller}) {
   // The action keeps its separate-usage consequence visible. Further method
   // explanation is optional; cached results and unavailable states are reads.
   const readOnly = unavailable || a.pack?.result || a.pending || a.recordedRunning;
-  return <div className="research-analysis-entry"><div className="research-analysis-entry-actions"><button ref={a.trigger} type="button" disabled={a.loading && !a.pack} onClick={() => readOnly ? a.show() : void a.execute(a.pack?.job?.status === "failed" || a.pack?.job?.status === "cancelled")} aria-expanded={a.location.open} title={unavailable ? reasonCopy(a.pack?.reason_code ?? a.snapshot?.catalog.reason_code, a.zh) : undefined}>
+  return <div className="research-analysis-entry"><div className="research-analysis-entry-actions"><button ref={a.trigger} type="button" disabled={a.loading && !a.pack} onClick={() => readOnly ? a.show() : void a.execute(a.pack?.job?.status === "failed" || a.pack?.job?.status === "cancelled")} aria-expanded={a.location.open} title={unavailable && !a.loading && !a.readError ? reasonCopy(a.pack?.reason_code ?? a.snapshot?.catalog.reason_code, a.zh) : undefined}>
     <Sparkles size={14} aria-hidden/>{a.pack?.result ? (a.zh ? "查看分析" : "View analysis") : analysisActionLabel(a.pack, a.zh)}
   </button><ContextHelp label={a.zh ? "分析说明" : "About deep analysis"}>
     {a.pack ? <p>{a.zh ? "分析请求设置（固定）：" : "Fixed analysis request: "}{a.pack.config.model} / {a.pack.config.effort} / {a.pack.config.service_tier}</p> : null}
@@ -232,17 +246,42 @@ function AnalysisContinuation({pack: p, analysis: a}: {pack: Pack; analysis: Con
   </section>;
 }
 
+function AnalysisReadState({analysis: a}: {analysis: Controller}) {
+  if (a.readError) return <div className="analysis-read-error" role="alert">
+    <span>{a.pack ? (a.zh ? "刷新失败，保留上次结果。" : "Refresh failed. Showing the last result.")
+      : (a.zh ? "暂时无法读取分析。" : "Analysis could not be read.")}</span>
+    <button type="button" disabled={a.loading} aria-label={a.zh ? "重试读取" : "Retry reading"} onClick={() => void a.read().catch(() => undefined)}>
+      <RefreshCw size={14} aria-hidden/>{a.loading ? (a.zh ? "正在重试…" : "Retrying…") : (a.zh ? "重试" : "Retry")}</button>
+    <ContextHelp label={a.zh ? "读取详情" : "Read details"}><p>{a.readError}</p></ContextHelp>
+  </div>;
+  if (!a.pack && a.loading && (!a.snapshot || a.snapshot.catalog.packs.length > 0)) return <div className="analysis-read-loading" role="status" aria-label={a.zh ? "正在读取分析" : "Reading analysis"}>
+    {Array.from({length: 6}, (_, i) => <span key={i} aria-hidden/>)}</div>;
+  if (!a.pack) return <div className="analysis-read-empty"><span>{reasonCopy(a.snapshot?.catalog.reason_code, a.zh)}</span>
+    <button type="button" disabled={a.loading} aria-label={a.zh ? "刷新分析来源" : "Refresh analysis sources"} onClick={() => void a.read().catch(() => undefined)}><RefreshCw size={14} aria-hidden/></button></div>;
+  return !a.pack.result && a.pack.availability !== "available" ? <p className="research-history-note">{reasonCopy(a.pack.reason_code, a.zh)}</p> : null;
+}
+
 export function ResearchAnalysisStatus({analysis: a}: {analysis: Controller}) {
-  const p = a.pack;
-  if (a.readOnly && !p) return <p className="research-history-note">{a.zh ? "此运行尚未接入深度分析。" : "Deep analysis is not connected for this runtime."}</p>;
-  if (!p) return <p className="research-history-note">{a.loading ? (a.zh ? "正在核对可分析来源；浏览不调用 Agent。" : "Checking analysis sources. Browsing never invokes an Agent.") : reasonCopy(a.snapshot?.catalog.reason_code, a.zh)}</p>;
-  return !p.result && p.availability !== "available" ? <p className="research-history-note">{reasonCopy(p.reason_code, a.zh)}</p> : null;
+  return a.location.open ? null : <AnalysisReadState analysis={a}/>;
 }
 
 export function ResearchProgressSummary({analysis: a}: {analysis: Controller}) {
   const packs = a.snapshot?.catalog.packs ?? [];
   if (!a.pack && !packs.length) return null;
-  return <ResearchProgress pack={a.pack} packs={packs} selectedId={a.location.packId ?? a.snapshot?.catalog.default_pack_id ?? ""} error={a.readError} zh={a.zh} onSelect={a.select} onCitation={a.readCitation}/>;
+  return <ResearchProgress pack={a.pack} packs={packs} selectedId={a.location.packId ?? a.snapshot?.catalog.default_pack_id ?? ""} zh={a.zh} onSelect={a.select} onCitation={a.readCitation}/>;
+}
+
+export function ResearchCitationPanel({analysis: a}: {analysis: Controller}) {
+  if (!a.citation && !a.citationBusy && !a.citationError) return null;
+  const zh = a.zh;
+  // One source reader for metric, native-result and analysis citations. Reading
+  // an original never changes whether the separate analysis is expanded.
+  return <section className="research-analysis analysis-source" ref={a.sourcePanel} tabIndex={-1} aria-label={zh ? "引用原文" : "Cited original"} onKeyDown={event => {if (event.key === "Escape") {event.stopPropagation(); a.closeCitation();}}}>
+    <header><h4>{zh ? "引用原文" : "Cited original"}</h4><button type="button" onClick={a.closeCitation} aria-label={zh ? "关闭原文" : "Close source"}><X size={14} aria-hidden/></button></header>
+    {a.citationBusy ? <p role="status">{zh ? "正在读取引用原文…" : "Reading cited source…"}</p> : null}
+    {a.citationError ? <p className="analysis-error" role="alert">{a.citationError}</p> : null}
+    {a.citation ? <><p>{a.citation.artifact} · {zh ? "行" : "lines"} {a.citation.first_line}–{a.citation.last_line}</p><pre>{a.citation.text}</pre></> : null}
+  </section>;
 }
 
 export function ResearchAnalysisPanel({analysis: a}: {analysis: Controller}) {
@@ -260,8 +299,7 @@ export function ResearchAnalysisPanel({analysis: a}: {analysis: Controller}) {
     <header><div><h3>{zh ? "轨迹深度分析" : "Trajectory analysis"}</h3><p>{p?.title ?? (zh ? "只分析已授权的固定轨迹，不改变研究历史。" : "Analyze an authorized fixed trajectory without changing its history.")}</p></div><div className="analysis-header-actions">{result ? <button type="button" onClick={() => void a.read().catch(() => undefined)} aria-label={zh ? "刷新分析结果" : "Refresh analysis result"}><RefreshCw size={15} aria-hidden/></button> : null}<button type="button" onClick={a.close} aria-label={zh ? "关闭分析" : "Close analysis"}><X size={16} aria-hidden/></button></div></header>
     {a.error ? <p className="analysis-error" role="alert">{a.error} <button type="button" onClick={() => void a.read().catch(() => undefined)}>{zh ? "重试读取" : "Retry reading"}</button></p> : null}
     {a.snapshot?.catalog.unreadable_pack_ids?.length && !p?.continuation_unavailable ? <p className="analysis-warning">{zh ? "部分历史分析暂不可读" : "Some historical analyses cannot be read"} · {a.snapshot.catalog.unreadable_pack_ids.length}</p> : null}
-    {a.loading && !p ? <p role="status">{zh ? "正在核对可分析来源…" : "Checking authorized sources…"}</p> : null}
-    {!a.loading && !p ? <p>{reasonCopy(a.snapshot?.catalog.reason_code, zh)} <button type="button" onClick={() => void a.read().catch(() => undefined)}><RefreshCw size={14} aria-hidden/>{zh ? "刷新" : "Refresh"}</button></p> : null}
+    <AnalysisReadState analysis={a}/>
     {p ? <>
       <div className="analysis-scope">{p.episode_count} {zh ? "个研究片段" : "research episodes"} · {p.selection.exhaustive ? (zh ? "固定范围" : "Fixed scope") : (zh ? "定向抽样" : "Purposive sample")}<ContextHelp label={zh ? "分析范围" : "Analysis scope"}>
         <p>{p.selection.exhaustive ? (zh ? "覆盖此固定分析范围；不等于覆盖全部研究。" : "Covers this fixed analysis scope, not necessarily the whole research history.") : (zh ? "定向抽样，仅分析选定研究片段；范围外或未捕获的工作未纳入，不代表全程。" : "Purposive sample of selected episodes; work outside this scope or not captured is excluded. It does not represent the whole run.")}</p>
@@ -269,7 +307,7 @@ export function ResearchAnalysisPanel({analysis: a}: {analysis: Controller}) {
         <p>{zh ? "下方仍显示当前研究 Goal 的已记录历史。" : "The current research Goal’s recorded history remains below."}</p>
       </ContextHelp></div>
       <AnalysisContinuation pack={p} analysis={a}/>
-      {!available ? <p className="analysis-warning">{reasonCopy(p.reason_code, zh)}</p> : null}
+      {p.result && !available ? <p className="analysis-warning">{reasonCopy(p.reason_code, zh)}</p> : null}
       {!result || a.pending || a.recordedRunning ? <div className="analysis-actions">
         {a.pending || a.recordedRunning ? <><p role="status">{a.pending ? <LoaderCircle size={15} aria-hidden className="analysis-spin"/> : null}{a.pending ? (zh ? "正在处理分析请求…" : "Processing analysis request…") : (zh ? "上次记录仍待分析结果；当前执行状态尚未核验。" : "The last receipt awaits a result; current execution is unverified.")}</p><button type="button" onClick={() => void a.cancel()} disabled={a.cancelPending || p.job?.cancel_requested}>{p.job?.cancel_requested ? (zh ? "已请求取消" : "Cancellation requested") : a.cancelPending ? (zh ? "正在请求取消…" : "Requesting cancellation…") : (zh ? "取消分析" : "Cancel analysis")}</button></>
           : result ? <button type="button" onClick={() => void a.read().catch(() => undefined)}><RefreshCw size={14} aria-hidden/>{zh ? "刷新结果" : "Refresh result"}</button>
@@ -280,12 +318,12 @@ export function ResearchAnalysisPanel({analysis: a}: {analysis: Controller}) {
       {result ? <>
         <div className="analysis-finding"><span>{zh ? "Agent 判断 · 未校准" : "Agent interpretation · uncalibrated"}{p.applicability === "historical" ? (zh ? " · 历史结果" : " · Historical result") : ""}</span><h4>{headline}</h4></div>
         {p.episodes?.map(episode => <details className="analysis-episode" key={`${p.pack_id}:${p.analysis_key}:${episode.id}`}>
-          <summary><span className="analysis-episode-name">{episode.id}</span><span className="analysis-episode-verdicts">{(["benefit_test", "evidence_adoption"] as const).map(metric => {
+          <summary><span className="analysis-episode-name">{episodeQuestion(result, episode.id, episode)}</span><span className="analysis-episode-verdicts">{(["benefit_test", "evidence_adoption"] as const).map(metric => {
             const row = result.assessments.find(item => item.episode_id === episode.id && item.metric === metric);
             return row ? <span key={metric}>{metricCopy[metric][zh ? 0 : 1]} · {verdictLabel(metric, row.verdict, zh)}</span> : null;
           })}</span><ChevronDown size={14} aria-hidden/></summary>
-          <div className="analysis-episode-body"><h4>{result.episode_questions?.find(q => q.episode_id === episode.id)?.question ?? episode.question}</h4>
-          {result.episode_questions ? <details><summary>{zh ? "原始研究问题" : "Original research question"}</summary><p>{episode.question}</p></details> : null}
+          <div className="analysis-episode-body">
+          <details><summary>{zh ? "原始研究问题" : "Original research question"}</summary><code>{episode.id}</code><p>{episode.question}</p></details>
           <div className="analysis-episode-context">{(["benefit_test", "evidence_adoption"] as const).map(metric => {
             const row = result.assessments.find(item => item.episode_id === episode.id && item.metric === metric);
             return row ? <div key={metric}><strong>{metric === "benefit_test" ? (zh ? "原目标收益的检验与缺口" : "Original-objective utility test and its gaps") : (zh ? "证据如何影响后续行动" : "How evidence informed subsequent action")}</strong><p>{row.reason}</p>{citationButtons(row.citations)}</div> : null;
@@ -296,13 +334,6 @@ export function ResearchAnalysisPanel({analysis: a}: {analysis: Controller}) {
         })}</div></div></details>)}
         <details className="analysis-method"><summary>{zh ? "来源、方法、覆盖与分析成本" : "Sources, method, coverage and analysis cost"}</summary><p>{p.objective}</p><dl><dt>{zh ? "来源范围" : "Source scope"}</dt><dd>{p.scope.case_id} · {p.scope.run_id}<br/>{p.scope.window}</dd><dt>{zh ? "方法" : "Method"}</dt><dd>{result.method_version} · {zh ? "模型判断未校准" : "Uncalibrated model judgment"}</dd><dt>{zh ? "模型设置" : "Requested model"}</dt><dd>{p.config.model} / {p.config.effort} / {p.config.service_tier} · {zh ? "实际服务档位" : "Served tier"}: {p.job?.served_service_tier ?? (zh ? "未知" : "unknown")}</dd><dt>{zh ? "分析用量" : "Analysis usage"}</dt><dd>{p.job?.reused_from_analysis_key ? (zh ? "复用上一版判读，无新增模型调用；原用量保留在上一版。" : "Reused previous judgments without a new model call; original usage stays with the previous version.") : <>{p.job?.analysis_wall_seconds == null ? "—" : `${p.job.analysis_wall_seconds.toFixed(1)}s`} · {zh ? "输入" : "input"} {p.job?.usage?.input_tokens?.toLocaleString() ?? "—"} / {zh ? "输出" : "output"} {p.job?.usage?.output_tokens?.toLocaleString() ?? "—"} tokens · {zh ? "金额未采集，推理 token 已包含于输出" : "Dollar cost unmeasured; reasoning tokens are included in output"}</>}</dd><dt>{zh ? "覆盖" : "Coverage"}</dt><dd>{p.episode_count} {zh ? "个固定片段" : "fixed episodes"} · {p.source_count} {zh ? "份来源" : "sources"} · {zh ? "总体片段数" : "Population"}: {p.selection.population_episodes ?? (zh ? "未知" : "unknown")}</dd><dt>{zh ? "取样规则" : "Selection"}</dt><dd>{p.selection.rule}</dd><dt>{zh ? "版本" : "Revision"}</dt><dd>{p.scope.revision}</dd></dl><ul>{result.limitations.map((text, i) => <li key={i}>{text}</li>)}</ul><p>{zh ? "引用行存在不等于解释正确；本页不提供独立科学校准结论。" : "A valid citation range does not establish entailment or independent scientific calibration."}</p></details>
       </> : null}
-      {/* Bound native evidence is readable before any model assessment exists. */}
-      {a.citation || a.citationBusy || a.citationError ? <section className="analysis-source" ref={a.sourcePanel} tabIndex={-1} aria-label={zh ? "引用原文" : "Cited original"} onKeyDown={event => {if (event.key === "Escape") {event.stopPropagation(); a.closeCitation();}}}>
-        <header><h4>{zh ? "引用原文" : "Cited original"}</h4><button type="button" onClick={a.closeCitation} aria-label={zh ? "关闭原文" : "Close source"}><X size={14} aria-hidden/></button></header>
-        {a.citationBusy ? <p role="status">{zh ? "正在读取引用原文…" : "Reading cited source…"}</p> : null}
-        {a.citationError ? <p className="analysis-error" role="alert">{a.citationError}</p> : null}
-        {a.citation ? <><p>{a.citation.artifact} · {zh ? "行" : "lines"} {a.citation.first_line}–{a.citation.last_line}</p><pre>{a.citation.text}</pre></> : null}
-      </section> : null}
     </> : null}
   </div>;
 }

@@ -32,12 +32,18 @@ const searchSchema = z.object({
   // Preserve the existing history/analysis owners' query state. They validate
   // it from the URL themselves; router decoding can produce arrays or numbers.
   research_lens: z.unknown().optional(),
+  research_phase: z.unknown().optional(),
   research_goal: z.unknown().optional(),
   research_node: z.unknown().optional(),
   research_group: z.unknown().optional(),
   research_pack: z.unknown().optional(),
   research_analysis: z.unknown().optional(),
   research_analysis_goal: z.unknown().optional(),
+  // Settings view state is validated by its local reader, just like research
+  // focus. Preserve it across workspace navigation without granting a target.
+  settings_scope: z.unknown().optional(),
+  settings_goal: z.unknown().optional(),
+  settings_tab: z.unknown().optional(),
   // Stable Goal/Agent working conversation; empty string opens the directory.
   workAgent: z.string().regex(/^[A-Za-z0-9._:-]{0,200}$/).optional().catch(undefined),
   todo: z.string().regex(/^[A-Za-z0-9._:-]{1,200}$/).optional().catch(undefined),
@@ -48,7 +54,7 @@ const searchSchema = z.object({
   conversationBinding: z.unknown().transform(value => typeof value === "string" ? value : JSON.stringify(value)).optional(),
   conversationSession: z.unknown().transform(value => typeof value === "string" ? value : JSON.stringify(value)).optional(),
   statusUrl: z.string().optional().default(""),
-  view: z.enum(["conversation", "overview", "tasks", "files"]).optional(),
+  view: z.enum(["conversation", "overview", "tasks", "research", "files"]).optional(),
   reportSessionId: z.string().regex(/^[A-Za-z0-9._-]{1,160}$/).optional(),
   reportMessageId: z.string().regex(/^[A-Za-z0-9._-]{1,160}$/).optional(),
 });

@@ -58,6 +58,7 @@ export function taskClass(item: JsonObject): string {
 }
 
 export function readAgent(value: unknown): string | null {
+  if (value == null || value === "" || value === false) return null;
   try {return normalizeTodoAgent(typeof value === "boolean" ? value ? "True" : "" : value, "agent");}
   catch (error) {if (error instanceof AuthorityStoreProtocolError) return null; throw error;}
 }
@@ -75,6 +76,7 @@ export function readResume(value: unknown): string | null {
 }
 
 export function readScope(value: unknown): JsonObject | null {
+  if (value == null || value === "") return null;
   const raw = typeof value === "string" ? value : object(value);
   const selected = typeof raw === "string" ? raw : {kind: raw.kind, granularity: raw.granularity, scope_key: raw.scope_key,
     ...(id(raw.decision_id) ? {decision_id: id(raw.decision_id)} : {})};
@@ -82,7 +84,7 @@ export function readScope(value: unknown): JsonObject | null {
   catch (error) {if (error instanceof EffectRuntimeRequestError) return null; throw error;}
 }
 function readScopes(value: unknown): JsonObject[] {
-  const values = Array.isArray(value) ? value : text(value || "").split(/[,;|]/u), result: JsonObject[] = [];
+  const values = listValues(value), result: JsonObject[] = [];
   for (const raw of values) {
     const scope = readScope(raw);
     if (scope && !result.some(row => row.kind === scope.kind && row.granularity === scope.granularity && row.scope_key === scope.scope_key)) result.push(scope);
@@ -91,7 +93,7 @@ function readScopes(value: unknown): JsonObject[] {
 }
 
 function listValues(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : text(value || "").split(/[,;|]/u);
+  return Array.isArray(value) ? value : text(value || "").split(/[,;|]/u).filter(Boolean);
 }
 function readCapabilities(value: unknown): string[] {
   const result: string[] = [];

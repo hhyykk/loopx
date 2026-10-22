@@ -71,7 +71,7 @@ def list_goal_todos(
 
     rollout_events = TodoResumeRolloutEvents(rollout_events, runtime_root=runtime_root, goal_id=goal_id)
 
-    from ..coordination.local_authority import local_authority_is_promoted, LocalCoordinationAuthorityUnavailable
+    from ..coordination.local_authority import CanonicalAuthorityRequired, LocalCoordinationAuthorityUnavailable
     from .goal_todo_projection import project_todo_read
     from ..runtime.time import now_utc
 
@@ -84,17 +84,12 @@ def list_goal_todos(
             "todo_id": normalized_todo_id, "agent_id": normalized_agent_id, "limit": limit,
             "read_scope": read_scope, "json_references": json_references, "thin": thin,
             "state_file": str(resolved_state_file), "project": str(resolved_project) if resolved_project else None}}
-    if not local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
-        params["legacy_source"] = _legacy_todo_read_source(goal, resolved_state_file,
-            todo_id=normalized_todo_id, retained=read_scope == "completed_history")
     result = project_todo_read(params)
-    if result.get("source_request") == "legacy_todo_source":
-        params["legacy_source"] = _legacy_todo_read_source(goal, resolved_state_file,
-            todo_id=normalized_todo_id, retained=read_scope == "completed_history")
-        result = project_todo_read(params)
     if "payload" not in result:
         failure = result["canonical"]
         code = str(failure.get("reason_code") or "local_authority_todo_list_unavailable")
+        if code == "canonical_authority_required":
+            raise CanonicalAuthorityRequired(goal_id=goal_id, operation="todo_read", payload=failure)
         payload = {"source_authority": "unknown_fail_closed"} if code == "local_authority_mode_read_failed" else failure
         raise LocalCoordinationAuthorityUnavailable(str(failure.get("reason") or "canonical Todo authority is unavailable"),
             code=code, payload=payload)
@@ -104,14 +99,3 @@ def list_goal_todos(
         payload = observe_todo_acceptance(payload, result["canonical_acceptance"],
             registry_path=registry_path, goal_id=goal_id)
     return payload
-
-
-def _legacy_todo_read_source(goal, state_file, *, todo_id, retained):
-    from ..goals.legacy_event_source import require_no_legacy_todo_events
-
-    if not state_file.exists():
-        raise ValueError(f"active state file does not exist: {state_file}")
-    state_text = state_file.read_text(encoding="utf-8")
-    require_no_legacy_todo_events(goal, state_path=state_file)
-    from .goal_todo_projection import prepare_todo_source_text
-    return prepare_todo_source_text(goal, state_text, state_file, todo_id=todo_id, retained=retained)

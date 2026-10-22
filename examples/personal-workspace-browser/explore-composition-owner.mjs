@@ -142,7 +142,7 @@ export const exploreCompositionOwnerScenario = {
       const { page, errors } = context;
       await page.getByRole("button", { name: "设置", exact: true }).click();
       await page.locator(".personal-settings-tabs").getByRole("button", { name: "能力中心", exact: true }).click();
-      await page.getByRole("radio", { name: "单个 Goal", exact: true }).check();
+      await page.getByRole("radio", { name: "Goal 设置", exact: true }).check();
       await page.getByRole("combobox", { name: "目标 Goal", exact: true }).selectOption(GOAL);
       const catalog = page.getByRole("navigation", { name: "Goal 能力目录" });
       const openExplore = async () => {

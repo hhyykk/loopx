@@ -127,11 +127,14 @@ from .control_plane.work_items.autonomous_candidates import (
 from .control_plane.goals.active_state_metadata import (
     parse_state_frontmatter,
 )
+# Explicit source parsing remains available to migration and fixture callers;
+# ordinary status obtains Task authority through the canonical read model.
+from .control_plane.todos.active_state_todo_parser import (
+    active_state_incomplete_warning as active_state_incomplete_warning,
+    parse_active_state_todos as parse_active_state_todos,
+)
 from .control_plane.todos.active_state_todos import (
     active_state_todo_fields as _active_state_todo_fields_read_model,
-)
-from .control_plane.todos.active_state_todo_parser import (
-    parse_active_state_todos,
 )
 from .control_plane.work_items.attention_item import (
     attention_item as _attention_item_read_model,
@@ -730,7 +733,6 @@ def active_state_todo_fields(
         load_rollout_events=load_rollout_events,
         rollout_event_log_path=rollout_event_log_path,
         max_todo_index_rollout_events_per_goal=MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL,
-        parse_active_state_todos=parse_active_state_todos,
         parse_issue_meta_surface=parse_issue_meta_surface,
         backlog_hygiene_warning=backlog_hygiene_warning,
         completed_todo_archive_warning=completed_todo_archive_warning,
@@ -1351,12 +1353,10 @@ def collect_status(
     *,
     registry_path: Path,
     runtime_root_override: str | None,
-    scan_roots: list[Path],
     limit: int,
     include_task_graph: bool = False,
     goal_id: str | None = None,
     available_capabilities: Any = None,
-    include_public_boundary_scan: bool = True,
     recent_run_limit: int | None = None,
     include_goal_subagent_configuration: bool = False,
     include_zcode_goal_eligibility: bool = False,
@@ -1369,12 +1369,10 @@ def collect_status(
             registry_path=registry_path,
             allow_missing_registry=allow_missing_registry,
             runtime_root_override=runtime_root_override,
-            scan_roots=scan_roots,
             limit=limit,
             include_task_graph=include_task_graph,
             goal_id=goal_id,
             available_capabilities=available_capabilities,
-            include_public_boundary_scan=include_public_boundary_scan,
             recent_run_limit=recent_run_limit,
             include_goal_subagent_configuration=(
                 include_goal_subagent_configuration

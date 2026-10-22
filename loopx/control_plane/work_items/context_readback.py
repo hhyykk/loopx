@@ -14,13 +14,12 @@ from ..effect_runtime import effect_runtime_result
 from ..coordination.local_authority import read_canonical_todos_if_promoted
 from ..goals.acceptance import inspect_goal_acceptance
 from ..goals.state_resolution import resolve_goal_state
-from ..todos.active_state_todo_parser import parse_todo_source
 from ..todos.list_readback import list_goal_todos
+from ..todos.machine_region import find_todo_regions
 from ..todos.summary_item import todo_text_content_revision
 
 
-def _source_content(read, *, registry_path, runtime_root, goal_id, todo_id,
-                    state_file=None, expected_state_revision=None):
+def _source_content(read, *, registry_path, runtime_root, goal_id, todo_id):
     source = read.get("source")
     if source == "goal_state":
         _goal, _project, state_file = resolve_goal_state(
@@ -28,8 +27,26 @@ def _source_content(read, *, registry_path, runtime_root, goal_id, todo_id,
             project_override=None, state_file_override=None)
         source_bytes = state_file.read_bytes()
         text = source_bytes.decode("utf-8")
-        return {"state_file": str(state_file), "text": text,
+        content = {"state_file": str(state_file),
             "revision": "sha256:" + sha256(source_bytes).hexdigest()}
+        # Only the writer's explicitly marked regions have generated ownership.
+        # Retain every other byte, including frontmatter, arbitrary headings,
+        # comments and historical narrative. Legacy/unmarked input stays a full
+        # progressive read; malformed ownership fails rather than hiding text.
+        lines = text.splitlines(keepends=True)
+        regions = find_todo_regions(lines)
+        if regions and all(region.marked for region in regions):
+            parts, excluded, start = [], [], 0
+            for region in regions:
+                parts.extend(lines[start:region.start])
+                excluded.append({"role": region.role,
+                    "start_line": region.start + 1, "end_line": region.end,
+                    "revision": "sha256:" + sha256(
+                        "".join(lines[region.start:region.end]).encode("utf-8")).hexdigest()})
+                start = region.end
+            parts.extend(lines[start:])
+            content.update(text="".join(parts), excluded_todo_regions=excluded)
+        return content
     if source == "goal_acceptance":
         # The typed acceptance owner scopes task-binding observations while
         # retaining the complete Goal contract and cumulative outcomes. The
@@ -42,33 +59,14 @@ def _source_content(read, *, registry_path, runtime_root, goal_id, todo_id,
             raise ValueError("selected Todo identity is unavailable")
         canonical = read_canonical_todos_if_promoted(
             runtime_root=runtime_root, goal_id=goal_id)
-        if canonical is not None:
-            records = canonical["todos"]
-            source_name = canonical["source_authority"]
-            authority_read = {
-                "source_authority": source_name,
-                "provider_revision": canonical.get("provider_revision"),
-                "decision_read_from_provider": True,
-                "legacy_fallback_used": False,
-            }
-        else:
-            if not isinstance(state_file, Path):
-                raise ValueError("selected Todo source requires the current Goal state read")
-            source_bytes = state_file.read_bytes()
-            revision = "sha256:" + sha256(source_bytes).hexdigest()
-            if expected_state_revision and expected_state_revision != revision:
-                raise ValueError("selected Todo source changed after the Goal state read")
-            state_text = source_bytes.decode("utf-8")
-            active, archived, _sections = parse_todo_source(
-                state_text, state_path=state_file)
-            records = [*active["user"], *active["agent"], *archived]
-            source_name = "markdown_active_state"
-            authority_read = {
-                "source_authority": source_name,
-                "provider_revision": revision,
-                "decision_read_from_provider": False,
-                "legacy_fallback_used": False,
-            }
+        records = canonical["todos"]
+        source_name = canonical["source_authority"]
+        authority_read = {
+            "source_authority": source_name,
+            "provider_revision": canonical.get("provider_revision"),
+            "decision_read_from_provider": True,
+            "legacy_fallback_used": False,
+        }
         matches = [item for item in records
             if item.get("todo_id") == todo_id
             and item.get("archive_state", "active") != "archive"]
@@ -131,24 +129,16 @@ def attach_work_context(payload: dict[str, Any], *, registry_path: Path,
     if isinstance(selected, dict) and isinstance(selected_text_snapshot, str):
         selected["_context_text_sha256"] = selected_text_snapshot
     results = [dict(item) for item in (hook_dispatch or {}).get("contexts", [])]
-    state_file = None
-    state_revision = None
     for read in reads:
         if read.get("source") not in {"goal_state", "goal_acceptance", "selected_todo"}:
             continue
         result = {"command": read["command"]}
         try:
             result["content"] = _source_content(read, registry_path=registry_path,
-                runtime_root=runtime_root, goal_id=goal_id, todo_id=plan.get("todo_id"),
-                state_file=state_file, expected_state_revision=state_revision)
+                runtime_root=runtime_root, goal_id=goal_id, todo_id=plan.get("todo_id"))
         except (OSError, ValueError, RuntimeError):
             result["error_code"] = "context_source_unavailable"
         results.append(result)
-        if read.get("source") == "goal_state" and isinstance(result.get("content"), dict):
-            resolved_path = result["content"].get("state_file")
-            if isinstance(resolved_path, str):
-                state_file = Path(resolved_path)
-                state_revision = result["content"].get("revision")
     users = None
     if agent_id and plan.get("read_user_todos"):
         try:

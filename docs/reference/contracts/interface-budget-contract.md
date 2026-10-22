@@ -10,8 +10,8 @@ and size/count budgets.
 | --- | --- | --- | --- | --- | --- | --- |
 | `heartbeat_prompt_json` | heartbeat automation | wake and route one bounded turn | `quota should-run`, `status`, or `review-packet --handoff-only` | `json_chars <= 5400` plus `interface_budget.within_budget=true` | `nested_keys <= 40` | `top_level_keys <= 30` |
 | `review_packet_handoff_only_json` | project-agent handoff | forward the smallest sufficient task packet | full `review-packet` or run-history artifact | `json_chars <= 3000` plus `handoff_interface_budget.within_budget=true` | `nested_keys <= 40` | `top_level_keys <= 18` |
-| `quota_should_run_json` | quota guard | decide whether the selected goal may spend compute | `status`, `history`, or active state | `json_chars <= 20500` | `nested_keys <= 525` | `top_level_keys <= 54` |
-| `dashboard_status_json` | operator dashboard | render first-screen operator state | `history`, run artifacts, or project-local adapter output | `json_chars <= 24000` | `nested_keys <= 350` | `top_level_keys <= 27` |
+| `quota_should_run_json` | quota guard | decide whether the selected goal may spend compute | `status`, `history`, or active state | `json_chars <= 20500` | `nested_keys <= 575` | `top_level_keys <= 55` |
+| `dashboard_status_json` | operator dashboard | render first-screen operator state | `history`, run artifacts, or project-local adapter output | `json_chars <= 25000` | `nested_keys <= 350` | `top_level_keys <= 27` |
 
 These four budgets measure compact machine payloads. For
 `heartbeat_prompt_json`, the measured payload is the actual
@@ -23,7 +23,7 @@ indentation and Markdown wrappers can make emitted output materially larger;
 the emitted-output qualification matrix below measures that separate boundary
 through the real CLI entry point.
 
-The current quota fixture measures 15,419 characters, 378 nested keys, and 52
+The earlier projection-envelope quota fixture measured 15,419 characters, 378 nested keys, and 52
 top-level keys on `main`. The `quota_should_run` projection envelope raises the
 same workload to 18,636 characters, 513 nested keys, and 53 top-level keys. The
 new keys carry the inherited status sources, direct live-read facts, freshness,
@@ -41,6 +41,30 @@ records the useful contract growth instead of hiding it through compaction.
 嵌套键上限从 386 调至 525，顶层键上限仍为 54。精确 head 仍保留 1,864 字符、
 12 个嵌套键与一个顶层键余量。删除 envelope 行会破坏投影合同，因此这里记录有用的
 合同增长，而不是用压缩隐藏它。
+
+Ordinary reads now require canonical authority, so the smoke explicitly imports
+its disposable fixture through the saved backup/import plan. On the identical
+imported workload, base `0603b49f` and the read-retirement candidate both measure
+20,287 quota characters / 564 nested keys / 54 top-level keys and 24,315 status
+characters / 338 nested keys / 26 top-level keys. This is fixture qualification,
+not candidate payload growth. Retain canonical Task identity, source provenance
+and freshness instead of substituting legacy reads or dropping envelope rows.
+The original 525-key quota and 24,000-character status failures remain recorded;
+their presentation limits become 575 keys and 25,000 characters, leaving 11
+keys and 685 characters. Quota's 54 top-level keys also leave no cadence
+headroom under the earlier ceiling; a 55-key limit retains one key of margin.
+Quota characters, status key counts, fixture population,
+sampling depth and semantic assertions stay unchanged. These limits grant no
+execution authority or change to frozen experiment or promotion criteria.
+
+普通读取现在要求 canonical authority，因此 smoke 通过保存的备份／导入计划显式迁移
+一次性夹具。同一已迁移负载在 base `0603b49f` 与退役候选上完全一致：quota 为
+20,287 字符／564 个嵌套键／54 个顶层键，status 为 24,315 字符／338 个嵌套键／
+26 个顶层键。这是夹具资格补齐，没有候选输出增长。保留 Task 身份、来源与新鲜度，
+不以旧读取或删除 envelope 行代替。原 525 键和 24,000 字符失败记录保留；展示限制
+分别改为 575 键与 25,000 字符，余量为 11 键、685 字符。quota 原 54 个顶层键
+已占满旧限、没有 cadence 余量，改为 55 后保留一个键。quota 字符、status 键数、
+夹具数量、采样深度和语义断言不变；不授予执行权限，也不改变冻结的实验或 promotion 标准。
 
 The successful thin heartbeat projection contains only `schema_version`,
 `ok`, `goal_id`, optional `agent_id`, `task_body`, and the compact
@@ -406,6 +430,40 @@ closed. The intentional evidence-command retirement is recognized only with a
 qualified replacement replan-context projection and remains a review signal.
 Coverage-only to dense replan context has a measured, one-time allowance on its
 three affected JSON surfaces; dense-to-dense changes retain ordinary limits.
+
+### Canonical CLI fixture qualification
+
+Ordinary CLI reads require canonical authority. Both differential arms explicitly
+back up and import the same complete synthetic source before measuring; fixture
+setup is outside the measured commands. On base `887d66551` and the read-retirement
+candidate, all 96 rows retain their population, format, semantic keys and growth
+checks. Every JSON character count is identical. Quota small/multi-agent JSON is
+24,099/24,820 characters; their characterization ceilings become 25,000/25,500.
+Canonical source witnesses and complete User context remain in the packet.
+
+The Markdown renderer removes only the second, identical instruction copy,
+retaining its wording and placement before the complete JSON source details.
+Small/crowded quota becomes 9,558/10,225 characters and 182/166 lines, 475 characters
+less than the same canonical baseline. Their limits become 10,000/10,500 characters
+and 190/180 lines. Explicit quota detail modes use 10,000 characters/190 lines.
+TurnEnvelope measures 10,681 JSON characters, 12,268 with multi-subagent, and
+4,521 Markdown characters/135 lines; its stdout limits become 13,000/4,800
+characters and 140 Markdown lines. The original failures remain validation
+evidence. Other limits, collection growth, wire-byte targets, execution authority
+and frozen experiment criteria do not change.
+
+普通 CLI 读取要求 canonical authority。差分两臂在测量前都显式备份并导入同一份完整
+合成来源，夹具准备不计入被测命令。base `887d66551` 与退役候选的 96 行保留原数量、
+格式、语义键及增长检查，全部 JSON 字符数相同。quota 小型／多 Agent 为
+24,099／24,820 字符，展示上限调整为 25,000／25,500；保留 canonical 来源见证及
+完整 User 上下文。
+
+Markdown 仅去掉第二份完全相同的 instruction，原措辞仍位于完整 JSON 来源详情之前。
+quota 小型／拥挤夹具为 9,558／10,225 字符、182／166 行，比同一 canonical 基线各少
+475 字符；上限调整为 10,000／10,500 字符、190／180 行。显式 quota detail 使用
+10,000 字符／190 行。TurnEnvelope 为 10,681 JSON 字符，启用多子 Agent 后为
+12,268；Markdown 为 4,521 字符／135 行，stdout 上限调整为 13,000／4,800 字符、
+140 行。原失败保留；其它限制、集合增长、wire-byte 目标、执行权限及冻结实验标准不变。
 
 ### Native fixture qualification
 

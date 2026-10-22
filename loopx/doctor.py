@@ -1293,6 +1293,10 @@ def render_doctor_markdown(payload: dict[str, Any]) -> str:
         f"- typescript_control_plane: `{typescript_control_plane.get('status')}`",
         f"- typescript_runtime_state: `{typescript_runtime_lifecycle.get('state')}`",
         f"- typescript_runtime_diagnostic: `{typescript_runtime_lifecycle.get('diagnostic_code')}`",
+        "- typescript_runtime_locator_state: "
+        f"`{(typescript_runtime_lifecycle or {}).get('locator_state')}`",
+        "- typescript_runtime_recorded_pid_alive: "
+        f"`{(typescript_runtime_lifecycle or {}).get('recorded_pid_alive')}`",
         "",
         "## Checks",
     ]
@@ -1399,6 +1403,10 @@ def render_doctor_markdown(payload: dict[str, Any]) -> str:
                 f"- minimum_node_version: `{typescript_control_plane.get('minimum_node_version')}`",
                 f"- detected_node_version: `{typescript_control_plane.get('detected_node_version')}`",
                 f"- semantic_probe: `{typescript_control_plane.get('semantic_probe')}`",
+                "- locator_state: "
+                f"`{(typescript_runtime_lifecycle or {}).get('locator_state')}`",
+                "- recorded_pid_alive: "
+                f"`{(typescript_runtime_lifecycle or {}).get('recorded_pid_alive')}`",
             ]
         )
         runtime_identity = typescript_control_plane.get("runtime_identity")

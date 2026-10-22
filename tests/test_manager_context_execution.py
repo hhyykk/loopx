@@ -75,6 +75,13 @@ def flow(tmp_path, monkeypatch):
             return {"status": "accepted"}
 
     monkeypatch.setattr(execution, "Delegations", BoundService)
+    def replay(service, binding_id, operation, **kwargs):
+        assert binding_id == "review"
+        assert started[0][3]["source_request_id"] == kwargs["source_request_id"]
+        assert started[0][3]["conversation"] == kwargs["conversation"]
+        assert started[0][2] == kwargs["brief"]
+        return service.read(operation)
+    monkeypatch.setattr(execution, "read_delegation_source_execution", replay)
     values = source(tmp_path, registry, goal_id="research", agent_id="worker", requester="lead", binding="review")
     return tmp_path, registry, values, started
 

@@ -72,7 +72,11 @@ export const agentModelSelectionScenario = {
       await assertReadableHeader();
       assert.equal(discoveryCount, 0, "The steward binding does not start optional catalog discovery");
       await managerControl.click();
-      assert.equal(await page.locator(".personal-settings-tabs").getByRole("button", {name: "管家", exact: true}).getAttribute("aria-current"), "page");
+      const settings = page.getByRole("region", {name: "设置", exact: true});
+      await settings.getByRole("heading", {name: "管家", exact: true}).waitFor();
+      assert.equal(await settings.getByRole("radio", {name: "本机设置", exact: true}).isChecked(), true);
+      assert.equal(await settings.locator(".personal-settings-mobile-category select").inputValue(), "steward",
+        "The phone model entry opens the machine-owned steward category");
       await page.getByRole("button", {name: "返回工作区", exact: true}).click();
       await page.reload({waitUntil: "networkidle"});
       await managerControl.filter({hasText: managerBinding.model}).waitFor();

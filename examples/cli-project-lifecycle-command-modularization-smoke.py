@@ -6,10 +6,18 @@ import os
 import subprocess
 import sys
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 
+from pytest import MonkeyPatch
+
+from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+from loopx.control_plane.effect_runtime import restart_effect_runtime
+from loopx.control_plane.todos.active_state_todo_parser import parse_todo_source
+from loopx.control_plane.todos.todo_summary import canonical_todo_read_record, structured_todo_item
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests" / "control_plane"))
 CLI = ROOT / "loopx" / "cli.py"
 MODULE = ROOT / "loopx" / "cli_commands" / "project_lifecycle.py"
 PROJECT_SKILL = ROOT / "skills" / "loopx-project" / "SKILL.md"
@@ -59,6 +67,8 @@ def require_json_success(result: subprocess.CompletedProcess[str]) -> dict[str, 
 
 
 def write_fixture(project: Path) -> tuple[Path, Path, Path]:
+    from canonical_authority_fixture import initialize_canonical_authority
+
     runtime_root = project / "runtime"
     registry_path = project / ".loopx" / "registry.json"
     state_file = project / ".codex" / "goals" / GOAL_ID / "ACTIVE_GOAL_STATE.md"
@@ -160,10 +170,17 @@ def write_fixture(project: Path) -> tuple[Path, Path, Path]:
     run_json.write_text(json.dumps(run_record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     run_md.write_text("# Fixture Run\n", encoding="utf-8")
     index_path.write_text(json.dumps(run_record, ensure_ascii=False) + "\n", encoding="utf-8")
+    groups, _, _ = parse_todo_source(state_file.read_text(encoding="utf-8"))
+    records = [canonical_todo_read_record(structured_todo_item(item, role=role,
+        source_section=item["source_section"])) for role, rows in groups.items() for item in rows]
+    initialize_canonical_authority(runtime_root, GOAL_ID, build_todo_runtime_shadow_projection(
+        goal_id=GOAL_ID, todos=records, handoff_mode="soft_claim"), state_path=state_file, provider="sqlite")
     return registry_path, runtime_root, index_path
 
 
 def main() -> None:
+    from canonical_authority_fixture import isolate_sqlite_runtime
+
     cli_source = CLI.read_text(encoding="utf-8")
     module_source = MODULE.read_text(encoding="utf-8")
     init_source = INIT.read_text(encoding="utf-8")
@@ -242,8 +259,12 @@ def main() -> None:
         for option in options:
             require(option in help_text, f"{command} help omitted {option}")
 
-    with tempfile.TemporaryDirectory(prefix="loopx-project-lifecycle-cli-") as tmp:
+    with (tempfile.TemporaryDirectory(prefix="loopx-project-lifecycle-cli-") as tmp,
+          MonkeyPatch.context() as patch, ExitStack() as cleanup):
         project = Path(tmp)
+        isolate_sqlite_runtime(project, patch)
+        patch.setenv("LOOPX_USAGE_PING", "0")
+        cleanup.callback(restart_effect_runtime, wait_for_exit=True)
         registry_path, runtime_root, index_path = write_fixture(project)
         before_index = index_path.read_text(encoding="utf-8")
         command_prefix = (

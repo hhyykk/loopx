@@ -28,13 +28,13 @@ from .inbox import (
     plan_request_publication,
 )
 from .peer_context_observation import require_parent_context_access
+from .source_policy_fence import source_policy_fence
 from .goal_instance_scope import (
     collaboration_goal_scope,
     decide_collaboration_lifecycle,
     goal_accepts_collaboration,
 )
 from ...agent_registry import registered_agent_ids_for_goal
-from ...file_lock import exclusive_file_lock
 from ...thread_agent_binding import resolve_thread_agent_binding
 from ..projects.registry_codec import load_project_registry
 from ..runtime.file_paths import windows_extended_path
@@ -73,6 +73,16 @@ def require_operation_id(value: str) -> str:
     return value
 
 
+def _operation_address(root: Path, scope, source_agent_id: str, operation_id: str) -> tuple[str, Path]:
+    """The existing immutable peer-operation address, shared with replay reads."""
+    source_id = "peer:" + _hash([
+        scope.caller_goal_ref if scope.exact else scope.goal_id,
+        source_agent_id, require_operation_id(operation_id),
+    ])
+    return source_id, (_root(root) / "peer-operations"
+                       / _hash(scope.target(source_agent_id)) / (source_id[5:] + ".json"))
+
+
 def request(
     root,
     registry,
@@ -95,7 +105,7 @@ def request(
     # An inherited source grant must remain current until its request is stored.
     # Take the policy fence before Goal/request locks, as the source writer does.
     with (
-        exclusive_file_lock((_root(root) / "policy.json").with_suffix(".lock"))
+        source_policy_fence(_root(root) / "policy.json")
         if parent_request_id else nullcontext()
     ), collaboration_goal_scope(
         registry,
@@ -143,12 +153,7 @@ def request(
                 "message": parent["message"],
                 **({"brief": parent["brief"]} if "brief" in parent else {}),
             }
-        source_identity = (
-            [goal_scope.caller_goal_ref, source_agent_id, operation_id]
-            if goal_scope.exact
-            else [goal_id, source_agent_id, operation_id]
-        )
-        source_id = "peer:" + _hash(source_identity)
+        source_id, operation_path = _operation_address(root, goal_scope, source_agent_id, operation_id)
         request_id = _hash(
             [source_id, _target(goal_id, target_agent_id, goal_scope)]
         )
@@ -172,12 +177,6 @@ def request(
                 "host_surface": binding["host_surface"],
                 "thread_id": binding["thread_id"],
             }
-        operation_path = (
-            _root(root)
-            / "peer-operations"
-            / _hash(_target(goal_id, source_agent_id, goal_scope))
-            / (source_id[5:] + ".json")
-        )
         path = (
             _root(root)
             / "entries"

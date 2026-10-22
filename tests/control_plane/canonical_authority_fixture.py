@@ -7,18 +7,52 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 import subprocess
 import tempfile
 
 
 def assert_todo_read_unchanged(current, previous):
-    """Compare durable/read content while checking the separate observation scope."""
-    assert current["projection_envelope"]["schema_version"] == "loopx_projection_envelope_v0"
-    if "projection_envelope" in previous:
-        assert current["projection_envelope"]["coverage"] == previous["projection_envelope"]["coverage"]
-    assert {key: value for key, value in current.items() if key != "projection_envelope"} == {
-        key: value for key, value in previous.items() if key != "projection_envelope"}
+    """Compare complete readback except validated evaluator/observation clocks."""
+    def stable(payload):
+        payload = without_resume_observation_time(payload)
+        envelope = payload["projection_envelope"]
+        assert envelope["schema_version"] == "loopx_projection_envelope_v0"
+        for key in ("observed_at", "served_at"):
+            assert datetime.fromisoformat(envelope.pop(key).replace("Z", "+00:00")).tzinfo is not None
+        for source in envelope["sources"]:
+            assert datetime.fromisoformat(source.pop("last_read_at").replace("Z", "+00:00")).tzinfo is not None
+        return payload
+
+    assert stable(current) == stable(previous)
+
+
+def empty_todo_display(state_path: Path) -> None:
+    """Remove display work without deleting Goal intent, acceptance or stops.
+
+    Quota admission still requires those Goal sections. Empty Todo sections
+    independently prove that the real provider owns work selection; a missing
+    entire Goal is a different, deliberately fail-closed health case.
+    """
+    from loopx.control_plane.todos.machine_section_projection import render_canonical_todo_sections
+
+    state_path.write_text(render_canonical_todo_sections(
+        state_path.read_text(), [], provider_revision="synthetic-empty-display",
+    ).markdown)
+
+
+def without_resume_observation_time(value):
+    """Compare all readback facts except the typed evaluator's observation time."""
+    if isinstance(value, list):
+        return [without_resume_observation_time(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    is_resume = value.get("schema_version") == "todo_resume_condition_v0"
+    if is_resume and "evaluated_at" in value:
+        assert datetime.fromisoformat(value["evaluated_at"].replace("Z", "+00:00")).tzinfo is not None
+    return {key: without_resume_observation_time(item) for key, item in value.items()
+            if not (is_resume and key == "evaluated_at")}
 
 
 def initialize_canonical_authority(runtime_root: Path, goal_id: str, projection: dict, *, state_path: Path, provider: str = "file") -> dict:
