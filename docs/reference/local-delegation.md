@@ -53,6 +53,26 @@ work or configures owner acceptance. Disable by removing the exact binding
 from the operator configuration; existing operations retain their history and
 cannot re-execute or return accepted evidence under a revoked grant.
 
+A Chat handoff with a separate source execution grant can recover when its
+requester exits after saving the original operation but before starting the
+worker. Replaying that handoff rechecks the source Turn and exact grant, then
+rejoins only its original `prepared` operation. The worker retains this
+precondition across process startup under the existing execution lock. A busy
+worker is observed; an operation that has already reached `running`, returned
+or stopped is not automatically resumed by this replay. Uncertain Host work
+still needs explicit original-operation reconciliation. Recovery preserves the
+original Inbox request, binding, conversation and governed Turn; it creates no
+replacement task, grant or scheduler. This remains the explicit task-bound
+route described here, not general automatic activation of an idle Inbox owner.
+
+中文：另有来源执行授权的 Chat 交接，在原 operation 已保存、worker 尚未启动时
+请求方退出，可重放同一交接恢复。重放重新核对来源 Turn 与精确 grant，只续接原
+`prepared` operation；worker 启动后仍在既有执行锁内核对同一前置条件。忙碌 worker
+仅被观察，已进入 `running`、已返回或已停止的执行不因该重放自动恢复；Host 结果
+不确定时仍须显式对账原执行。原 Inbox 请求、binding、对话与受治理 Turn 均保留，
+不创建替代任务、授权或调度器。这仍是本文的精确任务绑定路径，不代表普通 Inbox
+空闲接收者的自动激活已完成。
+
 Member completion uses the ordinary active-Goal continuation, including legacy
 non-hard-lease routes. It does not declare terminal `no_followup` for a
 requester-owned synthesis. This lets controller validation finish the Todo
