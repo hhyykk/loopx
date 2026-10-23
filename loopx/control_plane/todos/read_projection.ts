@@ -213,8 +213,8 @@ export async function projectCanonicalTodoFields(input: JsonObject): Promise<Jso
         input.retained === true ? null : 500, input.retained !== true));
     const lineage = Array.isArray(input.lineage) ? input.lineage.map(value => requireJsonObject(value, "Todo lineage")) : all;
     const grouped = await projectTodoReadGroup({...input, items, lineage, evaluated: false, role, source_section: section,
-      item_limit: null, full_selection: true, resume_lineage: all.map(row => structureCanonicalTodo(row, row.role ?? null,
-        row.source_section ?? section))});
+      item_limit: null, full_selection: true, resume_lineage: items.some(row => readResume(row.resume_when))
+        ? all.map(row => structureCanonicalTodo(row, row.role ?? null, row.source_section ?? section)) : []});
     if (grouped.rejection) return grouped;
     const summary = requireJsonObject(grouped.summary, "canonical Todo summary");
     if (role === "agent" && input.retained !== true) {
