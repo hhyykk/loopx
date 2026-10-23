@@ -150,6 +150,12 @@ without scalar RPCs;
 `todo.completion_state.require_metadata` are retired after their production
 callers exit. Existing semantic owners execute in process inside the transaction.
 
+Native summary composition now passes rows and succession records directly.
+The retired summary RPC's request versions, column codecs and unused handoff
+carrier are removed. Full-source succession, field, frontier, lane and closure
+checks stay with their existing owners; public read and summary outputs remain
+compatible.
+
 CLI query results carry a query-scoped `projection_envelope`. A read grants no
 execution, acceptance, lease or mutation authority. The shared wire and private
 snapshot budgets are unchanged. Oversized Python facts use an owned temporary

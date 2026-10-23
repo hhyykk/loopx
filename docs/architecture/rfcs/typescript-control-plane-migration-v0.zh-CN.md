@@ -123,6 +123,11 @@ Python 保留 registry、文档／材料 IO、独立的 Vision-wait 消费者及
 `todo.completion_state.normalize` 与 `todo.completion_state.require_metadata`。
 事务在进程内执行既有语义 owner。
 
+原生摘要组合现在直接传递行对象与继任记录。
+已退役摘要 RPC 的请求版本、列式 codec 和无调用者的 handoff carrier 一并删除。
+完整来源的继任、字段、frontier、lane 与 closure 校验仍由既有 owner 负责；
+公开读取与摘要输出保持兼容。
+
 CLI 查询结果携带查询范围内的 `projection_envelope`。读取不授予执行、验收、
 租约或修改权限。共享 wire 与私有快照预算不变。超大 Python 事实使用私有临时
 源，不增加持久化存储；完整结果通过摘要绑定的片段传输。

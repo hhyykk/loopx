@@ -107,6 +107,12 @@ The old `todo.summary.project` transport and Python ordinal materializer are
 retired. Large source/result transport preserves complete decisions and refuses
 changed continuations; display limits still disclose shown and available counts.
 
+Native summary composition passes row objects and succession records directly.
+Its obsolete request-version and column codecs, plus the unused summary handoff
+carrier, are removed. Semantic validation remains with the existing owners.
+The separate handoff-context interface and public read/summary outputs retain
+their contracts.
+
 Route-continuation visibility also uses the existing typed quota planning batch.
 It shares the normal claim/exclusion rule; eligibility, first-identity deduplication,
 sorting and counts precede the display cap. Disabled candidates do not hide later

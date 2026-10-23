@@ -8,9 +8,8 @@ import {requireJsonObject, requireBoolean} from "../runtime_decode.ts";
 import {schedulerTimestampMilliseconds} from "../scheduler/state_store.ts";
 import {evaluateTodoResumeConditionsFromSource} from "./resume_condition.ts";
 import {readTodoPriority, todoPriorityRank} from "./priority.ts";
-import {evaluateTodoSuccession, validateTodoSuccession, SUCCESSION_FACT_COLUMNS,
-  SUCCESSION_EVALUATION_COLUMNS, SUCCESSION_CONTEXT_FIELDS} from "./succession.ts";
-import {projectTodoSummary, TODO_SUMMARY_PROJECTION_COLUMNS} from "./summary_projection.ts";
+import {evaluateTodoSuccession, validateTodoSuccession, SUCCESSION_CONTEXT_FIELDS} from "./succession.ts";
+import {projectTodoSummary} from "./summary_projection.ts";
 import {projectTodoHandoffContext} from "./handoff_projection.ts";
 import {projectStandingDecisions} from "./standing_decision.ts";
 import {configuredGoalChecks} from "../goals/acceptance_contract.ts";
@@ -158,14 +157,8 @@ export async function projectTodoReadGroup(input: JsonObject): Promise<JsonObjec
   }
   const preferred = new Set(Array.isArray(input.preferred_todo_ids) ? input.preferred_todo_ids : []);
   const rows = items.map((item, i) => summaryRow(item, decisions[i]!, preferred));
-  const contexts = facts.map(row => row.context_fields!);
   const compacts = items.map(compactRecord);
-  const projected = projectTodoSummary({schema_version: "todo_summary_projection_request_v3", columns: [...TODO_SUMMARY_PROJECTION_COLUMNS],
-    rows: rows.map(row => TODO_SUMMARY_PROJECTION_COLUMNS.map(name => row[name]!)),
-    succession: {schema_version: "todo_succession_request_v1", row_columns: [...SUCCESSION_FACT_COLUMNS],
-      rows: facts.map((row, i) => SUCCESSION_FACT_COLUMNS.map(name => name === "context_fields" ? i : row[name]!)),
-      context_field_sets: contexts, evaluation_columns: [...SUCCESSION_EVALUATION_COLUMNS],
-      evaluations: decisions.map(row => SUCCESSION_EVALUATION_COLUMNS.map(name => row[name]!))},
+  const projected = projectTodoSummary({rows, succession: {facts, evaluations: decisions},
     frontier_rows: input.role === "agent" ? frontierFacts(items) : null,
     observed_at: input.observed_at!, selection: input.selection ?? null, role: input.role ?? null,
     source_section: input.source_section ?? null, item_limit: input.item_limit ?? null, full_selection: input.full_selection ?? true});
