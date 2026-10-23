@@ -173,11 +173,15 @@ receive the existing migration cause instead of a Markdown fallback. Empty
 optional metadata bypasses exception-based normalization in the compatibility
 reader; supplied values still use the existing validators. Objective-only
 acceptance observations remain visible without configured checks.
+Canonical summaries prepare recovery history only for role groups that contain
+a resume condition. Succession still uses complete active and archived lineage.
 The output measurements above retain their original controlled-transport scope.
 Current normal-IPC, package and complete-command evidence belongs to the exact
 revision reported in [#6874](https://github.com/loopx-project/loopx/pull/6874).
 Historical performance failures remain failures; neither fewer RPCs nor codec
 CPU savings waive the full-CLI gate or establish R3/D2/D3 adoption.
+The current warm-request miss remains an owner review hold. A passing full-CLI
+comparison does not waive the 2 ms target.
 
 
 <a id="current-delivery-frontier-2026-10-02"></a>
