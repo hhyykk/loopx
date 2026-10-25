@@ -59,6 +59,11 @@ from .paths import (
     validate_goal_id_path_segment,
 )
 from .control_plane.goals.active_state_metadata import markdown_blockquote, markdown_frontmatter_string
+from .control_plane.goals.architecture_invariants import (
+    compute_file_sha256,
+    discover_top_level_specs,
+    render_architecture_invariants_markdown,
+)
 from .registry_writability import probe_registry_write_path
 
 
@@ -90,9 +95,16 @@ def resolve_project_path(project: Path, path: Path | None) -> Path | None:
 
 
 def render_authority_sources(project: Path, goal_doc: Path | None) -> str:
-    if not goal_doc:
+    entries: list[str] = []
+    if goal_doc:
+        entries.append(f"- Primary goal document: `{rel_or_abs(goal_doc, project)}`")
+    for spec in discover_top_level_specs(project):
+        entries.append(
+            f"- Top-level specification (`{spec['kind']}`): `{spec['path']}` (sha256=`{spec['sha256'][:12]}`)"
+        )
+    if not entries:
         return "- No explicit goal document was provided during bootstrap."
-    return f"- Primary goal document: `{rel_or_abs(goal_doc, project)}`"
+    return "\n".join(entries)
 
 
 def repair_missing_todo_source_sections(state_text: str) -> tuple[str, list[str]]:
@@ -172,7 +184,7 @@ adapter_id: {goal_id}
 - Do not perform irreversible production operations without explicit approval.
 - Do not publish private project evidence.
 - Do not optimize for activity if no useful artifact or decision can be produced.
-
+{render_architecture_invariants_markdown(project)}
 ## User Todo / Owner Review Reading Queue
 
 ## Agent Todo
@@ -222,8 +234,10 @@ def build_goal_entry(
                 "kind": "goal_doc",
                 "path": rel_or_abs(goal_doc, project),
                 "role": "primary_goal_document",
+                **({"sha256": compute_file_sha256(goal_doc)} if goal_doc.is_file() else {}),
             }
         )
+    authority_sources.extend(discover_top_level_specs(project))
     adapter = {
         "kind": adapter_kind,
         "status": adapter_status,
