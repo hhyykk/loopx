@@ -21,6 +21,7 @@
     "tests/control_plane_ts/usage_statistics_delivery.test.ts",
     "tests/control_plane_ts/usage_statistics_goals.test.ts",
     "tests/control_plane_ts/usage_statistics_sources.test.ts",
+    "tests/control_plane_ts/repository_context_living_specs.test.ts",
     "tests/control_plane_ts/content_digest_single_owner.test.ts",
     "tests/control_plane_ts/goal_amendment_authority.test.ts",
     "tests/control_plane_ts/request_control.test.ts",
