@@ -20,10 +20,7 @@ from .control_plane.goals.contract_health import (
     contract_error_views,
     project_contract_health_for_goal,
 )
-from .control_plane.goals.architecture_invariants import (
-    verify_authority_source_digests,
-    verify_executable_architecture_invariants,
-)
+from .control_plane.goals.source_integrity import verify_authority_source_digests
 from .control_plane.goals.activation import (
     GoalActivationState,
     goal_activation_state,
@@ -877,10 +874,9 @@ def _active_state_projection_gap_warnings(
     return warnings
 
 
-def _authority_and_invariant_diagnostics(
+def _authority_source_diagnostics(
     registry: dict[str, Any],
     *,
-    include_architecture_invariants: bool,
     goal_id_filter: str | None = None,
     activation_state_filter: GoalActivationState | str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -897,10 +893,6 @@ def _authority_and_invariant_diagnostics(
         ):
             continue
         goal_diags, goal_checks = verify_authority_source_digests(goal)
-        if include_architecture_invariants:
-            executable_diags, executable_checks = verify_executable_architecture_invariants(goal)
-            goal_diags.extend(executable_diags)
-            goal_checks.extend(executable_checks)
         diagnostics.extend(goal_diags)
         checks.extend(goal_checks)
     return diagnostics, checks
@@ -1260,7 +1252,6 @@ def check_contract(
     goal_id_filter: str | None = None,
     activation_state_filter: GoalActivationState | str | None = None,
     include_public_boundary_scan: bool = True,
-    include_architecture_invariants: bool = True,
     history_audit: RunHistoryAudit | None = None,
     registry: dict[str, Any] | None = None,
     todo_snapshot: CanonicalTodoSnapshot | None = None,
@@ -1331,14 +1322,13 @@ def check_contract(
     if checked_user_gates:
         checks.append(f"user-gate scopes checked: {checked_user_gates} open multi-agent gates")
     error_diagnostics.extend(todo_contract_diagnostics)
-    invariant_diagnostics, invariant_checks = _authority_and_invariant_diagnostics(
+    source_diagnostics, source_checks = _authority_source_diagnostics(
         registry,
-        include_architecture_invariants=include_architecture_invariants,
         goal_id_filter=goal_id_filter,
         activation_state_filter=activation_state_filter,
     )
-    error_diagnostics.extend(invariant_diagnostics)
-    checks.extend(invariant_checks)
+    error_diagnostics.extend(source_diagnostics)
+    checks.extend(source_checks)
     warnings.extend(
         _active_state_projection_gap_warnings(
             registry,
